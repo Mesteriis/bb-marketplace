@@ -132,8 +132,8 @@ export function hexLines(bytes: Uint8Array, offset: bigint): string[] {
   for (let start = 0; start < bytes.length; start += HEX_WIDTH) {
     const chunk = bytes.subarray(start, start + HEX_WIDTH);
     const slots = Array.from({ length: HEX_WIDTH }, (_, index) =>
-      index < chunk.length ? chunk[index]!.toString(16).padStart(2, "0") : "  ");
-    const address = (offset + BigInt(start)).toString(16).padStart(8, "0");
+      index < chunk.length ? chunk[index]!.toString(16).padStart(2, "0").toUpperCase() : "  ");
+    const address = (offset + BigInt(start)).toString(16).padStart(8, "0").toUpperCase();
     const ascii = Array.from(chunk, (byte) => (byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : ".")).join("");
     lines.push(`${address}  ${slots.slice(0, 8).join(" ")}  ${slots.slice(8).join(" ")}  |${ascii}|`);
   }
@@ -255,6 +255,17 @@ function fitPrefix(window: ViewWindow, make: (window: ViewWindow) => WireBody, m
 }
 
 /**
+ * Largest chunk whose reply fits. Base64 takes 4 characters per 3 bytes and needs no JSON escaping,
+ * so the size follows from the reply without a search. The room is measured with an empty chunk
+ * flagged truncated, the larger of the two flags, so the result never overflows.
+ */
+function fitChunk(window: ViewWindow, measure: (body: WireBody) => number): WireBody {
+  const room = MAX_RESPONSE_BYTES - measure(chunkBody(prefixOf(window, 0)));
+  const length = Math.min(window.bytes.length, Math.floor(Math.floor(room / 4) * 3));
+  return chunkBody(prefixOf(window, length));
+}
+
+/**
  * The reply for one window. Modes offered: text when the window is valid text (any kind),
  * image for the owner at offset 0 when the file is an image of at most 32 MiB, and binary
  * always. An image whose whole content does not fit the reply comes as chunks, which the
@@ -271,7 +282,7 @@ export function replyFor(name: string, window: ViewWindow, requested: ViewKind |
 
   // Owner chunks after the first one: the window is raw bytes of the image.
   if (audience === "owner" && requested === "image" && window.offset > 0n) {
-    return reply(fitPrefix(window, chunkBody, (body) => measure(body)));
+    return reply(fitChunk(window, measure));
   }
   const chosen: ViewKind = requested !== "auto" && modes.includes(requested) ? requested
     : modes.includes("image") ? "image" : modes.includes("text") ? "text" : "binary";
@@ -280,7 +291,7 @@ export function replyFor(name: string, window: ViewWindow, requested: ViewKind |
     // Only a window of the whole file is an image; a part of a larger file comes as chunks.
     const whole = imageBody(name, window);
     if (!window.truncated && measure(whole) <= MAX_RESPONSE_BYTES) return reply(whole);
-    return reply(fitPrefix(window, chunkBody, (body) => measure(body)));
+    return reply(fitChunk(window, measure));
   }
   if (chosen === "text") return reply(fitPrefix(window, textBody, (body) => measure(body)));
   return reply(fitPrefix(window, binaryBody, (body) => measure(body)));

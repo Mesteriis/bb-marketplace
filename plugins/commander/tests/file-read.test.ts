@@ -143,7 +143,7 @@ test("agent commander_read asks for an image and gets hex, never image bytes", a
       modes: ["binary"],
       view: {
         kind: "binary",
-        lines: ["00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|"],
+        lines: ["00000000  89 50 4E 47 0D 0A 1A 0A  00 00 00 0D 49 48 44 52  |.PNG........IHDR|"],
         truncated: false, shown: 16, total: "16",
       },
     });

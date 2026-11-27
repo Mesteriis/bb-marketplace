@@ -24,14 +24,14 @@ function window(overrides: Partial<ViewWindow> & Pick<ViewWindow, "kind" | "byte
 describe("hexLines", () => {
   it("prints a full line with an ASCII column and two 8-byte halves", () => {
     expect(hexLines(PNG_HEAD, 0n)).toEqual([
-      "00000000  89 50 4e 47 0d 0a 1a 0a  00 00 00 0d 49 48 44 52  |.PNG........IHDR|",
+      "00000000  89 50 4E 47 0D 0A 1A 0A  00 00 00 0D 49 48 44 52  |.PNG........IHDR|",
     ]);
   });
 
   it("continues the offset on the next line", () => {
     const bytes = Uint8Array.from({ length: 17 }, (_, index) => index);
     const lines = hexLines(bytes, 0n);
-    expect(lines[0]).toBe("00000000  00 01 02 03 04 05 06 07  08 09 0a 0b 0c 0d 0e 0f  |................|");
+    expect(lines[0]).toBe("00000000  00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  |................|");
     expect(lines[1]).toBe("00000010  10" + " ".repeat(48) + "|.|");
   });
 

@@ -31,7 +31,7 @@ const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const VERSION = { size: "5", mtimeNs: "1" };
 // "hello" as the hex dump lays it out: offset, eight bytes, eight bytes, then the ASCII column.
-const HEX_HELLO = "00000000  68 65 6c 6c 6f" + " ".repeat(36) + "|hello|";
+const HEX_HELLO = "00000000  68 65 6C 6C 6F" + " ".repeat(36) + "|hello|";
 function textResult(text: string): ViewResult {
   return { version: VERSION, modes: ["text", "binary"], model: { kind: "text", text, truncated: false } };
 }
