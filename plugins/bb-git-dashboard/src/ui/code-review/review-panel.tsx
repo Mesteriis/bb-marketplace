@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
-import { describeTarget, GENERAL_PATH, type TargetRequest } from "../../core/code-review/model.ts";
+import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
+import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
+import { AiReviewForm, RunList } from "./ai-runs.tsx";
 import { FileDiff } from "./file-diff.tsx";
 import { message, type CodeReviewApi, type NewThread, type ReviewView } from "./review-api.ts";
 import { SendForm } from "./send-form.tsx";
@@ -42,6 +44,9 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
   const [sending, setSending] = useState(false);
   const [status, setStatus] = useState("");
   const [reload, setReload] = useState(0);
+  const [reviewing, setReviewing] = useState(false);
+  const [runs, setRuns] = useState<ReviewRun[]>([]);
+  const viewer = currentThreadId ?? null;
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -51,6 +56,14 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     return () => { active = false; };
   }, [api, copyId, applied, ignoreWhitespace, revision, reload]);
   const refresh = useCallback(() => setReload(value => value + 1), []);
+  const sessionId = view?.sessionId;
+  useEffect(() => {
+    if (!sessionId) { setRuns([]); return; }
+    let active = true;
+    // The runs are a side list: one that fails to read leaves the review usable.
+    api.runs(sessionId).then(next => { if (active) setRuns(next); }, () => { if (active) setRuns([]); });
+    return () => { active = false; };
+  }, [api, sessionId, revision, reload]);
   const choose = (next: Kind) => {
     setKind(next);
     const asked = request(next, base, sha, range);
@@ -60,10 +73,19 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
     const asked = request(kind, base, sha, range);
     if (typeof asked === "string") setError(asked); else { setError(""); setApplied(asked); }
   };
-  const create = async (thread: NewThread) => { if (view) { await api.createThread(view.sessionId, thread); refresh(); } };
+  const create = async (thread: NewThread) => { if (view) { await api.createThread(view.sessionId, thread, viewer); refresh(); } };
+  const explain = async (place: ExplainPlace) => {
+    if (!view) return;
+    setStatus("");
+    try {
+      const run = await api.startExplain(view.sessionId, place, viewer);
+      setStatus(run.status === "failed" ? run.summary ?? "The explanation could not start." : "Explanation started; it appears here as a comment.");
+    } catch (cause) { setError(message(cause)); }
+    refresh();
+  };
   const live = <T,>(work: Promise<T>) => work.then(result => { refresh(); return result; });
   const liveApi: CodeReviewApi = {...api,
-    addComment: (...args) => live(api.addComment(...args)), editComment: (...args) => live(api.editComment(...args)),
+    addComment: (threadId, body) => live(api.addComment(threadId, body, viewer)), editComment: (...args) => live(api.editComment(...args)),
     deleteComment: (...args) => live(api.deleteComment(...args)), setStatus: (...args) => live(api.setStatus(...args)),
     apply: (...args) => live(api.apply(...args))};
 
@@ -97,11 +119,15 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
         {view.truncated ? " · the diff was cut short" : ""}</span>
       <span className="git-ci-spacer"/>
       <button type="button" aria-expanded={general} onClick={() => setGeneral(value => !value)}>Comment on the diff</button>
+      <button type="button" aria-expanded={reviewing} disabled={!view.files.length} onClick={() => setReviewing(value => !value)}>AI review</button>
       <button type="button" className="git-primary" aria-expanded={sending} disabled={!open} onClick={() => setSending(value => !value)}>Send to agent ({open})</button>
     </div>}
     {status && <p className="git-muted" role="status">{status}</p>}
     {error && <p className="git-error" role="alert">{error}</p>}
     {!view && !error && <p className="git-muted" role="status">Reading the diff…</p>}
+    {view && <RunList api={api} runs={runs} onClosed={refresh}/>}
+    {view && reviewing && <AiReviewForm api={api} copyId={copyId} sessionId={view.sessionId} viewer={viewer} onClose={() => setReviewing(false)}
+      onStarted={(_run, text) => { setReviewing(false); setStatus(text); refresh(); }}/>}
     {view && sending && <SendForm api={api} copyId={copyId} sessionId={view.sessionId} threads={threads} currentThreadId={currentThreadId}
       onClose={() => setSending(false)} onSent={text => { setSending(false); setStatus(text); refresh(); }}/>}
     {view && (general || generalThreads.length > 0) && <section className="git-stack" aria-label="About the whole diff">
@@ -116,7 +142,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision}: {api: Code
       {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
     </section>}
     {view && !view.files.length && <p className="git-muted">{view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} workingCopy={working} api={liveApi} onCreate={create}
+    {view && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain}
       threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
   </section>;
 }

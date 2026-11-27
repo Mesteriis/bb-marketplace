@@ -28,7 +28,8 @@ export function Composer({label, initial = "", code, withSeverity, submitLabel, 
     if (event.key === "Escape" && onCancel) { event.preventDefault(); onCancel(); }
   };
   return <form className="git-review-composer" onSubmit={event => { event.preventDefault(); void submit(); }}>
-    <textarea aria-label={label} value={body} rows={3} autoFocus onChange={event => setBody(event.target.value)} onKeyDown={keys}/>
+    <textarea aria-label={label} value={body} rows={3} autoFocus placeholder="Mention @reviewer to ask the AI reviewer."
+      onChange={event => setBody(event.target.value)} onKeyDown={keys}/>
     <div className="git-row git-code-review-composer-bar">
       {withSeverity && <select aria-label="Severity" value={severity} onChange={event => setSeverity(event.target.value as Severity | "")}>
         <option value="">No severity</option>

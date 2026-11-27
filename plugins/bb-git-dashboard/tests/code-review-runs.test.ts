@@ -39,3 +39,11 @@ test("line numbers read as ranges", () => {
   assert.equal(ranges([]), "");
   assert.equal(ranges([7]), "7");
 });
+
+test("a run's title says what it does", async () => {
+  const {runTitle} = await import("../src/ui/code-review/run-labels.ts");
+  const run = {id: "r", sessionId: "s", threadId: null, providerId: "codex", model: null, status: "done" as const, summary: null, changedFiles: null, createdAt: 1, finishedAt: 1};
+  assert.deepEqual([runTitle({...run, kind: "review", focus: null}), runTitle({...run, kind: "review", focus: "Security, Tests"}),
+    runTitle({...run, kind: "fix", focus: null}), runTitle({...run, kind: "summary", focus: null}), runTitle({...run, kind: "explain", focus: "src/a.ts:3-4"})],
+  ["AI review", "AI review · Security, Tests", "Fixes in a new thread", "Summary", "Explain · src/a.ts:3-4"]);
+});

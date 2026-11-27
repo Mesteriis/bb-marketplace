@@ -10,3 +10,11 @@
 .git-ws .git-code-review-suggestion .git-removed { color: var(--git-removed, #d95f76); }
 .git-ws .git-review-tag[data-severity="must-fix"] { border-color: var(--destructive); color: var(--destructive); }
 .git-ws .git-review-tag[data-severity="question"] { border-color: var(--git-focus); color: var(--git-focus); }
+.git-ws .git-review-tag[data-failed] { border-color: var(--destructive); color: var(--destructive); }
+.git-ws .git-code-review-runs ul { list-style: none; margin: 0; padding: 0; gap: 6px; }
+.git-ws .git-code-review-run { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; display: grid; gap: 4px; }
+.git-ws .git-code-review-run .git-row { flex-wrap: wrap; gap: 6px; align-items: center; }
+.git-ws .git-code-review-run p { margin: 0; overflow-wrap: anywhere; }
+.git-ws .git-code-review-execution { gap: 6px; }
+.git-ws .git-warning { margin: 0; color: #b8860b; }
+.git-ws .git-code-review [aria-pressed="true"] { font-weight: 600; }

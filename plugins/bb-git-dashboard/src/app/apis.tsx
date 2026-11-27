@@ -1,9 +1,9 @@
-import { experimental_copyToClipboard, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_copyToClipboard, experimental_ProviderModelPicker as ProviderModelPicker, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Failure } from "../core/workspace.ts";
 import type { CiApi } from "../ui/ci/ci-api.ts";
 import type { HistoryApi } from "../ui/history/history-api.ts";
-import type { CodeReviewApi } from "../ui/code-review/review-api.ts";
+import type { CodeReviewApi, ExecutionPickerProps } from "../ui/code-review/review-api.ts";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Navigate = ReturnType<typeof useBbNavigate>;
@@ -54,18 +54,32 @@ export function historyApi(client: Client): HistoryApi {
   };
 }
 
+/** BB's own provider, model and reasoning picker, reading the catalog where the run would start. */
+function ExecutionPicker({value, onChange, routing, disabled}: ExecutionPickerProps) {
+  return <ProviderModelPicker value={value} onChange={onChange} routing={routing} disabled={disabled}/>;
+}
+
 /** The line review over RPC; shared by the Git panel and the thread's Review tab. */
 export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi {
   return {
     view: async (copyId, target, ignoreWhitespace) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace})),
-    createThread: async (sessionId, thread) => { okValue(await client.call("reviewCreateThread", {sessionId, ...thread})); },
-    addComment: async (threadId, body) => { okValue(await client.call("reviewAddComment", {threadId, body})); },
+    createThread: async (sessionId, thread, viewer) => { okValue(await client.call("reviewCreateThread", {sessionId, ...thread, viewerThreadId: viewer ?? null})); },
+    addComment: async (threadId, body, viewer) => { okValue(await client.call("reviewAddComment", {threadId, body, viewerThreadId: viewer ?? null})); },
     editComment: async (commentId, body) => { okValue(await client.call("reviewEditComment", {commentId, body})); },
     deleteComment: async commentId => { okValue(await client.call("reviewDeleteComment", {commentId})); },
     setStatus: async (threadId, status) => { okValue(await client.call("reviewSetStatus", {threadId, status})); },
     send: async (sessionId, threadId, threadIds, note) => okValue(await client.call("reviewSend", {sessionId, threadId, threadIds, note})),
     apply: async (threadId, commentId) => { okValue(await client.call("reviewApply", {threadId, commentId})); },
     targets: async copyId => okValue(await client.call("reviewTargets", {copyId})).threads,
+    runDefaults: async (copyId, viewer) => okValue(await client.call("reviewRunDefaults", {copyId, viewerThreadId: viewer})),
+    runs: async sessionId => okValue(await client.call("reviewRuns", {sessionId})).runs,
+    startReview: async (sessionId, focuses, instructions, execution, viewer) =>
+      okValue(await client.call("reviewStartReview", {sessionId, focuses, instructions, execution, viewerThreadId: viewer})).run,
+    startSummary: async (sessionId, execution, viewer) => okValue(await client.call("reviewStartSummary", {sessionId, execution, viewerThreadId: viewer})).run,
+    startExplain: async (sessionId, place, viewer) => okValue(await client.call("reviewStartExplain", {sessionId, ...place, viewerThreadId: viewer})).run,
+    fix: async (sessionId, threadIds, note, execution, viewer) => okValue(await client.call("reviewFix", {sessionId, threadIds, note, execution, viewerThreadId: viewer})),
+    closeRun: async runId => { okValue(await client.call("reviewCloseRun", {runId})); },
+    ExecutionPicker,
     openThread: threadId => navigate.toThread(threadId),
   };
 }

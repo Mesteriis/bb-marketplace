@@ -3,6 +3,7 @@ import type { ReviewDiffFile } from "../../core/code-review/diff.ts";
 import type { ReviewThread, Side } from "../../core/code-review/model.ts";
 import { linesText, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { displayRows, type DisplayRow } from "../../core/code-review/rows.ts";
+import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import type { CodeReviewApi, NewThread, Placement } from "./review-api.ts";
 import { Composer, ThreadCard } from "./thread-card.tsx";
 
@@ -14,9 +15,11 @@ const keyOf = (side: Side, line: number) => side + ":" + line;
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, workingCopy, api, onCreate}: {
+export function FileDiff({file, threads, placements, wrap, workingCopy, api, onCreate, onExplain}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; workingCopy: boolean;
   api: CodeReviewApi; onCreate(thread: NewThread): Promise<void>;
+  /** Starts an AI run that explains the file or the selected lines. */
+  onExplain(place: ExplainPlace): Promise<void>;
 }) {
   const rows = useMemo(() => file.patch ? displayRows(file.patch) : [], [file.patch]);
   const lines = useMemo(() => file.patch ? parsePatchLines(file.patch) : null, [file.patch]);
@@ -51,6 +54,7 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
       <span className="git-muted">{file.untracked ? "untracked" : file.changeKind.replace("_", " ")} · {additions}</span>
       {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
       <span className="git-ci-spacer"/>
+      <button type="button" onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
       <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
     </header>
     {!closed && <>
@@ -72,7 +76,12 @@ export function FileDiff({file, threads, placements, wrap, workingCopy, api, onC
             {row.kind !== "hunk" && below.get(keyOf(sideOf(row), lineOf(row)))?.map(thread =>
               <ThreadCard key={thread.id} thread={thread} api={api} current={currentOf(thread)} canApply={workingCopy}/>)}
             {selection && range && row.kind !== "hunk" && sideOf(row) === selection.side && lineOf(row) === range.end && <div className="git-code-review-new">
-              <p className="git-muted">{"Comment on " + (range.start === range.end ? "line " + range.end : "lines " + range.start + "–" + range.end) + (selection.side === "old" ? " (removed)" : "")}</p>
+              <div className="git-row">
+                <p className="git-muted">{"Comment on " + (range.start === range.end ? "line " + range.end : "lines " + range.start + "–" + range.end) + (selection.side === "old" ? " (removed)" : "")}</p>
+                <span className="git-ci-spacer"/>
+                <button type="button" onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
+                  Explain {range.start === range.end ? "this line" : "these lines"}</button>
+              </div>
               <Composer label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment" onCancel={() => setSelection(null)}
                 onSubmit={async (body, severity) => {
                   await onCreate({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, anchorContent: selectedCode, severity, body});

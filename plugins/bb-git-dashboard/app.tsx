@@ -16,7 +16,7 @@ import { PrPage } from "./src/ui/review/pr-page.tsx";
 import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
 import { IssuePage } from "./src/ui/review/issue-page.tsx";
 import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
-import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.ts";
+import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
 

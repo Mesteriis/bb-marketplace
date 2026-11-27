@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { describeLocation, type ReviewThread } from "../../core/code-review/model.ts";
+import { ExecutionChoice, useRunDefaults } from "./ai-runs.tsx";
 import { message, severityLabel, type CodeReviewApi } from "./review-api.ts";
 
 /**
  * Sends open comment threads to a thread working on this copy: the current thread in a thread's tab, or one picked
- * from the copy's threads. Threads still waiting for an answer start unticked.
+ * from the copy's threads; or "Fix in a new thread", an AI run on this copy. Threads still waiting for an answer
+ * start unticked.
  */
 export function SendForm({api, copyId, sessionId, threads, currentThreadId, onClose, onSent}: {
   api: CodeReviewApi; copyId: string; sessionId: string; threads: ReviewThread[]; currentThreadId?: string; onClose(): void; onSent(text: string): void;
@@ -15,6 +17,8 @@ export function SendForm({api, copyId, sessionId, threads, currentThreadId, onCl
   const [targets, setTargets] = useState<{id: string; title: string}[]>();
   const [target, setTarget] = useState(currentThreadId ?? "");
   const [pending, setPending] = useState(false);
+  const [fresh, setFresh] = useState(false);
+  const run = useRunDefaults(api, copyId, currentThreadId ?? null, fresh);
   const [error, setError] = useState("");
   useEffect(() => {
     if (currentThreadId) return;
@@ -27,8 +31,15 @@ export function SendForm({api, copyId, sessionId, threads, currentThreadId, onCl
   const send = async () => {
     setPending(true); setError("");
     try {
-      const {count} = await api.send(sessionId, target, chosen, note);
-      onSent("Sent " + count + " comment thread" + (count === 1 ? "" : "s") + " to the agent.");
+      const plural = (count: number) => count + " comment thread" + (count === 1 ? "" : "s");
+      if (fresh) {
+        if (!run.execution) return;
+        const {run: started, count} = await api.fix(sessionId, chosen, note, run.execution, currentThreadId ?? null);
+        onSent(started.status === "failed" ? started.summary ?? "The thread could not start." : "Sent " + plural(count) + " to a new thread.");
+      } else {
+        const {count} = await api.send(sessionId, target, chosen, note);
+        onSent("Sent " + plural(count) + " to the agent.");
+      }
     } catch (cause) { setError(message(cause)); }
     finally { setPending(false); }
   };
@@ -42,14 +53,18 @@ export function SendForm({api, copyId, sessionId, threads, currentThreadId, onCl
       {thread.delivery?.state === "sent" && <span className="git-muted"> (waiting for an answer)</span>}</label>)}</div>
     <label className="git-ci-thread-note">Review summary (optional)
       <textarea value={note} maxLength={20_000} onChange={event => setNote(event.target.value)}/></label>
-    {currentThreadId ? <p className="git-muted">To this thread.</p> : <label>To thread{" "}
+    <div className="git-row" role="radiogroup" aria-label="Where to send">
+      <label><input type="radio" checked={!fresh} onChange={() => setFresh(false)}/> {currentThreadId ? "This thread" : "A thread on this copy"}</label>
+      <label><input type="radio" checked={fresh} onChange={() => setFresh(true)}/> Fix in a new thread</label>
+    </div>
+    {fresh ? <ExecutionChoice api={api} run={run} disabled={pending}/> : currentThreadId ? <p className="git-muted">To this thread.</p> : <label>To thread{" "}
       <select value={target} onChange={event => setTarget(event.target.value)} disabled={!targets?.length}>
         {targets?.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}
       </select>
       {targets && !targets.length && <span className="git-muted"> No thread of this project works in this copy. Open a thread here first.</span>}
     </label>}
     <div className="git-row">
-      <button type="button" className="git-primary" disabled={pending || !chosen.length || !target} onClick={() => void send()}>{pending ? "Sending…" : "Send " + chosen.length}</button>
+      <button type="button" className="git-primary" disabled={pending || !chosen.length || (fresh ? !run.execution : !target)} onClick={() => void send()}>{pending ? "Sending…" : "Send " + chosen.length}</button>
       <button type="button" onClick={onClose}>Close</button>
     </div>
     {error && <p className="git-error" role="alert">{error}</p>}

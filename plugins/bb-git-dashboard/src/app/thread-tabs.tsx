@@ -4,7 +4,7 @@ import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Copy } from "../core/workspace.ts";
 import { CiPanel } from "../ui/ci/ci-panel.tsx";
 import { HistoryPanel } from "../ui/history/history-panel.tsx";
-import { ciApi, codeReviewApi, historyApi } from "./apis.ts";
+import { ciApi, codeReviewApi, historyApi } from "./apis.tsx";
 import { ReviewPanel } from "../ui/code-review/review-panel.tsx";
 
 const signal = "git-workspace-changed";

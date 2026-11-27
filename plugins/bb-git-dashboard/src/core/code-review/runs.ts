@@ -64,3 +64,6 @@ function hash(text: string): string {
   for (const byte of new TextEncoder().encode(text)) value = BigInt.asUintN(64, (value ^ BigInt(byte)) * 0x100000001b3n);
   return value.toString(16).padStart(16, "0");
 }
+
+/** The focuses an AI review offers; none means every pass. */
+export const REVIEW_FOCUSES = ["Security", "Performance", "Correctness", "Naming", "Tests", "Types"] as const;
