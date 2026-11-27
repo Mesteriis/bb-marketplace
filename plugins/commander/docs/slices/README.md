@@ -38,12 +38,14 @@
 | S4 | `S4-host-local-fs.md` | S1 | `src/core/wire/host-fs.ts`, `src/adapters/bb/host-fs/**`, `src/adapters/bb/local-provider.ts`, `tests/host-fs/**` |
 | S5 | `S5-sftp-provider.md` | S1 | `src/core/wire/remote-hub-sftp.ts`, `src/adapters/bb/sftp-provider.ts`, `src/adapters/bb/testing/remote-hub-mock.ts`, их тесты |
 | S6 | `S6-job-store-sqlite.md` | S1, интерфейс `JobStore` из S3 | `src/adapters/bb/job-store-sqlite.ts`, `src/adapters/bb/migrations.ts` и тесты |
-| S7 | `S7-server-rpc-agents.md` | S2–S6 | `server.ts`, `host.ts`, `src/core/wire/rpc.ts`, `src/adapters/bb/rpc-handlers.ts`, `src/adapters/bb/endpoints.ts`, `src/adapters/bb/agent-tools.ts`, `src/adapters/bb/cli.ts`, `skills/commander/SKILL.md`, `docs/security.md`, `server.test.ts` |
+| S7 | `S7-server-rpc-agents.md` | S2–S6 | `server.ts`, `host.ts`, `src/core/wire/rpc.ts`, `src/adapters/bb/rpc-handlers.ts`, `src/adapters/bb/endpoints.ts`, `src/adapters/bb/agent-tools.ts`, `src/adapters/bb/agent-grants.ts`, `src/adapters/bb/cli.ts`, `skills/commander/SKILL.md`, `docs/security.md`, `server.test.ts` |
 | S8 | `S8-ui.md` | S7, выбор дизайна | `app.tsx`, `app.test.tsx`, `src/ui/**` |
 
 S2, S3, S4, S5 идут параллельно после S1. S6 стартует, когда интерфейс
 `JobStore` (S3, файл `src/core/job-store.ts`) слит — это первая задача S3.
-S8 ждёт выбора варианта на Design canvas.
+S8 ждёт выбора варианта на Design canvas. Заглушки `server.ts`, `app.tsx`,
+`host.ts` создаёт S0; после слияния S0 ими владеют только S7 (`server.ts`,
+`host.ts`) и S8 (`app.tsx`).
 
 ## Приёмка этапа (ТЗ §11) — где закрывается
 

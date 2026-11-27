@@ -33,6 +33,7 @@ agent tools и CLI, с одинаковыми проверками. Агент �
 | `job_cancel` | `{ jobId }` | `{}` |
 | `agent_grants_list` / `agent_grants_set` / `agent_grants_revoke` | — | гранты агентам: `{ threadId \| "*", endpoint, scope, permissions }` |
 | `sftp_request_access` | `{ profileId, level }` | проксирует в Remote Hub |
+| `ui_state_get` / `ui_state_set` | `{}` / `{ state: UiState }` | состояние панелей для S8: `UiState` — zod в `rpc.ts` (вкладки: endpoint, path, sort, filter, selection ≤ 10 000 имён, scrollTop; активная панель; раскладка), хранится в `bb.storage.kv` ≤ 256 KB |
 
 Realtime: `bb.realtime.publish("commander", { kind: "job"|"dir"|"endpoints", id })`
 — только идентификаторы.

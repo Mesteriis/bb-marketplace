@@ -18,9 +18,9 @@ Commander, очередь, диалог конфликта, план агент�
 - `src/ui` получает данные и колбэки через props (правило каркаса); вызовы
   `useRpc`/`useRealtime` — только в `app.tsx`.
 - Состояние панелей (вкладки, путь, выделение, сортировка, фильтр, позиция) —
-  в `bb.storage.kv` через RPC (`ui_state_get/set` — добавляется в
-  `src/core/wire/rpc.ts` по согласованию с S7, не в этом срезе) либо в
-  `localStorage` с ключом плагина; remount не теряет состояния.
+  через RPC `ui_state_get`/`ui_state_set` из S7 (схема `UiState` в
+  `src/core/wire/rpc.ts`, владеет S7); запись с debounce; remount не теряет
+  состояния.
 - Клавиатура: только `onKeyDown` на корне страницы; ни одного слушателя на
   `window`/`document`. F3 (`experimental_openFilePreview({kind:"host"})`),
   F4 (тот же preview/редактор BB), F5, F6, F7, F8, Tab, Insert/Space,
