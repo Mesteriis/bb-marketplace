@@ -75,6 +75,13 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/** A retry plan and the candidates left out because a directory above them is unconfirmed. */
+export interface RetryPlan {
+  plan: OperationPlan;
+  excluded: { count: number; reason: "parent_unconfirmed" }[];
+}
+const finishedStates: ReadonlySet<string> = new Set(["completed", "failed", "cancelled", "unknown"]);
+
 /** Same rule as the planner: the bytes of the file items with a fingerprint. */
 function totalBytesOf(items: PlanItem[]): OperationPlan["totalBytes"] {
   let total = 0n;
@@ -254,14 +261,15 @@ export class JobRunner {
    * out. The remaining items form a new plan, checked by revalidate; running it
    * goes through the usual plan path.
    */
-  retryJob(id: string, initiator: Initiator): Promise<OperationPlan> {
+  retryJob(id: string, initiator: Initiator): Promise<RetryPlan> {
     return this.accept(() => this.planRetry(id, initiator));
   }
 
-  private async planRetry(id: string, initiator: Initiator): Promise<OperationPlan> {
+  private async planRetry(id: string, initiator: Initiator): Promise<RetryPlan> {
     const job = await this.requireJob(id);
-    if (job.state !== "failed" && job.state !== "unknown") {
-      throw new CommanderError("changed_since_plan", "Only a failed or unknown job can be retried");
+    // A job still running, pending or waiting for a decision has items in flight.
+    if (!finishedStates.has(job.state)) {
+      throw new CommanderError("changed_since_plan", "Only a finished job can be retried");
     }
     const verdicts = new Map<number, "done" | "retry" | "unresolved">();
     const verdictOf = async (index: number) => {
@@ -279,9 +287,27 @@ export class JobRunner {
       selected.add(index);
       queue.push(index);
     };
+    // Items that never ran (pending) are planned only for a finished job.
+    // A candidate inside a directory whose creation stays unconfirmed waits for
+    // that check and is left out, then counted.
+    const unresolvedAbove = async (index: number): Promise<boolean> => {
+      const target = job.plan.items[index].target;
+      if (!target) return false;
+      const caseSensitive = this.deps.provider(target.endpoint).endpoint.caseSensitive;
+      for (const [dir, item] of job.plan.items.entries()) {
+        if (item.kind !== "dir" || !item.target || job.items[dir].outcome !== "unknown") continue;
+        if (item.target.endpoint !== target.endpoint || item.target.path.segments.length >= target.path.segments.length) continue;
+        if (isAncestorOrSelf(item.target.path, target.path, caseSensitive) && (await verdictOf(dir)) === "unresolved") return true;
+      }
+      return false;
+    };
+    let excludedCount = 0;
     for (const [index, { outcome }] of job.items.entries()) {
-      if (outcome === "failed") select(index);
-      else if (outcome === "unknown" && (await verdictOf(index)) === "retry") select(index);
+      const candidate = outcome === "failed" || outcome === "pending"
+        || (outcome === "unknown" && (await verdictOf(index)) === "retry");
+      if (!candidate) continue;
+      if (await unresolvedAbove(index)) excludedCount++;
+      else select(index);
     }
     // A child cannot succeed before its directory exists: a failed or unproven
     // directory above a selected item is planned first, so it runs first.
@@ -314,7 +340,7 @@ export class JobRunner {
     const confirmed = [...verdicts].filter(([, verdict]) => verdict === "done").map(([index]) => index);
     if (confirmed.length) await this.recordConfirmed(job, confirmed);
     const kept = [...selected].sort((a, b) => a - b);
-    if (kept.length === 0) throw new CommanderError("unsupported", "No item can be retried safely");
+    if (kept.length === 0) throw new CommanderError("changed_since_plan", "No item can be retried safely");
 
     const items = kept.map((index) => job.plan.items[index]);
     const unsigned: Omit<OperationPlan, "digest"> = {
@@ -337,7 +363,10 @@ export class JobRunner {
     if (checked && !checked.ok) {
       throw new CommanderError("changed_since_plan", "Retry plan no longer matches the sources or targets; create a new plan");
     }
-    return plan;
+    return {
+      plan,
+      excluded: excludedCount ? [{ count: excludedCount, reason: "parent_unconfirmed" }] : [],
+    };
   }
 
   /** Decide an unknown item from its recorded checkpoint, reading the endpoints but writing nothing new. */

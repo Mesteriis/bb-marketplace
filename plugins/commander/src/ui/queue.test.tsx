@@ -72,3 +72,10 @@ test("hides retry when the host does not wire it", () => {
     endpoints={[]} error={null} loading={false} {...handlers} />);
   expect(screen.queryByRole("button", { name: "Повторить невыполненное" })).toBeNull();
 });
+
+test("says how many files wait for a directory check on a failed job", () => {
+  const failed = job("failed", "223e4567-e89b-42d3-a456-000000000005");
+  render(<Queue id="queue" open selection={selection} jobs={[failed]} endpoints={[]} error={null} loading={false}
+    {...handlers} onRetry={vi.fn()} unconfirmedChildren={{ [failed.id]: 2 }} />);
+  expect(screen.getByText("2 элемента ждут сверки каталога")).toBeDefined();
+});

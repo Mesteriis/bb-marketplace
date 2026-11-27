@@ -45,6 +45,8 @@ export interface WorkspaceProps {
   onCancel: (job: OperationJob) => Promise<unknown>;
   /** S17: повтор невыполненного; хост создаёт план повтора и запускает его. */
   onRetry: (job: OperationJob) => Promise<unknown>;
+  /** S17: files left out of a retry, by job id; shown on the queue card. */
+  unconfirmedChildren: Record<string, number>;
   onPreview: (ref: ResourceRef) => void;
   onCompare: (source: ResourceRef, target: ResourceRef) => Promise<[string, string]>;
   onTerminal: (ref: ResourceRef) => Promise<void>;
@@ -483,7 +485,7 @@ export function Workspace(props: WorkspaceProps) {
   const queue = <Queue {...props.queue} endpoints={endpoints} id={queueId} open={queueOpen} collapse={queueOpen ? toggleQueue : undefined} compact={compact} selection={selection}
     onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
     onCancel={(job) => open({ kind: "cancel", job })}
-    onRetry={(job) => void props.onRetry(job)} />;
+    onRetry={(job) => void props.onRetry(job)} unconfirmedChildren={props.unconfirmedChildren} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
     <header className="cm-heading">

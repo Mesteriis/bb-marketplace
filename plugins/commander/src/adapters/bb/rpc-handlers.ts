@@ -320,9 +320,9 @@ export function createOperations(deps: {
         }
       }
       signal.throwIfAborted();
-      const plan = await runner.retryJob(id, initiator);
-      remember(plan);
-      return plan;
+      const retry = await runner.retryJob(id, initiator);
+      remember(retry.plan);
+      return retry;
     },
     async decide({ jobId, ...decision }: RpcInput<"job_decide">, signal: AbortSignal) {
       await deps.ready();

@@ -200,6 +200,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
   const [bindings, setBindings] = useState(loadBindings);
+  // S17: files left out of a retry because a directory check is pending, by job id.
+  const [unconfirmedChildren, setUnconfirmedChildren] = useState<Record<string, number>>({});
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
   const changes = useRef(new Set<string>());
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -299,13 +301,19 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
+  const retryUnfinished = async (job: OperationJob) => {
+    const { plan, excluded } = await rpc.call("job_retry", { jobId: job.id });
+    const count = excluded.reduce((sum, entry) => sum + entry.count, 0);
+    setUnconfirmedChildren((notes) => ({ ...notes, [job.id]: count }));
+    return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
+  };
   return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
-    onEndpoint={selectEndpoint} onRefresh={refresh}
+    unconfirmedChildren={unconfirmedChildren} onEndpoint={selectEndpoint} onRefresh={refresh}
     onAccess={async (endpoint) => {
       await rpc.call("sftp_request_access", { profileId: endpoint.id.slice("sftp:".length), level: "write" });
       await refreshEndpoints();
@@ -326,8 +334,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       await mutate(rpc.call("job_decide", { jobId: job.id, conflictId: job.pendingConflict.id, action, applyTo: same ? "remaining_same_reason" : "this" }));
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
-    onRetry={(job) => mutate(rpc.call("job_retry", { jobId: job.id })
-      .then((plan) => rpc.call("plan_run", { planId: plan.id, digest: plan.digest })))}
+    onRetry={(job) => mutate(retryUnfinished(job))}
     onPreview={preview} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }

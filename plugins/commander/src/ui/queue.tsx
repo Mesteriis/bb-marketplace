@@ -17,10 +17,10 @@ const stateIcons = {
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, unconfirmedChildren }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
-  onRetry?: (job: OperationJob) => void;
+  onRetry?: (job: OperationJob) => void; unconfirmedChildren?: Record<string, number>;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -69,6 +69,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
     {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
+    {(unconfirmedChildren?.[job.id] ?? 0) > 0 && <div className="cm-meta">{ru.retryWaitsForCheck(unconfirmedChildren![job.id])}</div>}
     <div className="cm-actions">
       {conflict && <Button size="sm" data-conflict-id={conflict.id} onClick={() => onInspect(job)}>{ru.resolve}</Button>}
       {conflict && (conflict.allowedResolutions?.includes("skip") ?? true) &&
@@ -85,6 +86,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
 export type QueueProps = {
   jobs: JobView[]; endpoints: EndpointView[]; error: Problem | null; loading: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  /** S17: files waiting for a directory check, by job id. */
+  unconfirmedChildren?: Record<string, number>;
   /** S17: optional, so a host without the retry wiring still renders the queue. */
   onRetry?: (job: OperationJob) => void;
 };

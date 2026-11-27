@@ -86,7 +86,7 @@ test("an agent without a grant on the job's endpoints gets the planning refusal 
 test("an agent with a grant on the job's endpoints gets a retry plan owned by that agent", async () => {
   const { ops, kv, job } = await failedAgentJob();
   kv.set("agent-grants", [{ threadId: "thread-a", endpoint: "*", scope: parsePosix("/"), permissions: ["read", "write"] }]);
-  const plan = await ops.retry(job.id, agent, signal);
+  const { plan } = await ops.retry(job.id, agent, signal);
   expect(plan.initiator).toEqual({ kind: "agent", threadId: "thread-a" });
   expect(plan.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
 });
