@@ -1,3 +1,4 @@
+import manifest from "./package.json";
 import type { SearchActions } from "./src/ui/search-panel.tsx";
 import { definePluginApp, experimental_PluginRpcCallError, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,20 +19,32 @@ import "./src/ui/workspace.css";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcSchemas>>;
 type Sdk = ReturnType<typeof useSdk>;
-// S11: SDK 0.6.132's useRpc.call cannot take a signal. The HTTP RPC endpoint
-// propagates a disconnected request to the handler's experimental_signal.
-const startSearch: SearchActions["start"] = async (input, signal) => {
-  const response = await fetch("/api/v1/plugins/makosh-commander/rpc/scan_start", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(input),
-    signal,
-  });
-  const envelope = await response.json() as { ok?: boolean; result?: unknown; error?: unknown } | null;
+// S11: the pinned SDK cannot take a signal. Use HTTP cancellation when the
+// transport is available; both paths also accept a request-id cancellation.
+const pluginId = manifest.name.replace(/^bb-plugin-/, "");
+async function startSearch(rpc: Rpc, input: Parameters<SearchActions["start"]>[0], signal: AbortSignal) {
+  let response: Response;
+  let envelope: { ok?: boolean; result?: unknown; error?: unknown } | null;
+  try {
+    response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/scan_start`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+    signal.throwIfAborted();
+    if (response.status === 401 || response.status === 404) return rpc.call("scan_start", input);
+    envelope = await response.json();
+  } catch (error) {
+    signal.throwIfAborted();
+    if (!(error instanceof TypeError)) throw error;
+    return rpc.call("scan_start", input);
+  }
+  signal.throwIfAborted();
   if (!response.ok || envelope?.ok !== true) throw experimental_PluginRpcCallError.from(envelope?.error);
   return rpcSchemas.scan_start.output.parse(envelope.result);
-};
+}
 
 const delay = 250;
 let pendingWrite = Promise.resolve();
@@ -249,10 +262,11 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   }), [rpc, update]);
   // S11: polling and job cancellation use the shared scan transport.
   const search = useMemo<SearchActions>(() => ({
-    start: startSearch,
+    start: (input, signal) => startSearch(rpc, input, signal),
     get: scans.get,
     cancel: scans.cancel,
-  }), [scans]);
+    cancelRequest: (clientRequestId) => rpc.call("scan_cancel", { clientRequestId }),
+  }), [rpc, scans]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});

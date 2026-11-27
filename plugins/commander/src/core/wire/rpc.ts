@@ -65,6 +65,7 @@ const pane = z.strictObject({ tabs: z.array(tab).max(32), activeTab: z.int().min
   .refine(({ tabs, activeTab }) => tabs.length === 0 ? activeTab === null : activeTab !== null && activeTab < tabs.length);
 const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
 const scanId = z.strictObject({ scanId: z.uuid() });
+const searchRequestId = z.strictObject({ clientRequestId: z.uuid() });
 const scanControl = {
   estimateOnly: z.boolean().optional(),
   estimateId: z.uuid().optional(),
@@ -85,6 +86,7 @@ export const CompareScan = z.discriminatedUnion("kind", [
 ]);
 // S11: wire sizes are decimal strings; search uses bigint internally.
 export const SearchScan = z.strictObject({
+  clientRequestId: z.uuid().optional(),
   kind: z.literal("search"),
   root: ResourceRef,
   name: z.union([z.strictObject({ glob: z.string().min(1).max(256) }),
@@ -137,6 +139,7 @@ export const ScanJobView = z.strictObject({
   partial: z.boolean(),
   error: CommanderErrorShape.nullable(),
 });
+export type ScanJobView = z.infer<typeof ScanJobView>;
 const scanResult = z.union([
   searchResult,
   z.strictObject({ sha256: digest }),
@@ -250,7 +253,7 @@ export const rpcSchemas = {
     output: z.union([ScanEstimateView, ScanJobView]),
   },
   scan_get: { input: scanId, output: ScanGetView.nullable() },
-  scan_cancel: { input: scanId, output: empty },
+  scan_cancel: { input: z.union([scanId, searchRequestId]), output: empty },
 };
 
 export type RpcInput<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["input"]>;

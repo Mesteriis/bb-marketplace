@@ -84,12 +84,13 @@ async function backend(
     cli: { register: (cli: PluginCliRegistration) => { registration = cli; } },
   } as unknown as BbPluginApi);
   await new Promise<void>((resolve) => setImmediate(resolve));
+  const rawTool = (name: string, input: unknown, ctx = agent) => tools.get(name)!(input, ctx);
   return {
-    db, disk, events, kv, logError, startService,
+    rawTool, db, disk, events, kv, logError, startService,
     serviceResult: () => service,
     rpc: (name: string, input: unknown, ctx: unknown = client) => handlers[name](input, ctx),
     async tool(name: string, input: unknown, ctx = agent): Promise<unknown> {
-      return JSON.parse((await tools.get(name)!(input, ctx)).content[0].text);
+      return JSON.parse((await rawTool(name, input, ctx)).content[0].text);
     },
     cli: (argv: string[]) => registration!.run(argv, {} as Parameters<PluginCliRegistration["run"]>[1]),
     async dispose(close = true) {
@@ -1203,11 +1204,11 @@ test("S11 RPC caps the full serialized agent tool result at 1 MiB", async () => 
     }
     await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: root.endpoint,
       scope: root.path, permissions: ["read"] } });
-    const result = await bb.tool("commander_search", { root });
+    const raw = await bb.rawTool("commander_search", { root });
+    expect(Buffer.byteLength(JSON.stringify(raw))).toBeLessThanOrEqual(1048576);
+    const result = JSON.parse(raw.content[0].text);
     expect(result).toMatchObject({ partial: true, hits: expect.any(Array) });
     expect((result as { hits: unknown[] }).hits.length).toBeGreaterThan(0);
-    const envelope = { content: [{ type: "text", text: JSON.stringify(result) }] };
-    expect(Buffer.byteLength(JSON.stringify(envelope))).toBeLessThanOrEqual(1048576);
   } finally { await bb.dispose(); }
 });
 
@@ -1260,5 +1261,66 @@ test.each([
       .parse(await bb.tool("commander_search", { ...input, estimateOnly: true }));
     await expect(bb.tool("commander_search", { ...input, estimateId }))
       .resolves.toMatchObject({ partial: false, hits: [{ line: { number: 1, text: line200 } }] });
+  } finally { await bb.dispose(); }
+});
+
+test("S11 cancels a scan before its start response is delivered", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "x".repeat(131_073));
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const firstRead = deferred();
+  const resumeRead = deferred();
+  const response = deferred();
+  let reads = 0;
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op" && (args.input as { op: string }).op === "read") {
+      reads++;
+      firstRead.resolve();
+      await resumeRead.promise;
+    }
+    return fixture.callRpc(args);
+  });
+  const input = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "131073" } };
+  const clientRequestId = "00000000-0000-4000-8000-000000000011";
+  try {
+    const { estimateId } = z.object({ estimateId: z.uuid() })
+      .parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    const controller = new AbortController();
+    const started = bb.rpc("scan_start", { ...input, estimateId, clientRequestId }, { ...client, experimental_signal: controller.signal });
+    const { id: expectedId } = z.object({ id: z.uuid() }).parse(await started);
+    const delivered = response.promise.then(() => started);
+    // Keep the simulated HTTP reply blocked even after the first read begins.
+    await firstRead.promise;
+    const replay = await bb.rpc("scan_start", { ...input, estimateId, clientRequestId });
+    expect(replay).toMatchObject({ id: expectedId });
+    await expect(bb.rpc("scan_start", { ...input, estimateId, clientRequestId, limits: { maxBytesRead: "131072" } }))
+      .rejects.toMatchObject({ code: "conflict" });
+    controller.abort();
+    await expect(bb.rpc("scan_cancel", { clientRequestId })).resolves.toEqual({});
+    resumeRead.resolve();
+    response.resolve();
+    const { id: scanId } = z.object({ id: z.literal(expectedId) }).parse(await delivered);
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+    expect(reads).toBe(1);
+  } finally { resumeRead.resolve(); response.resolve(); await bb.dispose(); }
+});
+
+test("S11 a cancellation that arrives first prevents remote traversal", async () => {
+  const fixture = remoteFixture();
+  const bb = await backend(undefined, fixture.callRpc);
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const clientRequestId = "00000000-0000-4000-8000-000000000012";
+  try {
+    await expect(bb.rpc("scan_cancel", { clientRequestId })).resolves.toEqual({});
+    await expect(bb.rpc("scan_start", { kind: "search", root, clientRequestId, estimateOnly: true,
+      content: { text: "needle", caseSensitive: true } })).rejects.toMatchObject({ message: expect.stringContaining("cancelled") });
+    expect(fixture.remote.opCount("op:list")).toBe(0);
+    expect(fixture.remote.opCount("op:read")).toBe(0);
   } finally { await bb.dispose(); }
 });

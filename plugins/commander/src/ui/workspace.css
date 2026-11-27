@@ -469,3 +469,32 @@
 .commander-viewer img { display: block; align-self: flex-start; width: auto; max-width: 100%; height: auto; }
 .commander-viewer p { margin: 0; font-size: 12px; color: var(--muted-foreground); }
 .commander-hex-off, .commander-hex-asc { color: var(--muted-foreground); }
+
+/* S11 search pane */
+.cm-search-header {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 10px 8px;
+}
+.cm-search-actions { flex-wrap: wrap; padding: 0; }
+.cm-search .cm-search-path { display: block; margin: 0; padding-inline: 8px; line-height: 32px; }
+.cm-search-fields { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 0; margin: 0; }
+.cm-search-input { flex: 1 1 130px; min-width: 0; }
+.cm-search-advanced { width: 100%; }
+.cm-search-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 6px; }
+.cm-search-budget { flex: 1 1 100%; }
+.cm-search .cm-row {
+  grid-template-columns: minmax(68px, 1fr) minmax(45px, 1fr) minmax(62px, 0.45fr) minmax(100px, 0.65fr);
+}
+.cm-search .cm-row > div:nth-child(2) { justify-content: flex-start; color: var(--muted-foreground); }
+.cm-search-directory { overflow: hidden; text-overflow: ellipsis; }
+.cm-search-rows { position: relative; }
+.cm-search-footer { padding: 4px 10px; border-top: 1px solid var(--border); }
+.cm-search-line { overflow-wrap: anywhere; }
+@container commander (width < 460px) {
+  .cm-search .cm-row { grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) 95px; }
+}
+.cm-workspace[data-compact="true"] .cm-search .cm-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) 95px;
+}

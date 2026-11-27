@@ -822,3 +822,32 @@ test("S11 panel cancellation aborts the HTTP scan_start call itself", async () =
     expect(screen.queryByRole("grid", { name: "Найденные файлы" })).toBeNull();
   } finally { vi.unstubAllGlobals(); }
 });
+
+test.each(["network", "response body", 401, 404] as const)("S11 falls back to SDK RPC for %s and cancels by request id", async (failure) => {
+  const serve = host.call.getMockImplementation()!;
+  const sdkStart = vi.fn((_input: unknown) => new Promise<never>(() => {}));
+  const cancel = vi.fn(async (_input: unknown) => ({}));
+  host.call.mockImplementation((method, input) => method === "scan_start" ? sdkStart(input)
+    : method === "scan_cancel" ? cancel(input) : serve(method, input));
+  const fetchScan = vi.fn(async (_url: string, _init: RequestInit) => {
+    if (failure === "network") throw new TypeError("Failed to fetch");
+    if (failure === "response body") {
+      const stream = new ReadableStream({ start(controller) { controller.error(new TypeError("Connection lost")); } });
+      return new Response(stream);
+    }
+    return new Response(null, { status: failure });
+  });
+  vi.stubGlobal("fetch", fetchScan);
+  try {
+    mount();
+    await leftFile();
+    fireEvent.click(within(grid().parentElement!).getByRole("button", { name: "Поиск" }));
+    fireEvent.click(screen.getByRole("button", { name: "Найти" }));
+    await waitFor(() => expect(sdkStart).toHaveBeenCalledTimes(1));
+    const request = JSON.parse(String(fetchScan.mock.calls[0][1].body));
+    expect(request.clientRequestId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(sdkStart).toHaveBeenCalledWith(request);
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть поиск" }));
+    expect(cancel).toHaveBeenCalledWith({ clientRequestId: request.clientRequestId });
+  } finally { vi.unstubAllGlobals(); }
+});

@@ -13,7 +13,7 @@ import { parent } from "../../core/path.ts";
 import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
-import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanResult } from "../../core/wire/rpc.ts";
+import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanEstimateView, type ScanJobView, type ScanResult } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
@@ -124,6 +124,35 @@ export function createOperations(deps: {
   const scanEstimates = new Map<string, {
     initiator: Initiator; request: string; snapshot: string; expires: number;
   }>();
+  // S11: a client can cancel even before receiving the scan id. Terminal
+  // receipts and early cancellations survive request reordering for ten minutes.
+  type SearchRequest = {
+    controller: AbortController;
+    digest?: string;
+    attempt?: Promise<ScanEstimateView | ScanJobView>;
+    pending: boolean;
+    scanId?: string;
+    expires: number;
+  };
+  const searchRequests = new Map<string, SearchRequest>();
+  const searchReceiptLifetime = 600_000;
+  const searchReceiptLimit = 256;
+  const cancelledSearch = () => new CommanderError("cancelled", "Search cancelled");
+
+  function searchRequest(id: string, initiator: Initiator): SearchRequest {
+    const key = JSON.stringify([initiator.kind, initiator.kind === "agent" ? initiator.threadId : null, id]);
+    const now = Date.now();
+    for (const [key, item] of searchRequests) {
+      if (now >= item.expires && !item.pending &&
+          (!item.scanId || deps.scans.get(item.scanId)?.state !== "running")) searchRequests.delete(key);
+    }
+    const found = searchRequests.get(key);
+    if (found) return found;
+    if (searchRequests.size >= searchReceiptLimit) throw refusal("conflict", "Search request pool is full");
+    const entry: SearchRequest = { controller: new AbortController(), pending: false, expires: now + searchReceiptLifetime };
+    searchRequests.set(key, entry);
+    return entry;
+  }
   let accessQueue: Promise<unknown> = Promise.resolve();
 
   function serializeAccess<T>(action: () => Promise<T>): Promise<T> {
@@ -402,6 +431,67 @@ export function createOperations(deps: {
     }
   }
 
+  async function startScan(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal,
+    onStarted?: (id: string) => void) {
+    signal.throwIfAborted();
+    const paths = input.kind === "search" ? [input.root]
+      : input.kind === "checksum" ? [input.ref] : [input.left, input.right];
+    const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
+    await checkScanRead(initiator, paths);
+    await deps.ready();
+    const remote = ids.some((id) => id.startsWith("sftp:"));
+    const { estimateId, estimateOnly, ...scan } = input;
+    const request = JSON.stringify(scan);
+    if (!estimateOnly && remote && !estimateId && input.kind === "search" && input.content) {
+      throw new SearchConsentError();
+    }
+    if (!estimateOnly && remote && !estimateId && input.kind !== "search") {
+      throw refusal("forbidden", "A remote scan requires a confirmed estimate");
+    }
+    if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
+    await endpoints.prepare(ids, signal);
+    const { planned, snapshot, work } = await prepareScan(input, signal);
+    const bytes = planned.reduce((total, count) => total + count, 0n);
+    const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+    return serializeAccess(async () => {
+      await checkScanRead(initiator, paths);
+      await deps.ready();
+      signal.throwIfAborted();
+      if (estimateOnly) {
+        const now = Date.now();
+        for (const [id, estimate] of scanEstimates) {
+          if (now >= estimate.expires) scanEstimates.delete(id);
+        }
+        // Keep estimate issuance bounded and prevent agents from evicting owner estimates.
+        const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
+        const poolLimit = initiator.kind === "owner" ? 32 : 64;
+        if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
+        if (initiator.kind === "agent" && ownPool.filter(([, item]) => ownedBy(initiator, item.initiator)).length >= 16) {
+          throw refusal("conflict", "Thread scan estimate pool is full");
+        }
+        const id = planner.uuid();
+        scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
+        const byEndpoint = new Map<string, bigint>();
+        paths.forEach(({ endpoint }, index) => {
+          byEndpoint.set(endpoint, (byEndpoint.get(endpoint) ?? 0n) + planned[index]);
+        });
+        return { estimateId: id, bytesPlanned: bytes.toString(),
+          bytesByEndpoint: [...byEndpoint].map(([endpoint, count]) => ({ endpoint, bytesPlanned: count.toString() })) };
+      }
+      if (estimateId) {
+        const estimate = requireScanEstimate(estimateId, initiator, request);
+        scanEstimates.delete(estimateId);
+        if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
+      }
+      const job = deps.scans.start({
+        kind: input.kind === "search" ? "search" : input.kind === "checksum" ? "checksum" : "compare",
+        initiator, endpoints: ids, bytesPlanned: input.kind === "search" && !(remote && input.content) ? null : bytes,
+      }, (ctx) => work(ctx, initiator));
+      onStarted?.(job.id);
+      return scanJobView(job);
+    });
+  }
+
   return {
     async endpointsList(initiator: Initiator, signal: AbortSignal) {
       const endpointsList = await endpoints.list(signal);
@@ -575,62 +665,35 @@ export function createOperations(deps: {
         await requestCancel(job);
       }
     },
-    async scanStart(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
-      const paths = input.kind === "search" ? [input.root]
-        : input.kind === "checksum" ? [input.ref] : [input.left, input.right];
-      const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
-      await checkScanRead(initiator, paths);
-      await deps.ready();
-      const remote = ids.some((id) => id.startsWith("sftp:"));
-      const { estimateId, estimateOnly, ...scan } = input;
-      const request = JSON.stringify(scan);
-      if (!estimateOnly && remote && !estimateId && input.kind === "search" && input.content) {
-        throw new SearchConsentError();
+    async scanStart(raw: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
+      if (raw.kind !== "search" || !raw.clientRequestId) return startScan(raw, initiator, signal);
+      const { clientRequestId, ...input } = raw;
+      const receipt = searchRequest(clientRequestId, initiator);
+      receipt.controller.signal.throwIfAborted();
+      const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      if (receipt.digest !== undefined && receipt.digest !== digest) {
+        throw refusal("conflict", "Search request id does not match the request");
       }
-      if (!estimateOnly && remote && !estimateId && input.kind !== "search") {
-        throw refusal("forbidden", "A remote scan requires a confirmed estimate");
+      receipt.digest = digest;
+      const previous = receipt.attempt;
+      if (previous) {
+        try { return await previous; }
+        catch (error) {
+          // The direct HTTP request can disconnect while a fallback caller is waiting.
+          if (receipt.attempt === previous || signal.aborted || receipt.controller.signal.aborted) throw error;
+        }
       }
-      if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
-      await endpoints.prepare(ids, signal);
-      const { planned, snapshot, work } = await prepareScan(input, signal);
-      const bytes = planned.reduce((total, count) => total + count, 0n);
-      const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
-      return serializeAccess(async () => {
-        await checkScanRead(initiator, paths);
-        await deps.ready();
-        signal.throwIfAborted();
-        if (estimateOnly) {
-          const now = Date.now();
-          for (const [id, estimate] of scanEstimates) {
-            if (now >= estimate.expires) scanEstimates.delete(id);
-          }
-          // Keep estimate issuance bounded and prevent agents from evicting owner estimates.
-          const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
-          const poolLimit = initiator.kind === "owner" ? 32 : 64;
-          if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
-          if (initiator.kind === "agent" && ownPool.filter(([, item]) => ownedBy(initiator, item.initiator)).length >= 16) {
-            throw refusal("conflict", "Thread scan estimate pool is full");
-          }
-          const id = planner.uuid();
-          scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
-          const byEndpoint = new Map<string, bigint>();
-          paths.forEach(({ endpoint }, index) => {
-            byEndpoint.set(endpoint, (byEndpoint.get(endpoint) ?? 0n) + planned[index]);
+      if (!receipt.attempt) {
+        const combined = AbortSignal.any([signal, receipt.controller.signal]);
+        receipt.pending = true;
+        receipt.attempt = startScan(input, initiator, combined, (scanId) => { receipt.scanId = scanId; })
+          .finally(() => {
+            receipt.pending = false;
+            receipt.expires = Date.now() + searchReceiptLifetime;
+            if (signal.aborted && !receipt.controller.signal.aborted && !receipt.scanId) receipt.attempt = undefined;
           });
-          return { estimateId: id, bytesPlanned: bytes.toString(),
-            bytesByEndpoint: [...byEndpoint].map(([endpoint, count]) => ({ endpoint, bytesPlanned: count.toString() })) };
-        }
-        if (estimateId) {
-          const estimate = requireScanEstimate(estimateId, initiator, request);
-          scanEstimates.delete(estimateId);
-          if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
-        }
-        const job = deps.scans.start({
-          kind: input.kind === "search" ? "search" : input.kind === "checksum" ? "checksum" : "compare",
-          initiator, endpoints: ids, bytesPlanned: input.kind === "search" && !(remote && input.content) ? null : bytes,
-        }, (ctx) => work(ctx, initiator));
-        return scanJobView(job);
-      });
+      }
+      return receipt.attempt;
     },
     scanGet(id: string) {
       const job = deps.scans.get(id);
@@ -639,8 +702,14 @@ export function createOperations(deps: {
       return { job: scanJobView(job), result,
         ...(job.state === "done" && result === null ? { reason: "result_expired" as const } : {}) };
     },
-    scanCancel(id: string) {
-      deps.scans.cancel(id);
+    scanCancel(input: RpcInput<"scan_cancel">, initiator: Initiator) {
+      if ("scanId" in input) deps.scans.cancel(input.scanId);
+      else {
+        const receipt = searchRequest(input.clientRequestId, initiator);
+        receipt.controller.abort(cancelledSearch());
+        receipt.expires = Date.now() + searchReceiptLifetime;
+        if (receipt.scanId) deps.scans.cancel(receipt.scanId);
+      }
       return {};
     },
     async scanTool(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
@@ -779,7 +848,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     ui_state_set: ({ state, threadId }) => ops.setState(state, threadId),
     scan_start: (input, ctx) => ops.scanStart(input, owner, ctx.experimental_signal),
     scan_get: ({ scanId }) => ops.scanGet(scanId),
-    scan_cancel: ({ scanId }) => ops.scanCancel(scanId),
+    scan_cancel: (input) => ops.scanCancel(input, owner),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;

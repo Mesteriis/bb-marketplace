@@ -17,7 +17,7 @@ it("starts SFTP content search only after the user sees and confirms the estimat
     id, kind: "search", initiator: { kind: "owner" }, endpoints: [root.endpoint], state: "running",
     progress: { items: 0, bytes: "0", bytesPlanned: "181" }, partial: false, error: null,
   });
-  render(<SearchPanel side="left" active root={root} label="test" api={{ start, get: async () => null, cancel: async () => {} }}
+  render(<SearchPanel side="left" active root={root} label="test" api={{ start, get: async () => null, cancel: async () => {}, cancelRequest: async () => {} }}
     onFocus={() => {}} onClose={() => {}} onSave={() => {}} onOpen={() => {}} />);
   fireEvent.change(screen.getByLabelText("Содержимое"), { target: { value: "needle" } });
   fireEvent.change(screen.getByLabelText("Лимит чтения, байт"), { target: { value: "1024" } });
@@ -44,7 +44,7 @@ it.each<{ state: string; reply: Awaited<ReturnType<SearchActions["get"]>> }>([
 ])("explains how to recover a saved panel with a $state", async ({ reply }) => {
   const get = vi.fn<SearchActions["get"]>().mockResolvedValue(reply);
   render(<SearchPanel side="left" active root={root} label="test" savedId={savedId}
-    api={{ start: vi.fn(), get, cancel: vi.fn() }} onFocus={() => {}} onClose={() => {}} onSave={() => {}} onOpen={() => {}} />);
+    api={{ start: vi.fn(), get, cancel: vi.fn(), cancelRequest: vi.fn(async () => {}) }} onFocus={() => {}} onClose={() => {}} onSave={() => {}} onOpen={() => {}} />);
   expect(await screen.findByText("Результаты устарели. Запустите поиск снова.")).toBeTruthy();
   expect(get.mock.calls).toEqual([[savedId]]);
 });
@@ -53,7 +53,7 @@ it.each(["Отменить поиск", "Закрыть поиск"])("aborts pe
   const start = vi.fn((..._args: unknown[]) => new Promise<never>(() => {}));
   const onClose = vi.fn();
   render(<SearchPanel side="left" active root={root} label="test"
-    api={{ start, get: vi.fn(), cancel: vi.fn() }} onFocus={() => {}} onClose={onClose} onSave={() => {}} onOpen={() => {}} />);
+    api={{ start, get: vi.fn(), cancel: vi.fn(), cancelRequest: vi.fn(async () => {}) }} onFocus={() => {}} onClose={onClose} onSave={() => {}} onOpen={() => {}} />);
   fireEvent.change(screen.getByLabelText("Содержимое"), { target: { value: "needle" } });
   fireEvent.change(screen.getByLabelText("Лимит чтения, байт"), { target: { value: "1024" } });
   fireEvent.click(screen.getByRole("button", { name: "Оценить чтение" }));

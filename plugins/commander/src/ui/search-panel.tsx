@@ -15,6 +15,7 @@ export interface SearchActions {
   start(input: Request, signal: AbortSignal): Promise<ScanGetView["job"] | ScanEstimateView>;
   get(id: string): Promise<ScanGetView | null>;
   cancel(id: string): Promise<unknown>;
+  cancelRequest(clientRequestId: string): Promise<unknown>;
 }
 
 interface Props {
@@ -44,7 +45,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
   const [view, setView] = useState<ScanGetView | null>(null);
   const [estimate, setEstimate] = useState<{ request: Request; reply: ScanEstimateView } | null>(null);
   const [pending, setPending] = useState(false);
-  const pendingRequest = useRef<AbortController | null>(null);
+  const pendingRequest = useRef<{ id: string; controller: AbortController; cancel(): Promise<unknown> } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [content, setContent] = useState("");
@@ -64,7 +65,6 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
   const busy = pending || !!id && (!job || job.state === "running");
   const first = Math.max(0, Math.floor(top / rowHeight) - 8);
   const last = Math.min(hits.length, first + Math.ceil(height / rowHeight) + 16);
-  const columns = { gridTemplateColumns: "minmax(68px, 1fr) minmax(45px, 1fr) minmax(62px, 0.45fr) minmax(100px, 0.65fr)" };
 
   useEffect(() => {
     const node = viewport.current;
@@ -99,17 +99,25 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
     return () => { active = false; clearTimeout(timer); };
   }, [id, api, t.expired]);
 
-  useEffect(() => () => pendingRequest.current?.abort(), []);
+  useEffect(() => () => {
+    const pending = pendingRequest.current;
+    if (!pending) return;
+    pendingRequest.current = null;
+    pending.controller.abort();
+    void pending.cancel().catch(() => {});
+  }, []);
 
   async function start(request: Request, estimateOnly = false) {
     if (pendingRequest.current) return;
     const controller = new AbortController();
-    pendingRequest.current = controller;
+    const id = crypto.randomUUID();
+    const pending = { id, controller, cancel: () => api.cancelRequest(id) };
+    pendingRequest.current = pending;
     setEstimate(null);
     setProblem(null);
     setPending(true);
     try {
-      const reply = await api.start(estimateOnly ? { ...request, estimateOnly: true } : request, controller.signal);
+      const reply = await api.start({ ...request, estimateOnly: estimateOnly || undefined, clientRequestId: pending.id }, controller.signal);
       if (controller.signal.aborted) {
         // The response may have arrived as the user cancelled. Cancel its job too.
         if ("id" in reply) await api.cancel(reply.id);
@@ -127,7 +135,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
     } catch (error) {
       if (!controller.signal.aborted) setProblem(problemOf(error));
     } finally {
-      if (pendingRequest.current === controller) {
+      if (pendingRequest.current === pending) {
         pendingRequest.current = null;
         if (!controller.signal.aborted) setPending(false);
       }
@@ -154,9 +162,11 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
   }
 
   function abortStart() {
-    if (!pendingRequest.current) return false;
-    pendingRequest.current.abort();
+    const pending = pendingRequest.current;
+    if (!pending) return false;
     pendingRequest.current = null;
+    pending.controller.abort();
+    void pending.cancel().catch(() => {});
     setPending(false);
     return true;
   }
@@ -204,24 +214,24 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
     }
   }
 
-  return <section className="cm-pane" data-side={side} data-active={active} data-search-panel
+  return <section className="cm-pane cm-search" data-side={side} data-active={active} data-search-panel
     aria-label={t.title} onFocus={onFocus}>
-    <header style={{ display: "grid", gap: 8, padding: "4px 10px 8px", minWidth: 0 }}>
-      <div className="cm-heading" style={{ padding: 0, flexWrap: "wrap" }}>
+    <header className="cm-search-header">
+      <div className="cm-heading cm-search-actions">
         <Icon name="Search" /><strong>{savedId ? t.virtual : t.title}</strong>
         <span className="cm-fill" />
         <Button type="button" size="sm" variant="ghost" aria-label={t.close} onClick={close}><Icon name="X" /></Button>
       </div>
-      <code className="cm-address cm-scan-path" style={{ margin: 0, paddingInline: 8, display: "block", lineHeight: "32px" }} title={displayPath(root.path)}>{label} · {displayPath(root.path)}</code>
+      <code className="cm-address cm-scan-path cm-search-path" title={displayPath(root.path)}>{label} · {displayPath(root.path)}</code>
       {!savedId && <form onSubmit={submit} onChange={() => setEstimate(null)}>
-        <fieldset disabled={busy} style={{ display: "flex", gap: 6, flexWrap: "wrap", border: 0, padding: 0, margin: 0 }}>
-          <Input style={{ flex: "1 1 130px", minWidth: 0 }} name="name" autoFocus maxLength={256} aria-label={t.name} placeholder={t.name} />
-          <Input style={{ flex: "1 1 130px", minWidth: 0 }} name="content" maxLength={1024}
+        <fieldset disabled={busy} className="cm-search-fields">
+          <Input className="cm-search-input" name="name" autoFocus maxLength={256} aria-label={t.name} placeholder={t.name} />
+          <Input className="cm-search-input" name="content" maxLength={1024}
             aria-label={t.content} placeholder={t.content} value={content} onChange={(event) => setContent(event.target.value)} />
           <Button type="button" size="sm" variant="ghost" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>{t.filters}</Button>
           <Button type="submit" size="sm">{remote && content ? t.estimate : t.start}</Button>
-          <div hidden={!advanced} style={{ width: "100%" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(125px, 1fr))", gap: 6 }}>
+          <div hidden={!advanced} className="cm-search-advanced">
+            <div className="cm-search-filters">
               <label><input type="checkbox" name="regex" /> {t.regex}</label>
               <label><input type="checkbox" name="case" /> {t.caseSensitive}</label>
               {([["min", t.min], ["max", t.max]] as const).map(([name, label]) =>
@@ -232,7 +242,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
               <label>{t.entries}<Input name="entries" type="number" min={1} max={100_000} placeholder="100000" /></label>
             </div>
           </div>
-          {!!content && <label style={{ flex: "1 1 100%" }}>{t.budget}
+          {!!content && <label className="cm-search-budget">{t.budget}
             <Input name="budget" inputMode="numeric" pattern="[1-9][0-9]{0,19}" required={remote}
               placeholder={remote ? undefined : "1073741824"} /></label>}
         </fieldset>
@@ -248,10 +258,10 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
       aria-multiselectable="true" tabIndex={0} aria-busy={busy} onKeyDown={keyboard}
       aria-activedescendant={current && cursor >= first && cursor < last ? uid + "-" + cursor : undefined}
       onScroll={(event) => setTop(event.currentTarget.scrollTop)}>
-      <div className="cm-row cm-columns" role="row" style={columns}>
-        {[ru.name, t.directory, ru.size, ru.date].map((name) => <div key={name} role="columnheader" style={name === t.directory ? { justifyContent: "flex-start" } : undefined}>{name}</div>)}
+      <div className="cm-row cm-columns" role="row">
+        {[ru.name, t.directory, ru.size, ru.date].map((name) => <div key={name} role="columnheader">{name}</div>)}
       </div>
-      <div role="rowgroup" style={{ position: "relative", height: hits.length * rowHeight }}>
+      <div role="rowgroup" className="cm-search-rows" style={{ height: hits.length * rowHeight }}>
         {hits.slice(first, last).map((hit, delta) => {
           const index = first + delta;
           const name = nameOf(hit.entry.name);
@@ -259,15 +269,15 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
           const relative = hit.ref.path.segments.slice(root.path.segments.length, -1).map(nameOf).join("/") || ".";
           return <div id={uid + "-" + index} key={index} role="row" aria-rowindex={index + 2}
             aria-selected={selected.has(index)} data-cursor={cursor === index} className="cm-row cm-entry"
-            style={{ ...columns, top: index * rowHeight }}
+            style={{ top: index * rowHeight }}
             onClick={(event) => {
               viewport.current?.focus({ preventScroll: true });
               setCursor(index);
               if (event.metaKey || event.ctrlKey || event.shiftKey) mark(index);
             }} onDoubleClick={() => onOpen(hit)}>
             <div role="gridcell" className="cm-name"><Icon name={entryIcon[hit.entry.kind]} /><span title={name}>{name}</span></div>
-            <div role="gridcell" title={path} style={{ justifyContent: "flex-start", color: "var(--muted-foreground)" }}>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{relative}</span>
+            <div role="gridcell" title={path}>
+              <span className="cm-search-directory">{relative}</span>
             </div>
             <div role="gridcell">{hit.entry.kind === "file" ? bytes(hit.entry.size) : "—"}</div>
             <div role="gridcell" title={date(hit.entry.mtimeNs, true)}>{shortDate(hit.entry.mtimeNs)}</div>
@@ -276,10 +286,10 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
       </div>
       {result && !hits.length && <p className="cm-empty">{ru.noResults}</p>}
     </div>
-    <footer style={{ padding: "4px 10px", borderTop: "1px solid var(--border)" }}>
+    <footer className="cm-search-footer">
       {busy && <progress aria-label={t.progress} value={job?.progress.bytesPlanned && job.progress.bytesPlanned !== "0"
         ? Number(job.progress.bytes) / Number(job.progress.bytesPlanned) : undefined} />}
-      <div className="cm-heading" style={{ padding: 0, flexWrap: "wrap" }}>
+      <div className="cm-heading cm-search-actions">
         <span className="cm-meta" aria-live="polite">
           {busy ? (pending ? t.preparing : t.progress) : job?.state === "cancelled" ? t.cancelled : job?.state === "interrupted" ? t.interrupted : ""}
           {result && <>{hits.length} {t.found} · </>}
@@ -292,7 +302,7 @@ export function SearchPanel({ side, active, root, label, savedId, grid, api, onF
         {current && onCopy && <Button size="sm" variant="outline" onClick={copy}>{t.copy}{selected.size > 0 && " (" + selected.size + ")"}</Button>}
         {!savedId && id && result && <Button size="sm" variant="outline" onClick={() => onSave(id)}>{t.save}</Button>}
       </div>
-      {current?.line && <div className="cm-meta" style={{ overflowWrap: "anywhere" }}><code>{current.line.number}: {current.line.text}</code></div>}
+      {current?.line && <div className="cm-meta cm-search-line"><code>{current.line.number}: {current.line.text}</code></div>}
     </footer>
   </section>;
 }
