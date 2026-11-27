@@ -8,7 +8,7 @@ Each working copy is matched to its forge from the `origin` remote. SSH host ali
 
 ## Projects folder
 
-The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the projects found and lists what was skipped and why.
+The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a repository inside another project's folder is listed under that project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the top-level and nested projects found, returns them as a tree and lists what was skipped and why.
 
 ## Remote repositories and pull requests
 

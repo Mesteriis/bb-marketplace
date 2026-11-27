@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { defaultExclude, defaultProjectsRoot, parseExclude, summarize } from "../../core/catalog/project-scan.ts";
+import { projectTree } from "../../core/catalog/project-tree.ts";
 import { failureFor } from "../../core/workspace.ts";
 import { hostContract } from "./host-contract.ts";
 
@@ -16,7 +17,7 @@ export function projectCatalog(bb: BbPluginApi) {
         const {projectsRoot, projectExclude} = await settings.get();
         const result = await host.call("scanProjects", {root: projectsRoot, exclude: parseExclude(projectExclude)}, {hostId});
         if (!result.ok) return result;
-        return {ok: true as const, value: summarize(projectsRoot, result.verdicts, result.truncated)};
+        return {ok: true as const, value: summarize(projectsRoot, result.verdicts, result.truncated), tree: projectTree(result.verdicts)};
       } catch (error) { return failureFor(error, "HOST_UNAVAILABLE"); }
     },
   };

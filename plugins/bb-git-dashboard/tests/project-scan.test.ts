@@ -36,7 +36,7 @@ test("a .git file pointing nowhere known is skipped as broken", () => {
   assert.deepEqual(classifyMarker({path: "/p/odd", git: "file", gitdir: "/elsewhere/repo.git"}), {path: "/p/odd", kind: "skipped", reason: "broken-gitdir"});
 });
 
-test("the preview counts projects, attached copies and skipped repositories by reason", () => {
+test("the preview counts top-level projects, nested ones, attached copies and skipped repositories by reason", () => {
   const verdicts: Verdict[] = [
     {path: "/p/a", kind: "project"}, {path: "/p/hass", kind: "project"}, {path: "/p/hass/distrib/d", kind: "project"},
     {path: "/p/a/.worktrees/x", kind: "worktree", parent: "/p/a"}, {path: "/p/infra/m", kind: "submodule", parent: "/p/infra"},
@@ -44,7 +44,7 @@ test("the preview counts projects, attached copies and skipped repositories by r
     {path: "/p/.cache/c", kind: "skipped", reason: "hidden"},
   ];
   assert.deepEqual(summarize("/p", verdicts, false, 1), {
-    root: "/p", truncated: false, projects: 3, worktrees: 1, submodules: 1,
+    root: "/p", truncated: false, projects: 2, nested: 1, worktrees: 1, submodules: 1,
     skipped: [{reason: "excluded", count: 2, examples: ["/p/lim/references/r1"]}, {reason: "hidden", count: 1, examples: ["/p/.cache/c"]}],
   });
 });
