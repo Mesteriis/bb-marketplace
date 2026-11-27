@@ -122,7 +122,6 @@ export class ArchiveHelperClient {
       const pending: Pending = {
         req: this.nextReq++, body, options, resolve, reject, data: [], timer: null, abortListener: null,
       };
-      options.signal?.throwIfAborted?.call(options.signal);
       this.queue.push(pending);
       this.pump();
     });

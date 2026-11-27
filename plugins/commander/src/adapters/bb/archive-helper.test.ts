@@ -237,3 +237,27 @@ describe("stderr", () => {
     expect(s.client.stderrTail().length).toBe(65536);
   });
 });
+
+describe("memory watchdog", () => {
+  it("terminates the helper with SIGTERM then fails requests when RSS passes the limit", async () => {
+    const readRss = vi.fn(async () => 600 * 1024 * 1024);
+    const s = setup({ rssLimitBytes: 512 * 1024 * 1024, readRss, rssPollMs: 5 });
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    const pending = s.client.request({ t: "verify" });
+    await s.proc.nextControl();
+    expect(await reason(pending)).toBe("internal+helper_crashed");
+    expect(s.proc.signals[0]).toBe("SIGTERM");
+  });
+  it("leaves a helper under the limit alone", async () => {
+    const readRss = vi.fn(async () => 100 * 1024 * 1024);
+    const s = setup({ rssLimitBytes: 512 * 1024 * 1024, readRss, rssPollMs: 5 });
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(readRss).toHaveBeenCalled();
+    expect(s.proc.signals).toEqual([]);
+  });
+});
