@@ -60,4 +60,11 @@ export const MIGRATIONS: string[] = [
       WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent';
     CREATE INDEX IF NOT EXISTS jobs_agent_thread_scan ON jobs (thread_id) WHERE initiator_kind = 'agent';
   `,
+  `
+    CREATE TABLE IF NOT EXISTS scan_jobs (
+      id TEXT PRIMARY KEY NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'cancelled', 'interrupted')),
+      job_json TEXT NOT NULL
+    );
+  `,
 ];

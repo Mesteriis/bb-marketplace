@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { isCommanderError } from "../../core/errors.ts";
 import type { Entry, Initiator } from "../../core/model.ts";
-import { rpcSchemas, threadId } from "../../core/wire/rpc.ts";
+import { ChecksumScan, CompareScan, rpcSchemas, threadId } from "../../core/wire/rpc.ts";
 import { publicError, type Operations } from "./rpc-handlers.ts";
 
 function metadata(entry: Entry | null) {
@@ -65,4 +65,9 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
     (input, agent) => ops.agentJobs(input, agent.threadId));
   register("cancel", "Cancel one of this thread's file operations.", rpcSchemas.job_cancel.input,
     ({ jobId }, agent) => ops.cancel(jobId, agent));
+
+  register("checksum", "Compute SHA-256 with read access. For a remote file, estimateOnly returns the byte count to show the owner; approvedBytes confirms that count.",
+    ChecksumScan.omit({ kind: true }), (input, agent, signal) => ops.scanTool({ kind: "checksum", ...input }, agent, signal));
+  register("compare", "Compare files or immediate directory entries with read access on both endpoints. Show the estimate to the owner before approving remote reads with approvedBytes.",
+    CompareScan, (input, agent, signal) => ops.scanTool(input, agent, signal));
 }

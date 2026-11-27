@@ -10,6 +10,8 @@ import { createOperations, createRpcHandlers, refusal } from "./src/adapters/bb/
 import type { JobStore } from "./src/core/job-store.ts";
 import { JobRunner } from "./src/core/job-runner.ts";
 import { revalidate, type PlannerDeps } from "./src/core/planner.ts";
+import { createSqliteScanStore } from "./src/adapters/bb/scan-store-sqlite.ts";
+import { ScanRunner } from "./src/core/scan-job.ts";
 import { rpcSchemas } from "./src/core/wire/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
@@ -17,6 +19,8 @@ export default function activate(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = createSqliteJobStore(db);
+  const scanStore = createSqliteScanStore(db);
+  const scans = new ScanRunner(randomUUID, scanStore);
   const endpoints = createEndpoints(bb);
   const kv = bb.storage.kv;
   const grants = createAgentGrants(kv);
@@ -61,6 +65,7 @@ export default function activate(bb: BbPluginApi) {
   let recovery: "starting" | "ready" | "failed" = "starting";
   const ops = createOperations({
     endpoints, runner, store, planner, grants, kv, publish,
+    scans,
     isManaged: (id) => live.has(id),
     async ready() {
       if (recovery === "failed") throw refusal("conflict", "Commander recovery failed");
@@ -72,6 +77,7 @@ export default function activate(bb: BbPluginApi) {
     async start(signal) {
       if (signal.aborted) return;
       try {
+        scanStore.interruptRunning();
         await ops.prepareRecovery(signal);
         await runner.recover();
         if (signal.aborted || disposed) return;
@@ -89,6 +95,7 @@ export default function activate(bb: BbPluginApi) {
   });
   bb.onDispose(async () => {
     disposed = true;
+    await scans.shutdown();
     await runner.shutdown();
     await endpoints.close();
   });

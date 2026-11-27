@@ -3,6 +3,7 @@ import {
   ConflictDecision, ConflictPolicy, Endpoint, EndpointId, Entry, Initiator, JobProgress, JobState,
   OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify,
 } from "../model.ts";
+import { CommanderErrorShape } from "../errors.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
@@ -66,6 +67,44 @@ export type UiState = z.infer<typeof UiState>;
 
 const uiScope = z.strictObject({ threadId: threadId.optional() });
 
+const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
+const scanId = z.strictObject({ scanId: z.uuid() });
+const scanControl = {
+  estimateOnly: z.boolean().optional(),
+  approvedBytes: scanBytes.optional(),
+};
+export const ChecksumScan = z.strictObject({ kind: z.literal("checksum"), ref: ResourceRef, ...scanControl });
+export const CompareScan = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("files"), left: ResourceRef, right: ResourceRef,
+    mode: z.enum(["size", "sha256", "bytes"]), ...scanControl,
+  }),
+  z.strictObject({
+    kind: z.literal("dirs"), left: ResourceRef, right: ResourceRef,
+    by: z.enum(["size+mtime", "sha256"]), mtimeToleranceMs: z.int().min(0).max(86_400_000).default(2000),
+    limit: z.int().min(1).max(LIST_PAGE_MAX).default(100), ...scanControl,
+  }),
+]);
+export const ScanJobView = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(["checksum", "compare", "search"]),
+  initiator: Initiator,
+  endpoints: z.array(EndpointId),
+  state: z.enum(["running", "done", "failed", "cancelled", "interrupted"]),
+  progress: z.strictObject({ items: z.int().nonnegative(), bytes: scanBytes, bytesPlanned: scanBytes.nullable() }),
+  partial: z.boolean(),
+  error: CommanderErrorShape.nullable(),
+});
+const scanResult = z.union([
+  z.strictObject({ sha256: digest }),
+  z.strictObject({ comparison: z.enum(["same", "different"]) }),
+  z.strictObject({
+    onlyLeft: z.array(Entry).max(LIST_PAGE_MAX), onlyRight: z.array(Entry).max(LIST_PAGE_MAX),
+    differ: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX), same: z.int().nonnegative(), partial: z.boolean(),
+  }),
+]);
+export type ScanResult = z.infer<typeof scanResult>;
+
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
   endpoint_home: { input: z.strictObject({ endpoint: EndpointId }), output: z.strictObject({ path: ResourcePath }) },
@@ -115,6 +154,13 @@ export const rpcSchemas = {
   },
   ui_state_get: { input: uiScope, output: z.strictObject({ state: UiState.nullable() }) },
   ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
+  // Estimate with metadata only, then pass the displayed byte count when starting remote reads.
+  scan_start: {
+    input: z.union([ChecksumScan, CompareScan]),
+    output: z.union([z.strictObject({ bytesPlanned: scanBytes }), ScanJobView]),
+  },
+  scan_get: { input: scanId, output: z.strictObject({ job: ScanJobView, result: scanResult.nullable() }).nullable() },
+  scan_cancel: { input: scanId, output: empty },
 };
 
 export type RpcInput<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["input"]>;
