@@ -21,6 +21,12 @@ export type ReviewApi = {
   ask(ref: PrRef, subject: z.infer<typeof agentSubject>): Promise<{threadId: string; created: boolean}>;
   openThread(threadId: string): void;
   drafts(ref: PrRef): Promise<AgentDraft[]>;
+  /** Threads to link the pull request to, best first; linking sends it as context. */
+  linkCandidates(ref: PrRef): Promise<{id: string; title: string; project: string; updatedAt: number}[]>;
+  link(ref: PrRef, threadId: string): Promise<void>;
+  /** Opens BB's composer for a new thread with the pull request as context: to ask a question, or to explain it. */
+  compose(ref: PrRef, kind: "ask" | "explain"): Promise<void>;
+  copy(text: string): void;
   editDraft(commentId: string, body: string): Promise<void>;
   dropDraft(commentId: string): Promise<void>;
   issue(ref: PrRef): Promise<IssueView>;

@@ -38,3 +38,9 @@
 .git-ws .git-review-check > input { padding: 0; margin: 0; }
 .git-ws .git-review-submit { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: var(--card); }
 .git-ws .git-review-draft { border-left: 3px solid #d4a017; padding-left: 8px; }
+.git-ws .git-pr-menu { position: relative; display: inline-block; }
+.git-ws .git-pr-menu-list { position: absolute; right: 0; top: 100%; z-index: 5; display: grid; min-width: 14em; background: var(--background); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+.git-ws .git-pr-menu-list button { text-align: left; border: 0; background: none; padding: 4px 8px; }
+.git-ws .git-pr-menu-list button:hover, .git-ws .git-pr-menu-list button:focus { background: color-mix(in srgb, var(--git-focus) 14%, transparent); }
+.git-ws .git-branch-copy { padding: 0; }
+.git-ws .git-pr-menu > [role="dialog"] { position: absolute; right: 0; top: 100%; z-index: 6; width: min(32em, 90vw); max-height: 60vh; overflow: auto; background: var(--background); }

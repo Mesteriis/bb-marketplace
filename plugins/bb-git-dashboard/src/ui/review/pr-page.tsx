@@ -7,6 +7,7 @@ import { useAutoRetry } from "./auto-retry.ts";
 import { RateLimited } from "./rate-limited.tsx";
 import { message, type AgentDraft, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
+import { PrMenu } from "./pr-menu.tsx";
 import "./review.css";
 
 const tabs = ["Overview", "Checks", "Files", "Commits", "Comments"] as const;
@@ -95,8 +96,10 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
             <button type="button" onClick={() => setTitle(null)}>Cancel</button></form>}
         {title === null && can.editTitle && detail.canEdit && <button type="button" className="git-link" aria-label="Edit title" onClick={() => setTitle(detail.title)}>✎</button>}
         {detail.url && <a href={detail.url} target="_blank" rel="noreferrer">Open on the forge</a>}
+        <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice}/>
       </div>
-      <p className="git-muted">{detail.repo} · {detail.author} · <code>{detail.headRefName}</code> into <code>{detail.baseRefName}</code>
+      <p className="git-muted">{detail.repo} · {detail.author} · <button type="button" className="git-link git-branch-copy" title="Copy the branch name"
+        onClick={() => { api.copy(detail.headRefName); setNotice("Branch name copied."); }}><code>{detail.headRefName}</code></button> into <code>{detail.baseRefName}</code>
         {detail.additions + detail.deletions > 0 && <> · <span className="git-inbox-plus">+{detail.additions}</span> <span className="git-inbox-minus">−{detail.deletions}</span></>}
         {detail.stackedOn && <> · stacked on #{detail.stackedOn.number}</>}</p>
       <div className="git-row git-review-badges">

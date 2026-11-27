@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { definePluginApp, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_copyToClipboard, experimental_useAppPanel, useBbNavigate, useRealtime, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import type { JsonValue, PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import type { rpc } from "./src/adapters/bb/rpc.ts";
 import type { GitAction } from "./src/core/git.ts";
@@ -242,6 +242,13 @@ function Dashboard({subPath}: {subPath: string}) {
     confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
     ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
     drafts: async ref => okValue(await client.call("prDrafts",ref)).drafts,
+    linkCandidates: async ref => okValue(await client.call("prLinkCandidates",ref)).threads,
+    link: async (ref,threadId) => { okValue(await client.call("prLink",{...ref,threadId})); },
+    compose: async (ref,kind) => {
+      const {prompt,projectId} = okValue(await client.call("prCompose",{...ref,kind}));
+      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
+    },
+    copy: text => { void experimental_copyToClipboard({text}); },
     editDraft: async (commentId,body) => { okValue(await client.call("prDraftEdit",{commentId,body})); },
     dropDraft: async commentId => { okValue(await client.call("prDraftDrop",{commentId})); },
     openThread: threadId => navigate.toThread(threadId),

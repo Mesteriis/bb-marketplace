@@ -40,6 +40,9 @@ export const reviewContract = {
   prPrepare: {input: z.object({...target, action: prAction, shown: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).nullable().optional()}), output: preview},
   prConfirm: {input: z.object({previewId: id}), output: answer({outcome: z.enum(["completed", "accepted"])})},
   prAsk: {input: z.object({...target, subject: agentSubject}), output: answer({threadId: id, created: z.boolean()})},
+  prLinkCandidates: {input: z.object(target), output: answer({threads: z.array(z.object({id, title: z.string(), project: z.string(), updatedAt: z.number()}))})},
+  prLink: {input: z.object({...target, threadId: id}), output: answer({threadId: id})},
+  prCompose: {input: z.object({...target, kind: z.enum(["ask", "explain"])}), output: answer({prompt: z.string(), projectId: id.nullable()})},
   /** Agents' unposted answers on the pull request's review threads (their forge ids), kept for the owner to post. */
   prDrafts: {input: z.object(target), output: answer({drafts: z.array(z.object({commentId: z.string(), threadId: z.string(), externalId: z.string(),
     draft: z.enum(["reply", "resolve"]), body: z.string(), authorName: z.string(), createdAt: z.number()}))})},
