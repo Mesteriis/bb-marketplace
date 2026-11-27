@@ -33,6 +33,11 @@ export function createSqliteJobStore(db: Database): JobStore;
   `expectTarget`, `verified`) — только в `*_json`.
 - Всё чтение проходит zod-схемы S1 (`OperationJob.parse`); битая строка →
   job помечается `unknown` с ошибкой `internal`, а не падение всего списка.
+  Если у битой строки не читается и `id`, ей выдаётся псевдоним из
+  зарезервированного диапазона `00000000-xxxx-8000-8000-xxxxxxxxxxxx`, где
+  `xxxx` и последние 12 hex — полные 64 бита `rowid` строки. Обычные задачи
+  такой id получить не могут (генератор и `create` отвергают префикс
+  `00000000-` с `8000-8000`).
 - `awaitsOwner` — отдельная колонка `awaits_owner`; `update`, переводящий
   job из `pending`, в том же `UPDATE` ставит `awaits_owner = 0`; запись
   `awaits_owner = 1` при `state != 'pending'` отвергается (CHECK или проверка
