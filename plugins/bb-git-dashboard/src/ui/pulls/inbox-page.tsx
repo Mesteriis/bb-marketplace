@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { inboxTabs, type InboxTab } from "../../core/pulls/inbox.ts";
 import { matchesSearch } from "../../core/pulls/model.ts";
 import { ago, forgeNames, grouped, openStats, severity, showing, tabLabels, type AlertSummary, type InboxApi, type InboxItem, type InboxList } from "./inbox-api.ts";
@@ -12,16 +12,31 @@ const remember = (key: string, value: Set<string>) => { try { localStorage.setIt
 const reviewText: Record<string, string> = {APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", COMMENTED: "Commented",
   DISMISSED: "Dismissed", APPROVED_WITH_SUGGESTIONS: "Approved with suggestions", WAITING_FOR_AUTHOR: "Waiting for author", REJECTED: "Rejected"};
 
+// Survives the page's remount (opening a pull request and coming back): the tab, the search, the last lists, the row
+// opened and where the list was scrolled, so the page comes back as it was left while a refresh runs.
+const kept: {tab: InboxTab; query: string; lists: Partial<Record<InboxTab, {list: InboxList; at: number}>>; opened: string | null; scroll: number} =
+  {tab: "open", query: "", lists: {}, opened: null, scroll: 0};
+/** The nearest ancestor that scrolls, where the page's position lives. */
+const scrollerOf = (element: HTMLElement | null): HTMLElement | null => {
+  for (let node = element?.parentElement ?? null; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && node.scrollHeight > node.clientHeight) return node;
+  }
+  return null;
+};
+
 /** My PRs: every connected account's pull requests by tab, what blocks each one, and new alerts. */
 export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts: AlertSummary | null; onSeen(): void;
   /** Opens a pull request inside Makosh Git, with the rows in page order for [ and ]. */
   onOpen?(item: InboxItem, order: InboxItem[]): void}) {
-  const [tab, setTab] = useState<InboxTab>("open");
-  const [list, setList] = useState<InboxList | null>(null);
+  const [tab, setTabState] = useState<InboxTab>(kept.tab);
+  const setTab = (next: InboxTab) => { kept.tab = next; kept.scroll = 0; setTabState(next); };
+  const [list, setList] = useState<InboxList | null>(() => kept.lists[kept.tab]?.list ?? null);
   const [counts, setCounts] = useState<InboxList["counts"]>({});
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [query, setQuery] = useState("");
+  const [query, setQueryState] = useState(kept.query);
+  const setQuery = (next: string) => { kept.query = next; setQueryState(next); };
   const [folded, setFolded] = useState(() => remembered("makosh-git-inbox-folded"));
   const [hidden, setHidden] = useState(() => remembered("makosh-git-inbox-hidden/open"));
   const [cursor, setCursor] = useState(0);
@@ -29,7 +44,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
   const rows = useRef<(HTMLAnchorElement | null)[]>([]);
 
   // When the list was last read, and a clock for "Updated N ago".
-  const [readAt, setReadAt] = useState<number | null>(null);
+  const [readAt, setReadAt] = useState<number | null>(() => kept.lists[kept.tab]?.at ?? null);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   // Merged and Closed keep only their newest rows; a search there reads the whole history once per tab.
@@ -50,12 +65,37 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
       const result = await api.list(next);
       if (request !== latest.current) return;
       setList(result);
-      setReadAt(Date.now());
+      const at = Date.now();
+      kept.lists[next] = {list: result, at};
+      setReadAt(at);
       setCounts(previous => ({...previous, ...result.counts}));
     } catch (failure) { if (request === latest.current) setError(message(failure)); }
     finally { if (request === latest.current) setPending(false); }
   }, [api]);
-  useEffect(() => { setList(null); setCursor(0); setHistory(null); setHidden(remembered("makosh-git-inbox-hidden/" + tab)); void load(tab); }, [tab, load]);
+  useEffect(() => {
+    // A tab read before shows at once; the refresh replaces it when it answers.
+    setList(kept.lists[tab]?.list ?? null); setReadAt(kept.lists[tab]?.at ?? null);
+    setCursor(0); setHistory(null); setHidden(remembered("makosh-git-inbox-hidden/" + tab)); void load(tab);
+  }, [tab, load]);
+  // Coming back: the scroll position, and the row last opened focused, so j / k and Enter carry on from it.
+  const page = useRef<HTMLElement>(null);
+  const restored = useRef(false);
+  useLayoutEffect(() => {
+    if (restored.current || !list) return;
+    restored.current = true;
+    const scroller = scrollerOf(page.current);
+    if (scroller) scroller.scrollTop = kept.scroll;
+    const row = kept.opened ? page.current?.querySelector<HTMLElement>("[data-pr-row=\"" + CSS.escape(kept.opened) + "\"]") : null;
+    row?.focus({preventScroll: true});
+    kept.opened = null;
+  }, [list]);
+  useEffect(() => {
+    const scroller = scrollerOf(page.current);
+    if (!scroller) return;
+    const save = () => { kept.scroll = scroller.scrollTop; };
+    scroller.addEventListener("scroll", save, {passive: true});
+    return () => scroller.removeEventListener("scroll", save);
+  }, [list !== null]);
 
   const whole = searchesHistory && history !== null && history !== "loading" && history.tab === tab ? history : null;
   const source = useMemo(() => list ? (whole ? {...list, groups: whole.groups} : list) : null, [list, whole]);
@@ -82,7 +122,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
   }
   let index = -1;
 
-  return <section className="git-inbox" onKeyDown={keys} aria-label="My pull requests">
+  return <section ref={page} className="git-inbox" onKeyDown={keys} aria-label="My pull requests">
     <div className="git-row git-inbox-toolbar">
       <h2>My PRs</h2>
       <input ref={search} type="search" aria-label="Search pull requests" placeholder="Title, #number, repository, author or blocker  ( / )"
@@ -135,7 +175,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
         {!folded.has(repo.key) && <ul className="git-inbox-list">{repo.items.map(item => {
           index += 1;
           const position = index;
-          return <Row key={item.id} item={item} tab={tab} current={position === cursor} onOpen={onOpen && (() => onOpen(item, flat))}
+          return <Row key={item.id} item={item} tab={tab} current={position === cursor} onOpen={onOpen && (() => { kept.opened = item.id; onOpen(item, flat); })}
             bind={element => { rows.current[position] = element; }} onFocus={() => setCursor(position)}/>;
         })}</ul>}
       </div>)}
@@ -147,7 +187,7 @@ function Row({item, tab, current, bind, onFocus, onOpen}: {item: InboxItem; tab:
   onFocus(): void; onOpen?(): void}) {
   const stale = tab === "reviewed" && item.myReview?.stale;
   return <li className="git-inbox-item" data-severity={severity(item)} data-current={current || undefined}>
-    <a ref={bind} href={item.url} target="_blank" rel="noreferrer" onFocus={onFocus} onClick={event => {
+    <a ref={bind} href={item.url} target="_blank" rel="noreferrer" data-pr-row={item.id} onFocus={onFocus} onClick={event => {
       // A plain click or Enter opens the pull request here; a modified click still opens the forge.
       if (!onOpen || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault(); onOpen();

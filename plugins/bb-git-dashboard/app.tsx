@@ -25,6 +25,7 @@ import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, re
 import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
 import { NotificationSettings } from "./src/app/notification-settings.tsx";
+import { PrLinkOverlay } from "./src/app/pr-links.tsx";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
@@ -459,6 +460,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:withCodeTheme(ThreadReview)});
   // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
   app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
+  app.slots.experimental_appOverlay({id:"pr-links", component:PrLinkOverlay});
   app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
     run:context => { context.experimental_panel.openTab({tab:reviewTab, title:"Review"}); }});
   for (const [id, title] of Object.entries(REVIEW_COMMANDS) as [ReviewCommand, string][]) {
