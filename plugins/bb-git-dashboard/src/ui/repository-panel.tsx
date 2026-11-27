@@ -5,6 +5,7 @@ import type { RemoteApi } from "./remotes.tsx";
 import { ForgeStatusLine, type ForgeStatus } from "./forge-status.tsx";
 import { CiPanel } from "./ci/ci-panel.tsx";
 import type { CiApi } from "./ci/ci-api.ts";
+import type { HistoryApi } from "./history/history-api.ts";
 
 type Link = {accountId:string;repoId:string};
 export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> & {
@@ -14,6 +15,7 @@ export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> &
   setLink(copyId:string,target:Link|null):Promise<void>;
   features(copyId:string,section:RepositorySection):Promise<{repo:Repo;features:FeatureList}>;
   ci:CiApi;
+  history:HistoryApi;
 };
 
 const labels = {

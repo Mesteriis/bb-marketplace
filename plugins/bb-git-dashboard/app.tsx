@@ -215,6 +215,12 @@ function Dashboard({subPath}: {subPath: string}) {
       subscribe: async (copyId,threadIds) => okValue(await client.call("ciSubscribe",{copyId,threadIds})),
       openThread: threadId => navigate.toThread(threadId),
     },
+    history: {
+      page: async (copyId,offset) => okValue(await client.call("historyPage",{copyId,offset})).value,
+      revision: async copyId => okValue(await client.call("historyRevision",{copyId})).revision,
+      commit: async (copyId,hash) => okValue(await client.call("historyCommit",{copyId,hash})).value,
+      patch: async (copyId,hash,path) => okValue(await client.call("historyPatch",{copyId,hash,path})).text,
+    },
     forgeStatus: async (copyId,recheck) => {
       const result = await client.call("forgeStatus",{copyId,recheck});
       return result.ok ? result.value : failed(result);

@@ -9,7 +9,7 @@ Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `run.sh` outside them.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/history.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -17,7 +17,8 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
 - `run.sh` starts `fake-forge.mjs` — an HTTPS stand-in for a Gitea server with its own throwaway certificate,
   trusted by the instance through `NODE_EXTRA_CA_CERTS` — then the instance; installs the plugin; configures a
   Gitea account for the stand-in; creates the project `stand-alpha` (origin `git@github.com:stand-owner/alpha.git`)
-  and `stand-beta` (origin on the stand-in); runs each probe, stops the instance and checks that the
+  with a small graph — a merged feature branch, an annotated tag, a side branch and an uncommitted edit — and
+  `stand-beta` (origin on the stand-in); runs each probe, stops the instance and checks that the
   server no longer answers. It exits 0 only with `STAND PASS`; each probe passes only if its last line is
   `PASS`. Logs and screenshots are in `$S/out`.
 - `smoke.mjs` — the Git panel attaches the copy and the repository panel shows the forge detected from the SSH
@@ -26,5 +27,9 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   log opens at its error line, scrolling only the log; re-run failed jobs and a manual run with inputs go through
   the confirmation dialog and reach the stand-in exactly once (`$S/forge/writes.log`); Ask agent opens a thread;
   layout at 768 px.
+
+- `history.mjs` — the History tab of `stand-alpha`: commit count over all branches, the merge with its branch and
+  tag labels, more than one lane, the uncommitted change on top with its patch, a commit's files and patch,
+  spacing and layout at 768 px.
 
 No request leaves the machine.

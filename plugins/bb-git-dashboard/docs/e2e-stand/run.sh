@@ -19,6 +19,12 @@ R="$STAND/home/projects/alpha"; rm -rf "$R"; mkdir -p "$R"
 git -C "$R" init -q -b main
 echo a > "$R/changed.txt"; git -C "$R" add .; git -C "$R" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
 git -C "$R" remote add origin git@github.com:stand-owner/alpha.git
+# A small graph for the History tab: a feature branch merged back, a tag on the merge, a side branch.
+c() { git -C "$R" -c user.email=stand@example.invalid -c user.name=stand "$@"; }
+c switch -q -c feature; echo 2 > "$R/feature.txt"; c add .; c commit -qm "feature work"
+c switch -q main; echo main >> "$R/changed.txt"; c commit -qam "main work"
+c merge -q --no-ff feature -m "merge feature"; c tag -a v1.0 -m "release 1.0"
+c switch -q -c side HEAD~1; echo s > "$R/side.txt"; c add .; c commit -qm "side tip"; c switch -q main
 echo b >> "$R/changed.txt"
 
 # A stand-in Gitea over HTTPS with its own certificate, and a repository whose origin is on it.

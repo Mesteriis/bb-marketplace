@@ -7,11 +7,12 @@ import type { Copy } from "../core/workspace.ts";
 import { ConnectionWizard, type ConnectionApi } from "./connection-wizard.tsx";
 import { RepositoryPanel, type RepositoryApi } from "./repository-panel.tsx";
 import "./project-workspace.css";
+import { HistoryPanel } from "./history/history-panel.tsx";
 
 type Host = {id:string;name:string};
 type Project = {id:string;name:string};
 type Location = {hostId:string;projectId:string;path:string;name:string|null};
-const sections = ["Code","Actions","Issues","Variables"] as const;
+const sections = ["Code","History","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
 export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree}: {
@@ -108,7 +109,8 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
           openCopy(registered,"Code");
         })}
       </>}
-      {loaded && copy && section !== "Code" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
+      {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id}/>}
+      {loaded && copy && section !== "Code" && section !== "History" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
         accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection}/>}
       {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {
         setAccounts(previous => [...previous.filter(item => item.id !== account.id),account]);
