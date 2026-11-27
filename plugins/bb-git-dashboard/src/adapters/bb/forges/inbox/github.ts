@@ -1,7 +1,7 @@
 import { toList, toWatched, type RawSearch, type RawWatchPr } from "../../../../core/pulls/github.ts";
 import type { InboxTab, PullInbox } from "../../../../core/pulls/inbox.ts";
-import { inboxTabs } from "../../../../core/pulls/inbox.ts";
-import { listQuery, WATCH_QUERY } from "../../../../core/pulls/queries.ts";
+import { HISTORY_LIMIT, inboxTabs } from "../../../../core/pulls/inbox.ts";
+import { HISTORY_QUERY, historyQuery, listQuery, WATCH_QUERY } from "../../../../core/pulls/queries.ts";
 import type { Account } from "../../../../core/providers.ts";
 import { client } from "../../provider-http.ts";
 import { githubGraphql } from "../github-graphql.ts";
@@ -19,6 +19,20 @@ export function githubInbox(account: Account, token: string, send: typeof fetch 
       const counts: Partial<Record<InboxTab, number>> = {};
       for (const name of inboxTabs) { const count = data[name]?.issueCount; if (typeof count === "number") counts[name] = count; }
       return {items: toList(own).items.filter(item => ownLink(account, item.url) !== null), counts, notice: null};
+    },
+    async history(state) {
+      const items: Awaited<ReturnType<PullInbox["list"]>>["items"] = [];
+      let after: string | null = null;
+      let total = 0;
+      while (items.length < HISTORY_LIMIT) {
+        const {search}: {search: RawSearch & {pageInfo: {hasNextPage: boolean; endCursor: string | null}}} =
+          await graphql(HISTORY_QUERY, {q: historyQuery(state), after});
+        total = search.issueCount;
+        items.push(...toList(search).items.filter(item => ownLink(account, item.url) !== null));
+        if (!search.pageInfo.hasNextPage || !search.pageInfo.endCursor) break;
+        after = search.pageInfo.endCursor;
+      }
+      return {items: items.slice(0, HISTORY_LIMIT), total};
     },
     async watch(ignore) {
       const data = await graphql<{viewer: {login: string}; open: {nodes: (RawWatchPr | Record<string, never>)[]}}>(WATCH_QUERY);

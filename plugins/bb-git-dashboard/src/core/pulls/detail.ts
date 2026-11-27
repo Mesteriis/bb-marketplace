@@ -4,9 +4,9 @@ import type { CheckDetail, CheckStatus } from "./github.ts";
 import type { Forge, StackRef } from "./model.ts";
 
 export interface Comment {
-  /** GraphQL node id, used to delete; empty for a review summary or the description. */
+  /** The forge's id of the comment, used to delete; empty for a review summary or the description. */
   id: string;
-  /** GitHub lets the viewer delete it: in practice, your own comments. */
+  /** The viewer may delete it: GitHub says so, the other forges by authorship (`ownComments`). */
   canDelete: boolean;
   author: string;
   avatarUrl: string | null;
@@ -124,6 +124,12 @@ export interface PrDetail {
   myReviewOid: string | null;
 }
 
+
+/** Marks the viewer's own comments deletable, for a forge that does not say which ones the viewer may delete. */
+export function ownComments(detail: PrDetail): PrDetail {
+  const own = <T extends Comment>(comment: T): T => ({...comment, canDelete: !!detail.viewer && !!comment.id && comment.author === detail.viewer});
+  return {...detail, timeline: detail.timeline.map(own), threads: detail.threads.map(thread => ({...thread, comments: thread.comments.map(own)}))};
+}
 
 export type ThreadStatus = "resolved" | "waiting-on-you" | "you-replied" | "waiting-on-author" | "author-replied";
 

@@ -9,6 +9,7 @@ import type { CodeReviewApi, NewThread, Placement } from "./review-api.ts";
 import { Composer, ThreadCard } from "./thread-card.tsx";
 import { useKept } from "./kept-state.tsx";
 import { RevertForm } from "./revert-form.tsx";
+import { CodeText, useHighlight, useNear } from "../highlight/use-highlight.tsx";
 
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
@@ -74,6 +75,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
     lastViewed.current = file.viewed;
     setClosed(file.viewed || large);
   }, [file.viewed, large]);
+  // Painted only while unfolded and read: a folded or deferred file costs nothing.
+  const section = useRef<HTMLElement>(null);
+  const near = useNear(section);
+  const tokensOf = useHighlight(file.path, rows, near && !closed && !file.deferred);
   const [marking, setMarking] = useState(false);
   const [reverting, setReverting] = useState(false);
   useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
@@ -101,7 +106,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const inSide = (side: Side, line: number) => selection !== null && range !== null && side === selection.side && line >= range.start && line <= range.end;
   const inSelection = (row: DisplayRow) => row.kind !== "hunk" && inSide(sideOf(row), lineOf(row));
   const additions = file.binary ? "binary" : "+" + file.additions + " −" + file.deletions;
-  return <section className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
+  return <section ref={section} className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
     <header className="git-row git-review-file-head">
       <button type="button" className="git-link" aria-expanded={!closed} onClick={toggleFold}>{closed ? "▸" : "▾"}</button>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
@@ -134,7 +139,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
                 <button type="button" className="git-review-number" aria-label={item.row.kind === "deletion" ? "Comment on old line " + item.row.oldLine : "Comment on line " + item.row.newLine}
                   onClick={event => pick(item.row, event.shiftKey)}>{item.row.oldLine ?? ""}</button>
                 <button type="button" className="git-review-number" tabIndex={-1} aria-hidden="true" onClick={event => pick(item.row, event.shiftKey)}>{item.row.newLine ?? ""}</button>
-                <code className="git-review-code">{item.row.kind === "addition" ? "+" : item.row.kind === "deletion" ? "−" : " "}{item.row.text}</code>
+                <code className="git-review-code">{item.row.kind === "addition" ? "+" : item.row.kind === "deletion" ? "−" : " "}<CodeText text={item.row.text} tokens={tokensOf(indexOf.get(item.row) ?? -1)}/></code>
               </div>
               : <div className="git-review-split">{(["old", "new"] as const).map(side => {
                 const row = item[side];
@@ -144,7 +149,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
                   {...(side === "new" || row?.kind !== "context" ? mark(row) : {})}>
                   {row && line !== null ? <>
                     <button type="button" className="git-review-number" aria-label={(side === "old" ? "Comment on old line " : "Comment on line ") + line} onClick={event => pickAt(side, line, event.shiftKey)}>{line}</button>
-                    <code className="git-review-code">{kind === "add" ? "+" : kind === "del" ? "−" : " "}{row.text}</code>
+                    <code className="git-review-code">{kind === "add" ? "+" : kind === "del" ? "−" : " "}<CodeText text={row.text} tokens={tokensOf(indexOf.get(row) ?? -1, side)}/></code>
                   </> : null}
                 </div>;
               })}</div>}

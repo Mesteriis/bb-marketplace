@@ -8,7 +8,8 @@ import { githubInbox } from "./forges/inbox/github.ts";
 import { gitlabInbox } from "./forges/inbox/gitlab.ts";
 
 export type InboxAlert = Alert & {accountId: string};
-export type InboxGroup = {account: {id: string; label: string; kind: Account["kind"]}; items: InboxPr[]; notice: string | null; error: string | null};
+/** One account's rows; `total` is how many the forge counts on the tab (null when it does not say), so a cut list can say so. */
+export type InboxGroup = {account: {id: string; label: string; kind: Account["kind"]}; items: InboxPr[]; total: number | null; notice: string | null; error: string | null};
 type Credentials = {
   accounts(): Promise<Account[]>;
   credential(id: string): Promise<{account: Account; token: string}>;
@@ -37,9 +38,10 @@ export function inboxService(deps: Credentials) {
         try {
           const {inbox} = await open(account.id);
           const page = await inbox.list(tab);
-          return {account: summary, items: page.items.map(item => ({...item, forge: account.kind, accountId: account.id})), notice: page.notice, error: null, counts: page.counts};
+          return {account: summary, items: page.items.map(item => ({...item, forge: account.kind, accountId: account.id})), total: page.counts[tab] ?? null,
+            notice: page.notice, error: null, counts: page.counts};
         } catch (error) {
-          return {account: summary, items: [], notice: null, error: codeOf(error), counts: {}};
+          return {account: summary, items: [], total: null, notice: null, error: codeOf(error), counts: {}};
         }
       }));
       // A sum over some accounts would read as the whole: a tab any answering account cannot count gets no total.
@@ -50,6 +52,22 @@ export function inboxService(deps: Credentials) {
         counts[name] = answered.reduce((sum, group) => sum + group.counts[name]!, 0);
       }
       return {tab, counts, groups: groups.map(({counts: _counts, ...group}) => group)};
+    },
+    /** Merged or closed with the whole history (up to HISTORY_LIMIT) where the forge can read it; elsewhere the tab's list. */
+    async history(tab: "merged" | "closed") {
+      const accounts = await deps.accounts();
+      const groups = await Promise.all(accounts.map(async (account): Promise<InboxGroup> => {
+        const summary = {id: account.id, label: account.label, kind: account.kind};
+        try {
+          const {inbox} = await open(account.id);
+          const read = inbox.history ? await inbox.history(tab) : await inbox.list(tab).then(page => ({items: page.items, total: page.counts[tab] ?? null, notice: page.notice}));
+          return {account: summary, items: read.items.map(item => ({...item, forge: account.kind, accountId: account.id})), total: read.total,
+            notice: "notice" in read ? read.notice : null, error: null};
+        } catch (error) {
+          return {account: summary, items: [], total: null, notice: null, error: codeOf(error)};
+        }
+      }));
+      return {tab, groups};
     },
   };
 }

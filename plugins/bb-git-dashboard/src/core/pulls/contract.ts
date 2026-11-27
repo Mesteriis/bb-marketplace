@@ -17,11 +17,17 @@ export const inboxAlert = z.object({id: z.string(), kind: z.enum(["ci", "comment
   url: z.string(), headline: z.string(), detail: z.string(), at: z.string(), seen: z.boolean(), accountId: z.string()});
 const alerts = {alerts: z.array(inboxAlert), unseen: z.number().int(), toasts: z.boolean(), badge: z.boolean()};
 
+const group = z.object({account: z.object({id: z.string(), label: z.string(), kind}), items: z.array(inboxPr), total: z.number().int().nullable(),
+  notice: z.string().nullable(), error: z.string().nullable()});
+
 export const inboxContract = {
   inboxList: {input: z.object({tab: inboxTab}), output: answer({
     tab: inboxTab, counts: z.partialRecord(inboxTab, z.number().int()),
-    groups: z.array(z.object({account: z.object({id: z.string(), label: z.string(), kind}), items: z.array(inboxPr), notice: z.string().nullable(), error: z.string().nullable()})),
+    groups: z.array(group),
   })},
+  /** Merged or closed with the whole history the forge reads (GitHub: up to 1 000), for search on those tabs. */
+  inboxHistory: {input: z.object({tab: z.enum(["merged", "closed"])}), output: answer({tab: inboxTab, groups: z.array(group)})},
   inboxAlerts: {input: z.object({}), output: answer(alerts)},
   inboxSeen: {input: z.object({}), output: answer(alerts)},
+  inboxTest: {input: z.object({}), output: answer({...alerts, push: z.object({sent: z.boolean(), message: z.string()})})},
 };

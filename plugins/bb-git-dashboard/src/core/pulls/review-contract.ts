@@ -40,11 +40,16 @@ export const reviewContract = {
   prPrepare: {input: z.object({...target, action: prAction, shown: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).nullable().optional()}), output: preview},
   prConfirm: {input: z.object({previewId: id}), output: answer({outcome: z.enum(["completed", "accepted"])})},
   prAsk: {input: z.object({...target, subject: agentSubject}), output: answer({threadId: id, created: z.boolean()})},
+  prLinkCandidates: {input: z.object(target), output: answer({threads: z.array(z.object({id, title: z.string(), project: z.string(), updatedAt: z.number()}))})},
+  prLink: {input: z.object({...target, threadId: id}), output: answer({threadId: id})},
+  prCompose: {input: z.object({...target, kind: z.enum(["ask", "explain"])}), output: answer({prompt: z.string(), projectId: id.nullable()})},
   /** Agents' unposted answers on the pull request's review threads (their forge ids), kept for the owner to post. */
   prDrafts: {input: z.object(target), output: answer({drafts: z.array(z.object({commentId: z.string(), threadId: z.string(), externalId: z.string(),
     draft: z.enum(["reply", "resolve"]), body: z.string(), authorName: z.string(), createdAt: z.number()}))})},
   prDraftEdit: {input: z.object({commentId: z.string().regex(/^[0-9a-f]{12}$/), body: z.string().min(1).max(20_000)}), output: answer({})},
   prDraftDrop: {input: z.object({commentId: z.string().regex(/^[0-9a-f]{12}$/)}), output: answer({})},
+  /** Whether BB's My Jira plugin runs here (Jira keys then open in it), and its Jira site. Read-only. */
+  prJira: {input: z.object({}), output: answer({plugin: z.boolean(), siteUrl: z.string().url().max(500).nullable()})},
   issueDetail: {input: z.object(target), output: answer({issue: z.object({number: z.number().int(), title: z.string(), body: z.string(), open: z.boolean(),
     author: z.string(), labels: z.array(z.string()), url: z.string(), createdAt: z.string(),
     comments: z.array(z.object({author: z.string(), body: z.string(), createdAt: z.string(), url: z.string()})), notice: z.string().nullable()})})},

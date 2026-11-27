@@ -77,3 +77,13 @@ test("a merge GitHub did not perform is reported", async () => {
   const {send} = github(call => call.path.endsWith("/merge") ? Response.json({merged: false, message: "Base branch was modified"}) : undefined);
   await assert.rejects(githubReview(account, token, "o/r", send).act(7, {kind: "merge", method: "merge"}, current), {message: "OUTCOME_UNKNOWN"});
 });
+
+test("a deleted comment goes to the GraphQL mutation for its kind", async () => {
+  const {send, calls} = github(call => call.path === "/graphql" ? Response.json({data: {ok: {}}}) : undefined);
+  const api = githubReview(account, token, "o/r", send);
+  await api.act(7, {kind: "deleteComment", commentId: "IC_1", threadId: null, body: "x"}, current);
+  await api.act(7, {kind: "deleteComment", commentId: "PRRC_2", threadId: "T1", body: "x"}, current);
+  assert.deepEqual(calls.map(call => call.body.variables), [{id: "IC_1"}, {id: "PRRC_2"}]);
+  assert.match(calls[0].body.query, /deleteIssueComment/);
+  assert.match(calls[1].body.query, /deletePullRequestReviewComment/);
+});

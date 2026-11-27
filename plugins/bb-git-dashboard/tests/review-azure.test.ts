@@ -110,3 +110,13 @@ test("only the pull request itself is required: every other part degrades to a n
     "Your Azure DevOps identity could not be read (PROVIDER_DENIED); the forge may refuse some review choices.",
   ]);
 });
+
+test("a deleted comment names its thread; a discussion comment carries it in its id", async () => {
+  const gone = () => new Response(null, {status: 200});
+  const {send, calls} = azure({["DELETE " + pr + "/threads/4/comments/2"]: gone, ["DELETE " + pr + "/threads/9/comments/1"]: gone});
+  const api = azureReview(account, token, "Web/app", send);
+  await api.act(7, {kind: "deleteComment", commentId: "2", threadId: "4", body: "x"}, current);
+  await api.act(7, {kind: "deleteComment", commentId: "9/1", threadId: null, body: "x"}, current);
+  await assert.rejects(api.act(7, {kind: "deleteComment", commentId: "1", threadId: null, body: "x"}, current), {message: "INVALID_INPUT"});
+  assert.deepEqual(calls.map(call => [call.method, call.path.replace(pr, "PR")]), [["DELETE", "PR/threads/4/comments/2"], ["DELETE", "PR/threads/9/comments/1"]]);
+});

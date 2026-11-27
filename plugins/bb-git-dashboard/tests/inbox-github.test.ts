@@ -72,3 +72,25 @@ test("GitHub rows and alert links off the account's server are dropped; a null s
   const result = await githubInbox(account, token, watch.send).watch(new Set());
   assert.deepEqual(result?.prs.map(pr => [pr.id, pr.url, pr.lastComment?.url]), [["PR_1", "https://github.com/o/r/pull/7", "https://github.com/o/r/pull/7"]]);
 });
+
+test("the whole merged history is read 100 a page, up to 1000, newest first", async () => {
+  const merged = (number: number) => ({...node, id: "PR_" + number, number, url: "https://github.com/o/r/pull/" + number, mergedAt: "2026-11-01T00:00:00Z"});
+  const {send, calls} = graphql(call => {
+    const page = calls.length - 1;
+    const nodes = Array.from({length: 100}, (_, index) => merged(page * 100 + index + 1));
+    return Response.json({data: {search: {issueCount: 1500, pageInfo: {hasNextPage: true, endCursor: "c" + page}, nodes}}});
+  });
+  const history = await githubInbox(account, token, send).history!("merged");
+  assert.equal(calls.length, 10);
+  assert.deepEqual([calls[0].body.variables, calls[1].body.variables], [{q: "is:pr author:@me archived:false sort:updated-desc is:merged", after: null},
+    {q: "is:pr author:@me archived:false sort:updated-desc is:merged", after: "c0"}]);
+  assert.match(calls[0].body.query, /search\(query: \$q, type: ISSUE, first: 100, after: \$after\)/);
+  assert.deepEqual([history.items.length, history.total, history.items[0].number, history.items.at(-1)!.number], [1000, 1500, 1, 1000]);
+});
+
+test("a short history stops at its last page", async () => {
+  const {send, calls} = graphql(() => Response.json({data: {search: {issueCount: 2, pageInfo: {hasNextPage: false, endCursor: null},
+    nodes: [{...node, closedAt: "2026-11-02T00:00:00Z"}, {}]}}}));
+  const history = await githubInbox(account, token, send).history!("closed");
+  assert.deepEqual([calls.length, history.items.length, history.total], [1, 1, 2]);
+});

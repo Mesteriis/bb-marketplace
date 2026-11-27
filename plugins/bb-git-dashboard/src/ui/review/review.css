@@ -38,3 +38,32 @@
 .git-ws .git-review-check > input { padding: 0; margin: 0; }
 .git-ws .git-review-submit { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: var(--card); }
 .git-ws .git-review-draft { border-left: 3px solid #d4a017; padding-left: 8px; }
+.git-ws .git-pr-menu { position: relative; display: inline-block; }
+.git-ws .git-pr-menu-list { position: absolute; right: 0; top: 100%; z-index: 5; display: grid; min-width: 14em; background: var(--background); border: 1px solid var(--border); border-radius: 6px; padding: 4px; }
+.git-ws .git-pr-menu-list button { text-align: left; border: 0; background: none; padding: 4px 8px; }
+.git-ws .git-pr-menu-list button:hover, .git-ws .git-pr-menu-list button:focus { background: color-mix(in srgb, var(--git-focus) 14%, transparent); }
+.git-ws .git-branch-copy { padding: 0; }
+.git-ws .git-pr-menu > [role="dialog"] { position: absolute; right: 0; top: 100%; z-index: 6; width: min(32em, 90vw); max-height: 60vh; overflow: auto; background: var(--background); }
+/* A quiet action on a comment's byline: Delete. */
+.git-ws .git-link-button { margin-left: auto; border: 0; background: none; padding: 0 4px; font: inherit; color: var(--muted-foreground); text-decoration: underline; cursor: pointer; }
+.git-ws .git-link-button:hover, .git-ws .git-link-button:focus-visible { color: var(--destructive); }
+/* Forge Markdown keeps inside its column: wide code and tables scroll. */
+.git-ws .git-review-markdown { min-width: 0; overflow-wrap: anywhere; }
+.git-ws .git-review-markdown :is(pre, table) { max-width: 100%; overflow-x: auto; }
+.git-ws .git-review-markdown img { max-width: 100%; }
+.git-ws .git-jira-link { text-decoration: underline; text-underline-offset: 3px; color: inherit; }
+/* Files of a pull request: the list beside the diffs, above them on a narrow panel. */
+.git-ws .git-pr-files { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.git-ws .git-pr-file-list { position: sticky; top: 0; display: flex; flex-direction: column; gap: 2px; max-height: 80vh; overflow: auto; }
+.git-ws .git-pr-file-list button { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: none; padding: 4px 6px; border-radius: 4px; min-width: 0; }
+.git-ws .git-pr-file-list button:hover, .git-ws .git-pr-file-list button:focus-visible { background: color-mix(in srgb, var(--git-focus) 14%, transparent); }
+.git-ws .git-pr-file-list .git-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) {
+  .git-ws .git-pr-files { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-pr-file-list { position: static; max-height: 30vh; }
+}
+/* A thread read away from the diff: its few lines of diff above the comments. */
+.git-ws .git-review-snippet { margin: 4px 0; max-height: 12em; overflow: auto; }
+.git-ws .git-review-show { margin-left: auto; }
+.git-ws .git-review-keys { margin-left: auto; font-size: 12px; }
+.git-ws .git-review-thread:focus-visible, .git-ws .git-review-file:focus-visible { outline: 2px solid var(--git-focus); outline-offset: 2px; }

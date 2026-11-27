@@ -116,3 +116,14 @@ export function agentPlan(pr: {headRefName: string; fromFork?: boolean}, project
   if (!projectIds.length) return {error: "PROJECT_REQUIRED"};
   return {spawn: {projectId: projectIds[0], baseBranch: pr.fromFork ? null : pr.headRefName}};
 }
+
+/**
+ * The machine a new "Fix with agent" thread starts its worktree on: where the project's working copy is (its first
+ * source), else where one of its environments holds a git checkout; null when it has neither.
+ */
+export function spawnHost(project: {sources: readonly {hostId: string}[]} | undefined,
+  environments: readonly {hostId?: string | null; isGitRepo?: boolean; isWorktree?: boolean}[]): string | null {
+  const source = project?.sources.find(item => item.hostId)?.hostId;
+  if (source) return source;
+  return environments.find(environment => environment.hostId && (environment.isGitRepo || environment.isWorktree))?.hostId ?? null;
+}

@@ -1,6 +1,6 @@
 import { partial } from "../../../../core/partial.ts";
 import type { PrAction } from "../../../../core/pulls/actions.ts";
-import type { Comment, PrDetail, Reviewer, Thread, TimelineEntry } from "../../../../core/pulls/detail.ts";
+import { ownComments, type Comment, type PrDetail, type Reviewer, type Thread, type TimelineEntry } from "../../../../core/pulls/detail.ts";
 import type { PrFile } from "../../../../core/pulls/diff.ts";
 import type { CheckStatus } from "../../../../core/pulls/github.ts";
 import type { PullReview } from "../../../../core/pulls/review-port.ts";
@@ -16,6 +16,13 @@ const branch = (ref: unknown) => text(ref).replace(/^refs\/heads\//, "");
 const relative = (value: unknown) => text(value).replace(/^\/+/, "");
 const statusOf = (state: string): CheckStatus => state === "succeeded" ? "passing" : ["failed", "error"].includes(state) ? "failing" : state === "pending" ? "pending" : "skipped";
 const changeStatus = (type: string) => type.includes("rename") ? "renamed" : type.includes("add") ? "added" : type.includes("delete") ? "removed" : "modified";
+
+/** The thread and comment of a discussion comment's id, `thread/comment`; null for none. */
+function discussionPlace(id: string | null): [string, string] | null {
+  const match = id === null ? null : /^(\d+)\/(\d+)$/.exec(id);
+  if (id !== null && !match) throw new Error("INVALID_INPUT");
+  return match ? [match[1], match[2]] : null;
+}
 
 function commentOf(row: Json): Comment {
   return {id: String(row.id ?? ""), canDelete: false, author: text(object(row.author).displayName) || "Unknown", avatarUrl: null, body: text(row.content),
@@ -56,7 +63,8 @@ export function azureReview(account: Account, token: string, path: string, send:
         if (!comments.length) continue;
         const context = object(thread.threadContext);
         const file = relative(context.filePath);
-        if (!file) { timeline.push(...comments.map(comment => ({...comment, reviewState: null}))); continue; }
+        // Azure numbers comments within their thread, so a discussion comment carries its thread in its id.
+        if (!file) { timeline.push(...comments.map(comment => ({...comment, id: comment.id && String(thread.id) + "/" + comment.id, reviewState: null}))); continue; }
         const right = context.rightFileStart !== undefined && context.rightFileStart !== null;
         const start = Number(object(right ? context.rightFileStart : context.leftFileStart).line) || null;
         const end = Number(object(right ? context.rightFileEnd : context.leftFileEnd).line) || start;
@@ -86,7 +94,7 @@ export function azureReview(account: Account, token: string, path: string, send:
           author: text(object(row.author).name) || "unknown", avatarUrl: null, committedDate: text(object(row.author).date), ci: null})),
         commitCount: array(commits.value).length, myReviewOid: null, fromFork: raw.forkSource !== undefined && raw.forkSource !== null,
       };
-      return ownLinks(account, detail);
+      return ownLinks(account, ownComments(detail));
     },
     async files(number) {
       const iterations = array((await get(base(number) + "/iterations")).value).map(row => Number(object(row).id)).filter(Number.isSafeInteger);
@@ -99,12 +107,19 @@ export function azureReview(account: Account, token: string, path: string, send:
     async act(number, action: PrAction, current) {
       const pr = base(number);
       const write = (method: "POST" | "PATCH" | "PUT", target: string, body: unknown) => http(url(target), {method, body});
+      const place = discussionPlace(action.kind === "deleteComment" && action.threadId === null ? action.commentId : null);
       const vote = async (value: number) => write("PUT", pr + "/reviewers/" + segment(text((await me()).id)), {vote: value});
       switch (action.kind) {
         case "comment": await write("POST", pr + "/threads", {comments: [{parentCommentId: 0, content: action.body, commentType: 1}], status: "active"}); break;
         case "reply": await write("POST", pr + "/threads/" + segment(action.threadId) + "/comments", {parentCommentId: 1, content: action.body, commentType: 1}); break;
         case "resolve": await write("PATCH", pr + "/threads/" + segment(action.threadId), {status: action.resolved ? "fixed" : "active"}); break;
         case "lineComment": case "draft": throw new Error("PROVIDER_UNSUPPORTED");
+        case "deleteComment": {
+          const [thread, comment] = place ?? [action.threadId ?? "", action.commentId];
+          if (!thread) throw new Error("INVALID_INPUT");
+          await http(url(pr + "/threads/" + segment(thread) + "/comments/" + segment(comment)), {method: "DELETE"});
+          break;
+        }
         case "review":
           if (action.comments.length) throw new Error("PROVIDER_UNSUPPORTED");
           await inOrder([

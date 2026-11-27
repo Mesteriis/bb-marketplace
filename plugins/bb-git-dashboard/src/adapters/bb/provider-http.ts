@@ -24,7 +24,7 @@ export function cloneUrl(account: Account, value: unknown): string {
   if (account.kind === "azure" && !url.pathname.toLowerCase().startsWith("/" + account.organization.toLowerCase() + "/")) throw new Error("REMOTE_MISMATCH");
   return url.href;
 }
-type Options = {method?: "POST" | "PATCH" | "PUT"; body?: unknown; accept?: string; raw?: boolean;
+type Options = {method?: "POST" | "PATCH" | "PUT" | "DELETE"; body?: unknown; accept?: string; raw?: boolean;
   /** A POST that only reads (GraphQL queries): failures are not unknown write outcomes. */
   read?: boolean;
   /** Largest body accepted, in bytes; 768 KB by default. */

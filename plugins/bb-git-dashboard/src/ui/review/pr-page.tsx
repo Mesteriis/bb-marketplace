@@ -7,8 +7,12 @@ import { useAutoRetry } from "./auto-retry.ts";
 import { RateLimited } from "./rate-limited.tsx";
 import { message, type AgentDraft, type PrFileView, type PrRef, type PrView, type Preview, type ReviewApi } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
+import { PrMenu } from "./pr-menu.tsx";
+import { PrBody, PrText, PrTitle } from "./pr-text.tsx";
 import "./review.css";
 
+/** Side by side or unified, kept across pull requests and visits. */
+const SPLIT_KEY = "bb-git-dashboard:pr-split";
 const tabs = ["Overview", "Checks", "Files", "Commits", "Comments"] as const;
 type Tab = typeof tabs[number];
 const eventLabel: Record<ReviewEvent, string> = {COMMENT: "Comment", APPROVE: "Approve", REQUEST_CHANGES: "Request changes"};
@@ -36,6 +40,8 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const [summary, setSummary] = useState("");
   const [event, setEvent] = useState<ReviewEvent>("COMMENT");
   const [wrap, setWrap] = useState(false);
+  const [split, setSplitState] = useState(() => { try { return localStorage.getItem(SPLIT_KEY) === "1"; } catch { return false; } });
+  const setSplit = (value: boolean) => { setSplitState(value); try { localStorage.setItem(SPLIT_KEY, value ? "1" : "0"); } catch { /* the choice lasts for this visit */ } };
   const [title, setTitle] = useState<string | null>(null);
   const [description, setDescription] = useState<string | null>(null);
   const [reviewer, setReviewer] = useState("");
@@ -59,11 +65,38 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
       if (document.querySelector("dialog[open]")) return;
       if (event.key === "[" && onStep) onStep(-1);
       if (event.key === "]" && onStep) onStep(1);
+      // On Files: j / k step through the files, n / p through the open comment threads.
+      if (tab !== "Files") return;
+      const step = event.key === "j" || event.key === "n" ? 1 : event.key === "k" || event.key === "p" ? -1 : 0;
+      if (!step) return;
+      const selector = event.key === "j" || event.key === "k" ? ".git-pr-file-diffs > .git-review-file" : ".git-pr-file-diffs .git-review-thread:not([data-resolved])";
+      const targets = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      if (!targets.length) return;
+      event.preventDefault();
+      const at = targets.findIndex(target => target === document.activeElement || target.contains(document.activeElement));
+      const next = targets[at === -1 ? (step > 0 ? 0 : targets.length - 1) : Math.min(targets.length - 1, Math.max(0, at + step))]!;
+      next.scrollIntoView({block: "start"});
+      next.focus({preventScroll: true});
     };
     window.addEventListener("keydown", keys);
     return () => window.removeEventListener("keydown", keys);
-  }, [onStep]);
+  }, [onStep, tab]);
+  // Show in diff: the Files tab opens, and once its files are read the thread is brought into view.
+  const [shown, setShown] = useState<string | null>(null);
+  useEffect(() => {
+    if (!shown || tab !== "Files" || !files) return;
+    const thread = Array.from(document.querySelectorAll<HTMLElement>(".git-pr-file-diffs .git-review-thread")).find(element => element.dataset.threadId === shown);
+    setShown(null);
+    thread?.scrollIntoView({block: "center"});
+    thread?.focus({preventScroll: true});
+  }, [shown, tab, files]);
 
+  /** Scrolls a file of the Files tab into view and focuses it. */
+  const showFile = (path: string) => {
+    const section = Array.from(document.querySelectorAll<HTMLElement>(".git-pr-file-diffs > .git-review-file")).find(element => element.dataset.path === path);
+    section?.scrollIntoView({block: "start"});
+    section?.focus({preventScroll: true});
+  };
   const act = async (action: PrAction, label: string, after?: () => Promise<void>) => {
     setNotice("");
     try { setPreview({...await api.prepare(target, action, view?.detail.headSha ?? null), title: label, kind: action.kind, after}); }
@@ -83,20 +116,23 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
   const events = reviewEvents(detail.viewer, detail.author).filter(name => name === "COMMENT" || can[name === "APPROVE" ? "approve" : "requestChanges"]);
   const unresolved = detail.threads.filter(thread => !thread.isResolved);
   const failing = detail.checks.filter(check => check.status === "failing");
-  const threadCan = {reply: can.reply, resolve: can.resolve};
+  const threadCan = {reply: can.reply, resolve: can.resolve, delete: can.deleteComment};
+  const threadsOf = (file: PrFileView) => detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath));
 
-  return <section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
+  return <PrText api={api} pr={detail}><section className="git-review" aria-label={"Pull request " + detail.repo + " #" + detail.number}>
     <header className="git-review-head">
       <div className="git-row">
         <span className="git-review-state" data-state={detail.state}>{detail.isDraft && open ? "Draft" : stateLabel[detail.state] ?? detail.state}</span>
-        {title === null ? <h2>{detail.title} <span className="git-muted">#{detail.number}</span></h2>
+        {title === null ? <h2><PrTitle title={detail.title}/> <span className="git-muted">#{detail.number}</span></h2>
           : <form className="git-row" onSubmit={formEvent => { formEvent.preventDefault(); if (title.trim()) void act({kind: "editTitle", title}, "Rename"); }}>
             <input aria-label="Title" value={title} onChange={change => setTitle(change.target.value)}/><button type="submit">Save</button>
             <button type="button" onClick={() => setTitle(null)}>Cancel</button></form>}
         {title === null && can.editTitle && detail.canEdit && <button type="button" className="git-link" aria-label="Edit title" onClick={() => setTitle(detail.title)}>✎</button>}
         {detail.url && <a href={detail.url} target="_blank" rel="noreferrer">Open on the forge</a>}
+        <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice}/>
       </div>
-      <p className="git-muted">{detail.repo} · {detail.author} · <code>{detail.headRefName}</code> into <code>{detail.baseRefName}</code>
+      <p className="git-muted">{detail.repo} · {detail.author} · <button type="button" className="git-link git-branch-copy" title="Copy the branch name"
+        onClick={() => { api.copy(detail.headRefName); setNotice("Branch name copied."); }}><code>{detail.headRefName}</code></button> into <code>{detail.baseRefName}</code>
         {detail.additions + detail.deletions > 0 && <> · <span className="git-inbox-plus">+{detail.additions}</span> <span className="git-inbox-minus">−{detail.deletions}</span></>}
         {detail.stackedOn && <> · stacked on #{detail.stackedOn.number}</>}</p>
       <div className="git-row git-review-badges">
@@ -140,8 +176,10 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
         </form>}
       {detail.timeline.length === 0 && <p className="git-muted">No description or comments yet.</p>}
       {detail.timeline.map((entry, index) => <article key={index} className="git-review-comment">
-        <div className="git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}</div>
-        {entry.body && <p className="git-review-body">{entry.body}</p>}
+        <div className="git-row git-muted">{entry.author}{entry.reviewState ? " · " + entry.reviewState.toLowerCase().replaceAll("_", " ") : ""} · {entry.createdAt.slice(0, 16).replace("T", " ")}
+          {entry.canDelete && can.deleteComment && <button type="button" className="git-link-button" aria-label={"Delete " + entry.author + "'s comment"}
+            onClick={() => void act({kind: "deleteComment", commentId: entry.id, threadId: null, body: entry.body.slice(0, 8000)}, "Delete comment")}>Delete</button>}</div>
+        {entry.body && <PrBody content={entry.body}/>}
       </article>)}
       {can.comment && <form className="git-stack" onSubmit={formEvent => { formEvent.preventDefault(); if (comment.trim()) void act({kind: "comment", body: comment}, "Comment"); }}>
         <textarea aria-label="Comment" value={comment} onChange={change => setComment(change.target.value)} rows={3} placeholder="Leave a comment"/>
@@ -161,7 +199,9 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
 
     {tab === "Files" && <div className="git-stack">
       <div className="git-row">
+        <label className="git-review-check"><input type="checkbox" checked={split} onChange={change => setSplit(change.target.checked)}/> Side by side</label>
         <label className="git-review-check"><input type="checkbox" checked={wrap} onChange={change => setWrap(change.target.checked)}/> Wrap long lines</label>
+        <span className="git-muted git-review-keys">j / k files · n / p open comments</span>
         {!can.lineComment && <span className="git-muted">{limitations.lineComment}</span>}
         {drafts.length > 0 && <span className="git-muted">{drafts.length} comment{drafts.length === 1 ? "" : "s"} in your review</span>}
       </div>
@@ -179,10 +219,22 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
         {limitations.requestChanges && <p className="git-muted">{limitations.requestChanges}</p>}
       </form>}
       {!files ? <p className="git-muted" role="status">Loading files…</p> : files.length === 0 ? <p className="git-muted">No changed files.</p> :
-        files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} canComment={open && can.lineComment} can={threadCan}
-          threads={detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath))}
-          act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
-          ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}
+        <div className="git-pr-files">
+        <nav className="git-pr-file-list" aria-label="Changed files">
+          {files.map(file => {
+            const waiting = threadsOf(file).filter(thread => !thread.isResolved).length;
+            return <button key={file.path} type="button" title={file.path} onClick={() => showFile(file.path)}>
+              <span className="git-path">{file.path}</span>
+              {waiting > 0 && <span className="git-review-tag" aria-label={waiting + " open comment threads"}>{waiting}</span>}
+              <span className="git-inbox-plus">+{file.additions}</span><span className="git-inbox-minus">−{file.deletions}</span>
+            </button>;
+          })}
+        </nav>
+        <div className="git-stack git-pr-file-diffs">{files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} split={split} canComment={open && can.lineComment} can={threadCan}
+          threads={threadsOf(file)}
+          act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
+          ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}</div>
+        </div>}
     </div>}
 
     {tab === "Commits" && <ul className="git-review-checks">
@@ -194,8 +246,8 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
     {tab === "Comments" && <div className="git-stack">
       {detail.threads.length === 0 && <p className="git-muted">No review threads.</p>}
       {detail.threads.map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
-        act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
-        ask={() => void ask({kind: "thread", threadId: thread.id})}
+        act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : action.kind === "deleteComment" ? "Delete comment" : "Reply")}
+        ask={() => void ask({kind: "thread", threadId: thread.id})} onShow={() => { setTab("Files"); setShown(thread.id); }}
         drafts={agentDrafts.filter(draft => draft.externalId === thread.id)}
         onPost={(draft, resolve) => void act({kind: "reply", threadId: thread.id, body: draft.body}, resolve ? "Post the agent's reply, then resolve" : "Post the agent's reply", async () => {
           await api.dropDraft(draft.commentId);
@@ -216,5 +268,5 @@ export function PrPage({api, accountId, repo, number, onStep, revision = 0}: {ap
       if (done && after) after().catch(failure => setNotice(message(failure)));
       if (done) { setComment(""); setTitle(null); setDescription(null); setReviewer(""); if (preview.kind === "review") { setDrafts([]); setSummary(""); } setFiles(null); void load(); }
     }}/>}
-  </section>;
+  </section></PrText>;
 }

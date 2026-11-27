@@ -97,3 +97,24 @@ test("a write that stops halfway says how far it got", async () => {
   const preview = await service.prepare("a", "o/r", 7, {kind: "review", event: "APPROVE", body: "", comments: []});
   await assert.rejects(service.confirm(preview.id), {message: "OUTCOME_PARTIAL"});
 });
+
+test("only a comment the forge shows as yours can be deleted", async () => {
+  const mine = {id: "C1", canDelete: true, author: "me", avatarUrl: null, body: "Old", createdAt: "", url: ""};
+  const {service, acts} = setup("gitea", {timeline: [{...mine, reviewState: null}, {...mine, id: "C2", canDelete: false, author: "ann", reviewState: null}],
+    threads: [{id: "T", comments: [{...mine, id: "C3"}]}]} as unknown as Partial<PrDetail>);
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C2", threadId: null, body: "Old"}), {message: "NOT_YOUR_COMMENT"});
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C3", threadId: null, body: "Old"}), {message: "NOT_YOUR_COMMENT"});
+  const preview = await service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C3", threadId: "T", body: "Old"});
+  await service.confirm(preview.id);
+  assert.deepEqual(acts, ["deleteComment"]);
+});
+
+test("a delete previews the forge's text and author, and does not wait on the head", async () => {
+  const theirs = {id: "C9", canDelete: true, author: "bob", avatarUrl: null, body: "On the forge", createdAt: "", url: "", reviewState: null};
+  const {service, acts, move} = setup("github", {viewer: "me", timeline: [theirs], threads: []} as unknown as Partial<PrDetail>);
+  const preview = await service.prepare("a", "o/r", 7, {kind: "deleteComment", commentId: "C9", threadId: null, body: "Sent by the page"}, "0".repeat(40));
+  assert.deepEqual(preview.lines, ["Delete bob's comment on o/r #7", "On the forge"]);
+  move();
+  await service.confirm(preview.id);
+  assert.deepEqual(acts, ["deleteComment"]);
+});

@@ -90,14 +90,26 @@ export function reviewService(deps: Deps) {
       if (action.kind === "merge" && !mergeMethods(account.kind).includes(action.method)) throw new Error("PROVIDER_UNSUPPORTED");
       if (action.kind === "review" && !canSubmitReview(action.event, action.body, action.comments.length)) throw new Error("INVALID_INPUT");
       const read = await review.detail(number);
-      if (!read.headSha || (shown && shown !== read.headSha)) throw new Error("STALE_HEAD");
+      // Deleting a comment does not depend on the head; everything else was read against the head the page showed.
+      const pinned = action.kind !== "deleteComment";
+      if (!read.headSha || (pinned && shown && shown !== read.headSha)) throw new Error("STALE_HEAD");
       // GitHub keeps one pending review per person; a new review or line comment is refused while one is open.
       if (read.pendingReviewId && (action.kind === "review" || action.kind === "lineComment")) throw new Error("PENDING_REVIEW");
+      // The forge would refuse someone else's comment too; this keeps the preview from offering it at all.
+      // The preview quotes the comment as the forge has it and names its author: GitHub lets maintainers delete others' comments.
+      let lines: string[] | null = null;
+      if (action.kind === "deleteComment") {
+        const place = action.threadId === null ? read.timeline ?? [] : read.threads?.find(thread => thread.id === action.threadId)?.comments ?? [];
+        const found = place.find(comment => comment.id === action.commentId && comment.canDelete);
+        if (!found) throw new Error("NOT_YOUR_COMMENT");
+        const [title, ...rest] = describePrAction({number, repo: path, headRefName: read.headRefName, baseRefName: read.baseRefName}, {...action, body: found.body});
+        lines = [found.author === read.viewer ? title! : title!.replace("Delete your comment", "Delete " + found.author + "'s comment"), ...rest];
+      }
       return remember("pull", async () => {
         const current = await review.detail(number);
-        if (current.headSha !== read.headSha) throw new Error("STALE_HEAD");
+        if (pinned && current.headSha !== read.headSha) throw new Error("STALE_HEAD");
         return review.act(number, action, current);
-      }, describePrAction({number, repo: path, headRefName: read.headRefName, baseRefName: read.baseRefName}, action));
+      }, lines ?? describePrAction({number, repo: path, headRefName: read.headRefName, baseRefName: read.baseRefName}, action));
     },
     confirm: (previewId: string) => take<{outcome: "completed" | "accepted"}>("pull", previewId),
     async issueDetail(accountId: string, path: string, number: number) {
