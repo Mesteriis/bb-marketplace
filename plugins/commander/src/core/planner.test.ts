@@ -1024,3 +1024,25 @@ describe("revalidate change reasons", () => {
     });
   });
 });
+
+describe("revalidate on a copy whose target matches its source only under case folding", () => {
+  it("refuses with invalid_path when the endpoint reports case-insensitive names", async () => {
+    const files: Array<[string, EntryKind, string]> = [
+      ["/A", "dir", "0"],
+      ["/A/f", "file", "1"],
+      ["/a", "dir", "0"],
+    ];
+    const sensitive = new MemoryProvider(endpoint("host:x", false, true), files);
+    const plan = await buildPlan(
+      copyRequest([ref("host:x", "/A/f")], ref("host:x", "/a")),
+      depsFor(treeProviders(sensitive)),
+      signal(),
+    );
+    expect(displayPath(plan.items[0].target!.path)).toBe("/a/f");
+
+    const insensitive = new MemoryProvider(endpoint("host:x", false, false), files);
+    await expect(
+      revalidate(plan, depsFor(treeProviders(insensitive)), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+});

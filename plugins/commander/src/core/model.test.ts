@@ -238,3 +238,42 @@ describe("OperationPlan targetDir rules", () => {
     }).success).toBe(false);
   });
 });
+
+describe("OperationPlan item targets for copy, move and mkdir", () => {
+  const item = {
+    source: { endpoint: "host:test", path: { segments: [{ t: "src" }] } },
+    target: { endpoint: "host:test", path: { segments: [{ t: "out" }, { t: "src" }] } },
+    kind: "dir",
+    fingerprint: { size: "0", mtimeNs: "1000000000" },
+    expectTarget: "absent",
+  } as const;
+  const copyPlan = {
+    ...plan,
+    digest,
+    kind: "copy",
+    sourceEndpoint: "host:test",
+    targetDir: { endpoint: "host:test", path: { segments: [{ t: "out" }] } },
+    items: [item],
+  } as const;
+
+  it("refuses a copy whose item target is on another endpoint", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      items: [{ ...item, target: { ...item.target, endpoint: "host:other" } }],
+    }).success).toBe(false);
+  });
+
+  it("refuses a copy whose item target equals targetDir", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      items: [{ ...item, target: { endpoint: "host:test", path: { segments: [{ t: "out" }] } } }],
+    }).success).toBe(false);
+  });
+
+  it("refuses a copy whose item has no target", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      items: [{ ...item, target: null, expectTarget: null }],
+    }).success).toBe(false);
+  });
+});

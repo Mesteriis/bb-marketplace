@@ -127,10 +127,21 @@ export const OperationPlan = OperationPlanBase.superRefine((plan, ctx) => {
   if (targetDir.endpoint !== plan.targetEndpoint) {
     ctx.addIssue({ code: "custom", path: ["targetDir", "endpoint"], message: "targetDir must be on targetEndpoint" });
   }
-  // Exact comparison: the planner builds every target as targetDir + name, so no case folding applies.
+  // copy, move and mkdir write every item to a path strictly inside targetDir. Exact
+  // comparison: the planner builds each target as targetDir + name, so no case folding applies.
   plan.items.forEach((item, index) => {
-    if (item.target !== null && !isAncestorOrSelf(targetDir.path, item.target.path, true)) {
-      ctx.addIssue({ code: "custom", path: ["items", index, "target"], message: "A target must lie under targetDir" });
+    if (!needsTargetDir) return;
+    if (item.target === null || item.expectTarget === null) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target"], message: "copy, move and mkdir items need a target and an expectTarget" });
+      return;
+    }
+    if (item.target.endpoint !== targetDir.endpoint) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target", "endpoint"], message: "A target must be on targetDir's endpoint" });
+    }
+    const strictlyInside = item.target.path.segments.length > targetDir.path.segments.length
+      && isAncestorOrSelf(targetDir.path, item.target.path, true);
+    if (!strictlyInside) {
+      ctx.addIssue({ code: "custom", path: ["items", index, "target"], message: "A target must lie strictly inside targetDir" });
     }
   });
 });

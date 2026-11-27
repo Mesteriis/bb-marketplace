@@ -471,7 +471,7 @@ export async function revalidate(
   const changed: ChangedItem[] = [];
   for (const [index, item] of snapshot.items.entries()) {
     signal.throwIfAborted();
-    const reason = await itemChange(item, deps, caseOf, signal);
+    const reason = await itemChange(item, snapshot.kind, deps, caseOf, signal);
     if (reason !== null) changed.push({ index, reason });
   }
   return changed.length === 0 ? { ok: true, plan: snapshot } : { ok: false, changed };
@@ -480,6 +480,7 @@ export async function revalidate(
 /** The first thing that changed for one item, or null. A target that is the item's own source is checked as a source only. */
 async function itemChange(
   item: PlanItem,
+  kind: OperationKind,
   deps: PlannerDeps,
   caseOf: (id: EndpointId) => boolean,
   signal: AbortSignal,
@@ -490,7 +491,14 @@ async function itemChange(
     if (!unchanged) return "source_changed";
   }
   if (item.target !== null && item.expectTarget !== null) {
-    if (item.source !== null && sameEntryRef(item.source, item.target, caseOf)) return null;
+    if (item.source !== null && sameEntryRef(item.source, item.target, caseOf)) {
+      // Only a rename may target its own source (a case-only change). For copy or move the
+      // endpoint now folds the target onto the source: the plan cannot run, so stop with invalid_path.
+      if (kind !== "rename") {
+        throw new CommanderError("invalid_path", "The target now equals the item's own source");
+      }
+      return null;
+    }
     const current = await deps.provider(item.target.endpoint).stat(item.target.path, signal);
     const unchanged = item.expectTarget === "absent"
       ? current === null
