@@ -6,6 +6,7 @@ import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
 import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
 import { Workspace } from "./src/ui/index.ts";
+import type { RetryNote } from "./src/ui/queue.tsx";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
   type Directory, type EndpointView, type JobView, type PlanRequest, type Problem, type Side } from "./src/ui/model.ts";
 import { shortcuts, type KeyBindings, type Shortcut } from "./src/ui/keyboard.ts";
@@ -200,8 +201,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
   const [bindings, setBindings] = useState(loadBindings);
-  // S17: files left out of a retry because a directory check is pending, by job id.
-  const [unconfirmedChildren, setUnconfirmedChildren] = useState<Record<string, number>>({});
+  // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
+  const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
   const changes = useRef(new Set<string>());
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -304,7 +305,14 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   const retryUnfinished = async (job: OperationJob) => {
     const { plan, excluded } = await rpc.call("job_retry", { jobId: job.id });
     const count = excluded.reduce((sum, entry) => sum + entry.count, 0);
-    setUnconfirmedChildren((notes) => ({ ...notes, [job.id]: count }));
+    const note: RetryNote | null = count ? { kind: "waiting", count } : plan ? null : { kind: "nothing" };
+    setRetryNotes((notes) => {
+      const next = { ...notes };
+      if (note) next[job.id] = note;
+      else delete next[job.id];
+      return next;
+    });
+    if (!plan) return null;
     return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
   };
   return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
@@ -313,7 +321,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       setBindings(value);
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
-    unconfirmedChildren={unconfirmedChildren} onEndpoint={selectEndpoint} onRefresh={refresh}
+    retryNotes={retryNotes} onEndpoint={selectEndpoint} onRefresh={refresh}
     onAccess={async (endpoint) => {
       await rpc.call("sftp_request_access", { profileId: endpoint.id.slice("sftp:".length), level: "write" });
       await refreshEndpoints();

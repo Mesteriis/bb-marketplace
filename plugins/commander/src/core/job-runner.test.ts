@@ -1623,11 +1623,11 @@ test("retry plans only the failed item and keeps a confirmed unknown item done",
   expect(failed.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "unknown"]);
 
   const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
-  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
-  expect(retry.totalBytes).toBe("3");
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
+  expect(retry!.totalBytes).toBe("3");
   expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "done"]);
 
-  const retried = await runner.submit(retry);
+  const retried = await runner.submit(retry!);
   await at(retried.id, "completed");
   expect(to.contents(parsePosix("/b1"))).toEqual(Uint8Array.of(42, 42, 42));
 });
@@ -1641,17 +1641,17 @@ test("a repeated retry after a lost reply does not plan or write the confirmed i
 
   const first = (await runner.retryJob(id, { kind: "owner" })).plan;
   const second = (await runner.retryJob(id, { kind: "owner" })).plan;
-  expect(first.items).toHaveLength(1);
-  expect(second.items).toHaveLength(1);
+  expect(first!.items).toHaveLength(1);
+  expect(second!.items).toHaveLength(1);
   const commitsToB2 = to.calls.filter(({ op, path }) => op === "commit" && samePath(path, parsePosix("/b2"), true));
   expect(commitsToB2).toHaveLength(1);
 });
 
-test("retry refuses a completed job, which has nothing to retry", async () => {
-  const { runner, plan, at } = await setup();
+test("retry of a finished job with nothing to retry returns no plan and no excluded files", async () => {
+  const { runner, plan, at } = await setup({ count: 2 });
   const { id } = await runner.submit(plan);
   await at(id, "completed");
-  await expect(runner.retryJob(id, { kind: "owner" })).rejects.toMatchObject({ code: "changed_since_plan" });
+  await expect(runner.retryJob(id, { kind: "owner" })).resolves.toEqual({ plan: null, excluded: [] });
 });
 
 test("retry refuses a plan whose source changed since the failed run", async () => {
@@ -1688,7 +1688,7 @@ test("retry does not plan an unknown item that reconciliation cannot confirm", a
 
   const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
   // The pending item after the unknown one is planned for a finished job; the unknown one is not.
-  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }], [{ t: "a2" }]]);
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }], [{ t: "a2" }]]);
   expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
 });
 
@@ -1718,11 +1718,11 @@ test("retry plans a failed directory before the failed children inside it", asyn
   expect((await at(id, "failed")).items.map(({ outcome }) => outcome)).toEqual(["failed", "skipped"]);
 
   const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
-  expect(retry.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([
+  expect(retry!.items.map(({ kind, source }) => [kind, source?.path.segments])).toEqual([
     ["dir", [{ t: "tree" }]],
     ["file", [{ t: "tree" }, { t: "child" }]],
   ]);
-  const retried = await runner.submit(retry);
+  const retried = await runner.submit(retry!);
   await at(retried.id, "completed");
   expect(to.contents(parsePosix("/tree-copy/child"))).toEqual(Uint8Array.of(42, 42, 42));
 });
@@ -1745,7 +1745,7 @@ test("retry of a finished job plans its pending items and keeps the unknown item
   expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["done", "unknown", "pending", "pending"]);
 
   const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
-  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a2" }], [{ t: "a3" }]]);
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a2" }], [{ t: "a3" }]]);
   expect(excluded).toEqual([]);
   expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "unknown", "pending", "pending"]);
 });
@@ -1801,6 +1801,79 @@ test("retry leaves out files inside a directory whose creation stays unconfirmed
   }, "unknown");
 
   const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
-  expect(retry.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
+  expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
   expect(excluded).toEqual([{ count: 2, reason: "parent_unconfirmed" }]);
+});
+
+test("retry does not repeat a file the owner skipped on a conflict", async () => {
+  const { runner, plan, to, at } = await setup({ count: 3 });
+  to.put(parsePosix("/b1"), Uint8Array.of(7), "1");
+  to.failOn.push({ op: "commit", path: parsePosix("/b2"), times: 1, error: new CommanderError("permission_denied", "Denied") });
+  const { id } = await runner.submit(await planningExisting(plan, to));
+  const waiting = await at(id, "awaiting_decision", 1);
+  await runner.decide(id, { conflictId: waiting.pendingConflict!.id, action: "skip", applyTo: "this" });
+  expect((await at(id, "failed")).items.map(({ outcome }) => outcome)).toEqual(["done", "skipped", "failed"]);
+
+  const { plan: retry, excluded } = await runner.retryJob(id, { kind: "owner" });
+  expect(retry?.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a2" }]]);
+  expect(excluded).toEqual([]);
+});
+
+/** A directory whose creation stays unconfirmed, with only its children as candidates. */
+async function waitingOnlyForDirectory() {
+  const { runner, plan, store, from, to, at } = await setup({ count: 1 });
+  const signal = new AbortController().signal;
+  await from.mkdir(parsePosix("/tree"), signal);
+  const dir = (await from.stat(parsePosix("/tree"), signal))!;
+  from.put(parsePosix("/tree/a"), Uint8Array.of(42, 42, 42), "1");
+  from.put(parsePosix("/tree/b"), Uint8Array.of(42, 42, 42), "1");
+  const mkdir = to.mkdir.bind(to);
+  vi.spyOn(to, "mkdir").mockImplementationOnce(async (path, stepSignal) => {
+    await mkdir(path, stepSignal);
+    throw new CommanderError("outcome_unknown", "Reply lost", true);
+  });
+  const child = (name: string) => ({
+    source: { endpoint: "host:from", path: parsePosix("/tree/" + name) },
+    target: { endpoint: "host:to", path: parsePosix("/tree-copy/" + name) },
+    kind: "file" as const,
+    fingerprint: { size: "3", mtimeNs: "1" },
+    expectTarget: "absent" as const,
+  });
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items = [
+    {
+      source: { endpoint: "host:from", path: parsePosix("/tree") }, target: { endpoint: "host:to", path: parsePosix("/tree-copy") },
+      kind: "dir", fingerprint: { size: "0", mtimeNs: dir.mtimeNs }, expectTarget: "absent",
+    },
+    child("a"),
+    child("b"),
+  ];
+  unsigned.totalBytes = "6";
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  await at(id, "unknown");
+  const failed = { outcome: "failed" as const, error: "Denied" };
+  await store.update(id, { items: [{ outcome: "unknown", error: null }, failed, failed] }, "unknown");
+  return { runner, id };
+}
+
+test("retry returns no plan when every candidate waits for a directory check", async () => {
+  const { runner, id } = await waitingOnlyForDirectory();
+  await expect(runner.retryJob(id, { kind: "owner" })).resolves.toEqual({
+    plan: null, excluded: [{ count: 2, reason: "parent_unconfirmed" }],
+  });
+});
+
+test("retry stops confirming when its request is cancelled and plans nothing", async () => {
+  const { runner, plan, to, at } = await setup({ count: 2 });
+  loseCommitReply(to, "b1");
+  const { id } = await runner.submit(plan);
+  await at(id, "unknown");
+  to.delay = async (_op, _path, signal) => {
+    await new Promise<void>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  };
+  const request = new AbortController();
+  const pending = runner.retryJob(id, { kind: "owner" }, request.signal);
+  request.abort(new Error("request cancelled"));
+  await expect(pending).rejects.toThrow("request cancelled");
+  expect((await at(id, "unknown")).items.map(({ outcome }) => outcome)).toEqual(["done", "unknown"]);
 });

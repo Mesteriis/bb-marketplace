@@ -11,7 +11,7 @@ const empty = z.strictObject({});
 const jobId = z.strictObject({ jobId: z.uuid() });
 // S17: файлы внутри каталога, чьё создание не подтверждено, в план не входят и считаются здесь.
 export const RetryResult = z.strictObject({
-  plan: OperationPlan,
+  plan: OperationPlan.nullable(),
   excluded: z.array(z.strictObject({ count: z.int().min(1), reason: z.literal("parent_unconfirmed") })),
 });
 export type RetryResult = z.infer<typeof RetryResult>;

@@ -61,10 +61,12 @@ test("offers retry for an unknown job", () => {
   expect(screen.getByRole("button", { name: "Повторить невыполненное" })).toBeDefined();
 });
 
-test("hides retry for a completed job", () => {
-  render(<Queue id="queue" open selection={selection} jobs={[job("completed", "223e4567-e89b-42d3-a456-000000000003")]}
+test("offers retry for a completed or cancelled job and not for a running one", () => {
+  const ids = ["223e4567-e89b-42d3-a456-000000000003", "223e4567-e89b-42d3-a456-000000000006"];
+  render(<Queue id="queue" open selection={selection}
+    jobs={[job("completed", ids[0]), job("cancelled", ids[1]), job("running", "223e4567-e89b-42d3-a456-000000000007")]}
     endpoints={[]} error={null} loading={false} {...handlers} onRetry={vi.fn()} />);
-  expect(screen.queryByRole("button", { name: "Повторить невыполненное" })).toBeNull();
+  expect(screen.getAllByRole("button", { name: "Повторить невыполненное" })).toHaveLength(2);
 });
 
 test("hides retry when the host does not wire it", () => {
@@ -76,6 +78,13 @@ test("hides retry when the host does not wire it", () => {
 test("says how many files wait for a directory check on a failed job", () => {
   const failed = job("failed", "223e4567-e89b-42d3-a456-000000000005");
   render(<Queue id="queue" open selection={selection} jobs={[failed]} endpoints={[]} error={null} loading={false}
-    {...handlers} onRetry={vi.fn()} unconfirmedChildren={{ [failed.id]: 2 }} />);
+    {...handlers} onRetry={vi.fn()} retryNotes={{ [failed.id]: { kind: "waiting", count: 2 } }} />);
   expect(screen.getByText("2 элемента ждут сверки каталога")).toBeDefined();
+});
+
+test("says that nothing is left to retry when the plan is empty", () => {
+  const failed = job("completed", "223e4567-e89b-42d3-a456-000000000008");
+  render(<Queue id="queue" open selection={selection} jobs={[failed]} endpoints={[]} error={null} loading={false}
+    {...handlers} onRetry={vi.fn()} retryNotes={{ [failed.id]: { kind: "nothing" } }} />);
+  expect(screen.getByText("Повторять нечего")).toBeDefined();
 });

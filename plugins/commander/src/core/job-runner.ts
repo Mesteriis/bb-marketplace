@@ -32,7 +32,7 @@ type EventKind = Parameters<RunnerDeps["onEvent"]>[0]["kind"];
 type Decision = { conflict: Conflict; action: ConflictAction };
 type PreparedDirectory = { source: Location; target: Location };
 type MoveFinish = "removed" | "source_retained" | "move_cancelled";
-type ItemResult = "done" | "skipped" | Exclude<MoveFinish, "removed"> | PreparedDirectory;
+type ItemResult = "done" | "skipped" | "skipped_parent" | Exclude<MoveFinish, "removed"> | PreparedDirectory;
 const cancelledError = new CommanderError("cancelled", "Job cancelled");
 const shutdownError = new CommanderError("internal", "runner is shutting down");
 const sourceRetained = "Source changed; source retained";
@@ -77,10 +77,14 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 /** A retry plan and the candidates left out because a directory above them is unconfirmed. */
 export interface RetryPlan {
-  plan: OperationPlan;
+  /** Null when no item can be planned: nothing to retry, or every candidate waits for a directory check. */
+  plan: OperationPlan | null;
   excluded: { count: number; reason: "parent_unconfirmed" }[];
 }
 const finishedStates: ReadonlySet<string> = new Set(["completed", "failed", "cancelled", "unknown"]);
+type Verdict = "done" | "retry" | "unresolved";
+/** Recorded as the error of an item the runner skipped because a directory above it is not done. */
+export const parentSkipNote = "Skipped: a directory above this item is not done";
 
 /** Same rule as the planner: the bytes of the file items with a fingerprint. */
 function totalBytesOf(items: PlanItem[]): OperationPlan["totalBytes"] {
@@ -256,40 +260,33 @@ export class JobRunner {
   }
 
   /**
-   * Plan a retry of the failed and unconfirmed items of a failed or unknown job.
-   * An unknown item that reconciliation proves done is recorded as done and left
-   * out. The remaining items form a new plan, checked by revalidate; running it
-   * goes through the usual plan path.
+   * Plan a retry of a finished job (completed, failed, cancelled or unknown). Failed
+   * items, items that never ran (pending) and unknown items that reconciliation
+   * proves not applied are candidates. A candidate inside a directory whose creation
+   * stays unconfirmed is left out and counted. An unknown item that reconciliation
+   * proves done is recorded as done. The plan is checked with revalidate and runs
+   * through the usual plan path. With nothing to plan, the result has no plan.
    */
-  retryJob(id: string, initiator: Initiator): Promise<RetryPlan> {
-    return this.accept(() => this.planRetry(id, initiator));
+  retryJob(id: string, initiator: Initiator, signal: AbortSignal = this.stopping.signal): Promise<RetryPlan> {
+    return this.accept(() => this.planRetry(id, initiator, signal));
   }
 
-  private async planRetry(id: string, initiator: Initiator): Promise<RetryPlan> {
+  private async planRetry(id: string, initiator: Initiator, signal: AbortSignal): Promise<RetryPlan> {
     const job = await this.requireJob(id);
     // A job still running, pending or waiting for a decision has items in flight.
     if (!finishedStates.has(job.state)) {
       throw new CommanderError("changed_since_plan", "Only a finished job can be retried");
     }
-    const verdicts = new Map<number, "done" | "retry" | "unresolved">();
+    const verdicts = new Map<number, Verdict>();
     const verdictOf = async (index: number) => {
       let verdict = verdicts.get(index);
       if (!verdict) {
-        verdict = await this.confirmUnknown(job, index);
+        verdict = await this.confirmUnknown(job, index, signal);
         verdicts.set(index, verdict);
       }
       return verdict;
     };
-    const selected = new Set<number>();
-    const queue: number[] = [];
-    const select = (index: number) => {
-      if (selected.has(index)) return;
-      selected.add(index);
-      queue.push(index);
-    };
-    // Items that never ran (pending) are planned only for a finished job.
-    // A candidate inside a directory whose creation stays unconfirmed waits for
-    // that check and is left out, then counted.
+    // An unknown directory that stays unconfirmed blocks every item below it.
     const unresolvedAbove = async (index: number): Promise<boolean> => {
       const target = job.plan.items[index].target;
       if (!target) return false;
@@ -301,13 +298,23 @@ export class JobRunner {
       }
       return false;
     };
-    let excludedCount = 0;
+
+    const selected = new Set<number>();
+    const excluded = new Set<number>();
+    const queue: number[] = [];
+    // Every selection path goes through here, so the directory rule applies to all of them.
+    const take = async (index: number) => {
+      if (selected.has(index) || excluded.has(index)) return;
+      if (await unresolvedAbove(index)) {
+        excluded.add(index);
+        return;
+      }
+      selected.add(index);
+      queue.push(index);
+    };
     for (const [index, { outcome }] of job.items.entries()) {
-      const candidate = outcome === "failed" || outcome === "pending"
-        || (outcome === "unknown" && (await verdictOf(index)) === "retry");
-      if (!candidate) continue;
-      if (await unresolvedAbove(index)) excludedCount++;
-      else select(index);
+      if (outcome === "failed" || outcome === "pending") await take(index);
+      else if (outcome === "unknown" && (await verdictOf(index)) === "retry") await take(index);
     }
     // A child cannot succeed before its directory exists: a failed or unproven
     // directory above a selected item is planned first, so it runs first.
@@ -316,17 +323,18 @@ export class JobRunner {
       if (!target) continue;
       const caseSensitive = this.deps.provider(target.endpoint).endpoint.caseSensitive;
       for (const [index, item] of job.plan.items.entries()) {
-        if (selected.has(index) || item.kind !== "dir" || !item.target || item.target.endpoint !== target.endpoint) continue;
-        if (!isAncestorOrSelf(item.target.path, target.path, caseSensitive)) continue;
+        if (selected.has(index) || excluded.has(index) || item.kind !== "dir" || !item.target) continue;
+        if (item.target.endpoint !== target.endpoint || !isAncestorOrSelf(item.target.path, target.path, caseSensitive)) continue;
         const { outcome } = job.items[index];
-        if (outcome === "failed" || (outcome === "unknown" && (await verdictOf(index)) === "retry")) select(index);
+        if (outcome === "failed" || (outcome === "unknown" && (await verdictOf(index)) === "retry")) await take(index);
       }
     }
-    // The runner skips a child only because a directory above it is not done
-    // (blockedParent), before any conflict decision. Such a child was never
-    // tried, so it follows a selected directory into the plan.
+    // The runner skips an item only because a directory above it is not done (blockedParent),
+    // and records that reason. Such an item was never tried and follows a selected directory.
+    // An item the owner skipped on a conflict has no such reason and is not repeated.
     for (const [index, item] of job.plan.items.entries()) {
-      if (selected.has(index) || job.items[index].outcome !== "skipped" || !item.target) continue;
+      if (selected.has(index) || excluded.has(index) || !item.target) continue;
+      if (job.items[index].outcome !== "skipped" || job.items[index].error !== parentSkipNote) continue;
       const child = item.target;
       const caseSensitive = this.deps.provider(child.endpoint).endpoint.caseSensitive;
       const blocked = [...selected].some((dir) => {
@@ -335,12 +343,14 @@ export class JobRunner {
           && ancestor.path.segments.length < child.path.segments.length
           && isAncestorOrSelf(ancestor.path, child.path, caseSensitive);
       });
-      if (blocked) select(index);
+      if (blocked) await take(index);
     }
     const confirmed = [...verdicts].filter(([, verdict]) => verdict === "done").map(([index]) => index);
     if (confirmed.length) await this.recordConfirmed(job, confirmed);
+    const excludedGroups: RetryPlan["excluded"] = excluded.size
+      ? [{ count: excluded.size, reason: "parent_unconfirmed" }] : [];
     const kept = [...selected].sort((a, b) => a - b);
-    if (kept.length === 0) throw new CommanderError("changed_since_plan", "No item can be retried safely");
+    if (kept.length === 0) return { plan: null, excluded: excludedGroups };
 
     const items = kept.map((index) => job.plan.items[index]);
     const unsigned: Omit<OperationPlan, "digest"> = {
@@ -363,27 +373,31 @@ export class JobRunner {
     if (checked && !checked.ok) {
       throw new CommanderError("changed_since_plan", "Retry plan no longer matches the sources or targets; create a new plan");
     }
-    return {
-      plan,
-      excluded: excludedCount ? [{ count: excludedCount, reason: "parent_unconfirmed" }] : [],
-    };
+    return { plan, excluded: excludedGroups };
   }
 
-  /** Decide an unknown item from its recorded checkpoint, reading the endpoints but writing nothing new. */
-  private async confirmUnknown(job: OperationJob, index: number): Promise<"done" | "retry" | "unresolved"> {
+  /**
+   * Decide an unknown item from its recorded checkpoint. The check reads the endpoints,
+   * and reconciliation may also remove a temporary file this queue created, using the
+   * recorded evidence. That removal happens before any plan exists. The request signal
+   * cancels the check, and so does shutdown of the runner.
+   */
+  private async confirmUnknown(job: OperationJob, index: number, signal: AbortSignal): Promise<Verdict> {
     const checkpoint = await this.store.lastCheckpoint(job.id, index);
     // The runner records prepared before any mutation, so a missing checkpoint means nothing was issued.
     if (!checkpoint) return "retry";
     const item = job.plan.items[index];
+    const combined = AbortSignal.any([signal, this.stopping.signal]);
     try {
-      const context = this.context(job.id, index, this.stopping.signal);
+      const context = this.context(job.id, index, combined);
       context.load(checkpoint);
       const outcome = await reconcileItem(checkpoint, item.source && this.location(item.source),
         this.recoveredTarget(item, checkpoint), item, job.plan, context, (point) => this.store.checkpoint(point));
       if (outcome === "done") return "done";
       return outcome === "pending" ? "retry" : "unresolved";
     } catch {
-      this.stopping.signal.throwIfAborted();
+      // A cancelled request is not a verdict: it propagates and the item stays as it was.
+      combined.throwIfAborted();
       return "unresolved";
     }
   }
@@ -620,8 +634,10 @@ export class JobRunner {
           } else {
             const outcome = await this.perform(job, index, context, decision);
             if (typeof outcome === "string") {
-              const warning = outcome === "source_retained" ? sourceRetained : outcome === "move_cancelled" ? moveCancelled : undefined;
-              const result = outcome === "done" || outcome === "skipped" ? outcome : job.plan.kind === "delete" ? "skipped" : "done";
+              const warning = outcome === "source_retained" ? sourceRetained : outcome === "move_cancelled" ? moveCancelled
+                : outcome === "skipped_parent" ? parentSkipNote : undefined;
+              const result = outcome === "skipped_parent" ? "skipped"
+                : outcome === "done" || outcome === "skipped" ? outcome : job.plan.kind === "delete" ? "skipped" : "done";
               await this.record(await this.requireJob(id), index, result, undefined, job.progress.bytesDone, warning);
             } else {
               prepared.set(index, outcome);
@@ -720,7 +736,7 @@ export class JobRunner {
     const expectedSource = decision?.conflict.source ?? item.fingerprint;
     const { signal, mutate } = context;
     const expandedDirectory = this.expandedDirectory(job, index, source);
-    if (target && (job.plan.kind === "copy" || job.plan.kind === "move") && this.blockedParent(job, index, target)) return "skipped";
+    if (target && (job.plan.kind === "copy" || job.plan.kind === "move") && this.blockedParent(job, index, target)) return "skipped_parent";
     const oldSource = source && await observe(source, context, Boolean(expectedSource?.sha256));
     // A case-only rename names its own source: S2 plans it with an absent target, and it is no conflict.
     const caseOnlyRename = job.plan.kind === "rename" && Boolean(source && target && isCaseOnlyPair(source, target));

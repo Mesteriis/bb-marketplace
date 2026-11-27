@@ -9,18 +9,20 @@ import { approvalState, operationText, reasonText, ru, stateText } from "./strin
 const plurals = new Intl.PluralRules("ru");
 const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as const;
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
-// S17: только задания, у которых есть невыполненные элементы (failed или unknown).
-const retryable = new Set(["failed", "unknown"]);
+// S17: те же конечные состояния, что принимает ядро повтора.
+const retryable = new Set(["completed", "failed", "cancelled", "unknown"]);
+/** S17: the result of the last retry request for a job: nothing to retry, or files waiting for a check. */
+export type RetryNote = { kind: "nothing" } | { kind: "waiting"; count: number };
 const stateIcons = {
   pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
   completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, unconfirmedChildren }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, retryNotes }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
-  onRetry?: (job: OperationJob) => void; unconfirmedChildren?: Record<string, number>;
+  onRetry?: (job: OperationJob) => void; retryNotes?: Record<string, RetryNote>;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -69,7 +71,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
     {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
-    {(unconfirmedChildren?.[job.id] ?? 0) > 0 && <div className="cm-meta">{ru.retryWaitsForCheck(unconfirmedChildren![job.id])}</div>}
+    {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"
+      ? ru.retryNothing : ru.retryWaitsForCheck((retryNotes[job.id] as { count: number }).count)}</div>}
     <div className="cm-actions">
       {conflict && <Button size="sm" data-conflict-id={conflict.id} onClick={() => onInspect(job)}>{ru.resolve}</Button>}
       {conflict && (conflict.allowedResolutions?.includes("skip") ?? true) &&
@@ -86,8 +89,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
 export type QueueProps = {
   jobs: JobView[]; endpoints: EndpointView[]; error: Problem | null; loading: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
-  /** S17: files waiting for a directory check, by job id. */
-  unconfirmedChildren?: Record<string, number>;
+  /** S17: the last retry result, by job id. */
+  retryNotes?: Record<string, RetryNote>;
   /** S17: optional, so a host without the retry wiring still renders the queue. */
   onRetry?: (job: OperationJob) => void;
 };

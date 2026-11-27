@@ -1,4 +1,4 @@
-import type { PluginKvStorage } from "@get-bb/plugin-sdk";
+import type { BbPluginApi, PluginKvStorage } from "@get-bb/plugin-sdk";
 import { expect, test, vi } from "vitest";
 import { CommanderError } from "../../core/errors.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
@@ -10,6 +10,7 @@ import { FakeProvider } from "../../core/testing/fake-provider.ts";
 import { MemoryJobStore } from "../../core/testing/memory-job-store.ts";
 import { createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
+import { registerAgentTools } from "./agent-tools.ts";
 import { createOperations } from "./rpc-handlers.ts";
 
 const date = "2026-11-27T00:00:00.000Z";
@@ -87,8 +88,8 @@ test("an agent with a grant on the job's endpoints gets a retry plan owned by th
   const { ops, kv, job } = await failedAgentJob();
   kv.set("agent-grants", [{ threadId: "thread-a", endpoint: "*", scope: parsePosix("/"), permissions: ["read", "write"] }]);
   const { plan } = await ops.retry(job.id, agent, signal);
-  expect(plan.initiator).toEqual({ kind: "agent", threadId: "thread-a" });
-  expect(plan.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
+  expect(plan!.initiator).toEqual({ kind: "agent", threadId: "thread-a" });
+  expect(plan!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a" }]]);
 });
 
 test("an agent from another thread is refused by ownership before any grant is read", async () => {
@@ -96,4 +97,22 @@ test("an agent from another thread is refused by ownership before any grant is r
   kv.set("agent-grants", [{ threadId: "thread-b", endpoint: "*", scope: parsePosix("/"), permissions: ["read", "write"] }]);
   await expect(ops.retry(job.id, { kind: "agent", threadId: "thread-b" }, signal))
     .rejects.toMatchObject({ message: "Job belongs to another initiator" });
+});
+
+test("the commander_retry tool gives a granted agent a plan ticket and refuses an agent without a grant", async () => {
+  const { ops, kv, job } = await failedAgentJob();
+  const tools = new Map<string, (input: unknown, ctx: unknown) => Promise<unknown>>();
+  const agents = {
+    registerTool: (tool: { name: string; execute: unknown }) => {
+      tools.set(tool.name, tool.execute as (input: unknown, ctx: unknown) => Promise<unknown>);
+    },
+  };
+  registerAgentTools(agents as unknown as BbPluginApi["agents"], ops);
+  const retry = tools.get("commander_retry")!;
+  const ctx = { threadId: "thread-a", projectId: "project", signal };
+  const body = async () => JSON.parse(((await retry({ jobId: job.id }, ctx)) as { content: { text: string }[] }).content[0].text);
+
+  expect(await body()).toEqual({ code: "forbidden", message: "Commander refused the request" });
+  kv.set("agent-grants", [{ threadId: "thread-a", endpoint: "*", scope: parsePosix("/"), permissions: ["read", "write"] }]);
+  expect(await body()).toMatchObject({ status: "planned", digest: expect.any(String) });
 });
