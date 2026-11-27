@@ -55,6 +55,9 @@ How to answer (diff-review's rules, after diffity):
 
 A thread you leave unanswered when your turn ends shows "No reply" to the owner.
 
+- `bb git-dashboard review open [file] [--view uncommitted|staged|unstaged|branch|all|commit|range|files] [--base …] [--commit …] [--range a...b] [--thread …]` opens the thread's Review in the BB window that shows it, on that view and at that file.
+- A pull request's review thread sent with Fix with agent is answered the same way, by the id the message gives; the answer is kept as a draft the owner posts to the pull request (the command says so), and the thread's status stays the forge's.
+
 ### AI runs
 
 The owner can start AI runs from Review: an AI review, a summary, an explanation of a file or lines, a fix in a new thread, and a reviewer that answers comments mentioning `@reviewer` or `@agent`. Each run is a thread of its own, a child of the reviewed thread, on the same working copy; its first message says what to do.

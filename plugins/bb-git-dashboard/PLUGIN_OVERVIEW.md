@@ -8,7 +8,7 @@ Each working copy is matched to its forge from its `origin` remote (SSH aliases 
 
 ## Projects folder
 
-The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with `.git` is a project, a repository inside another project's folder is listed under that project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview shows the projects found as a tree and what was skipped and why.
+The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with `.git` is a project, a nested repository, linked worktree or submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview shows the projects found as a tree and what was skipped and why.
 
 ## History
 
@@ -16,7 +16,7 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## Line review
 
-**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer.
+**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer. It follows the copy, keeps drafts, marks Viewed, reverts and finds; Reviews lists all.
 
 ## My PRs
 
@@ -24,7 +24,7 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## Pull requests and issues
 
-A pull request opens with its discussion, checks, files with line threads and commits. Comment, reply and resolve, comment on lines, submit a review, request reviewers, rename, mark ready or draft, close, reopen and merge, each after a confirmation and where the forge allows it. Fix with agent sends a thread or failed check to the pull request's thread. Issues open with their comments, can be closed, reopened and created.
+A pull request opens with its discussion, checks, files with line threads and commits. Comment, reply and resolve, comment on lines, submit a review, request reviewers, rename, mark ready or draft, close, reopen and merge, each after a confirmation and where the forge allows it. Fix with agent sends a thread or failed check to an agent; its answers wait as drafts you post. Issues open with their comments, can be closed, reopened and created.
 
 ## CI/CD
 
@@ -32,6 +32,6 @@ The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions,
 
 ## Remote repositories
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD runs, issues and variables where supported. Secret and GitLab CI/CD variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git transport uses the selected account’s credential in the execution host’s macOS Keychain. The connection wizard stores API tokens in Makosh Credential Vault when enabled and keeps a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s credential in the host’s macOS Keychain. The connection wizard stores API tokens in Makosh Credential Vault when enabled and keeps a fallback copy in BB’s secret settings.
 
 The thread’s Git panel resolves its registered working copy. Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their selected worktree or pull request when the selection in Git changes.

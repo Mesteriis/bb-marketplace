@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.2 — 2026-11-27
+
+The rest of diff-review, so it can be removed: its parity checklist has no "missing" row left.
+
+- **The view:** Review remembers the picked view and its switches per thread tab or working copy; a first look at an empty uncommitted view shows the branch's commits instead; **Side by side**; the commit view lists HEAD's recent commits; **Any file** comments on any file of the copy, changed or not.
+- **Following the copy:** an edit, a stage or a commit reloads the Review by itself (a watch on the copy's host while the Review is on screen). Patches come in batches of 25 after the file list, with Retry; changes over 2,000 lines start folded.
+- **Files:** **Viewed** marks (cleared when the file's change moves on; a viewed file folds), **Open** in BB's preview, **Revert…** a file or chosen hunks in the uncommitted view after confirming, and files left out by **Line review: files to leave out** and the copy's `.diffityignore` / `info/diffityignore`, counted in the stats.
+- **Moving around:** **Find** (⌘/Ctrl+F, Enter / Shift+Enter, Match case), **Go to** a file, comment or view (⌘/Ctrl+P), previous and next comment, and palette commands for the Review's actions.
+- **Kept per tab and view:** unsent comments, folds and scroll; drafts on files a view no longer shows are listed apart.
+- **Comments** render as Markdown (BB's chat rendering). **Clear review** deletes a view's threads and closes its AI runs. **Line review: colours for colour blindness** shows blue and orange.
+- **Reviews** in Git lists every review with its open threads, with a count on the button; reviews of detached copies can be deleted. A **Review** button in the thread header and a row in the thread's Info. `bb git-dashboard review open [file] [--view …] [--thread …]` opens a thread's Review in the window that shows it.
+- **Pull requests:** threads sent with **Fix with agent** are mirrored, so the agent answers each by id; its answers wait under the thread as drafts to **Post**, **Post and resolve**, **Edit** or **Discard**. Fix with agent now names the host of the new thread's worktree (it failed when it had to start a thread).
+- **@reviewer** that cannot start a reviewer (no BB project and no thread on the copy) says why at the comment.
+- Ported from diff-review (MIT): the revert, watch, ignore, view memory and state, commands, find, Go to and Reviews page parts.
+
 ## 0.9.1 — 2026-11-27
 
 AI runs of the line review, the second part of taking over diff-review (0.9.2 brings the rest).
