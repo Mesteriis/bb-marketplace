@@ -57,9 +57,9 @@ function Breadcrumbs({ segments }: { segments: ResourcePath["segments"] }) {
   </span>;
 }
 
-function Address({ tab, onPath, onFilter, onParent, onRefresh }: {
+function Address({ tab, onPath, onFilter, onParent, onRefresh, onSearch }: {
   tab: Tab; onPath: (input: string) => void; onFilter: (value: string) => void;
-  onParent: () => void; onRefresh: () => void;
+  onParent: () => void; onRefresh: () => void; onSearch?: () => void;
 }) {
   const [path, setPath] = useState(nativePath(tab.path) ?? displayPath(tab.path));
   return <div className="cm-address">
@@ -70,6 +70,8 @@ function Address({ tab, onPath, onFilter, onParent, onRefresh }: {
     </form>
     <Input type="search" className="cm-filter" aria-label={ru.filter} placeholder={ru.filter} value={tab.filter}
       maxLength={1024} onChange={(event) => onFilter(event.currentTarget.value)} />
+    {onSearch && <Button type="button" size="sm" variant="ghost" aria-label={ru.search.title}
+      onClick={onSearch}><Icon name="Search" /></Button>}
     <Button size="sm" variant="ghost" aria-label={ru.refresh} onClick={onRefresh}><Icon name="ArrowReloadHorizontal" /></Button>
   </div>;
 }
@@ -100,6 +102,7 @@ export interface PaneProps {
   onOpen: (entry: Entry | null) => void;
   onRefresh: () => void;
   onAccess: () => void;
+  onSearch?: () => void;
 }
 
 export function Pane(props: PaneProps) {
@@ -178,7 +181,7 @@ export function Pane(props: PaneProps) {
       {props.tabs.length > 1 && <Button size="sm" variant="ghost" aria-label={ru.closeTab} onClick={props.onCloseTab}><Icon name="X" /></Button>}
     </div>
     {tab && <Address key={location} tab={tab} onPath={props.onPath} onFilter={props.onFilter}
-      onParent={() => { if (above) props.onNavigate(above); }} onRefresh={props.onRefresh} />}
+      onParent={() => { if (above) props.onNavigate(above); }} onRefresh={props.onRefresh} onSearch={props.onSearch} />}
     <div className="cm-grid" ref={grid} role="grid" tabIndex={0} aria-label={ru[props.side]} aria-multiselectable="true"
       aria-busy={!!directory?.loading} aria-rowcount={total + 1 + Number(!!status)}
       aria-activedescendant={renderedCursor ? uid + "-" + cursorIndex : undefined}
