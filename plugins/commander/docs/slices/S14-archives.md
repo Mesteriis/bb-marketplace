@@ -38,7 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
-| `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?: ArchiveReason` (§10) — разрешено координатором |
+| `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?` с проверкой пары code+reason (§10) — разрешено координатором |
 
 ## 3. Процесс helper
 
