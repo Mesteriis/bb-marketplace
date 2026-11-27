@@ -106,7 +106,8 @@ Modify `docs/security.md` (раздел «Содержимое для агент
 ### Задача 2 (S10): ScanJob, хеши и сравнение
 
 **Files:** Create `src/core/scan-job.ts`, `src/core/compare.ts`,
-`src/adapters/bb/scan-store-sqlite.ts`; Modify `src/adapters/bb/migrations.ts`
+`src/adapters/bb/scan-store-sqlite.ts`, `src/ui/compare-view.tsx` (экран
+сравнения и хеша по артборду `compare.html`, добавлен после ревью); Modify `src/adapters/bb/migrations.ts`
 (таблица `scan_jobs`), `src/adapters/bb/rpc-handlers.ts`,
 `src/adapters/bb/agent-tools.ts`, `src/core/wire/rpc.ts`.
 Tests: `src/core/scan-job.test.ts`, `src/core/compare.test.ts`,
