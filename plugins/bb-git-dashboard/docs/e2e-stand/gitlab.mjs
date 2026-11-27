@@ -90,7 +90,7 @@ try {
   check("no horizontal overflow at 768 px", overflow <= 0, overflow);
   check("no page errors", errors.length === 0, errors);
 } catch (error) {
-  check("probe ran to the end", false, String(error).slice(0, 300));
+  check("probe ran to the end", false, String(error).slice(0, 1500));
 } finally { await browser.close(); }
 console.log(failures.length ? "FAIL" : "PASS");
 process.exit(failures.length ? 1 : 0);
