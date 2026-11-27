@@ -38,7 +38,10 @@
 | Changes requested | `reviewDecision` | `detailed_merge_status=not_approved` → Awaiting review | — | голос −10 / −5 |
 | Unresolved comments | `reviewThreads` | `discussions_not_resolved` | — | — |
 
-Открытый вопрос: фильтр `approved_by_usernames` GitLab может быть доступен не на всех тарифах — сверить с документацией до Task 2; если на Free его нет, Reviewed для GitLab показывается с пояснением.
+Сверено с документацией (2026-11-27):
+- GitLab: `scope` — `created_by_me | assigned_to_me | reviews_for_me | all`; Review requested — `scope=reviews_for_me`; фильтра «отревьюено мной» нет — Reviewed у GitLab = «одобрено мной» (`scope=all&approved_by_usernames[]=<me>`). `head_pipeline` есть только у одного MR (`/projects/:id/merge_requests/:iid`), поэтому наблюдение GitLab читает его по каждому открытому MR. `has_conflicts` в списке может быть устаревшим; перепроверку (`with_merge_status_recheck`) не запрашиваем. `x-total` может не прийти — тогда счётчика нет.
+- Gitea: у `/repos/issues/search` заголовок с общим числом не задокументирован — счётчик только если пришёл `x-total-count`; ветки, `mergeable` и голова читаются из `/repos/{o}/{r}/pulls/{n}`, CI — из `/commits/{sha}/status`, только для открытых вкладок.
+- Azure: эндпоинта уровня организации в документации нет — обход `/{org}/_apis/projects` и `/{org}/{project}/_apis/git/pullrequests`; id пользователя — `/{org}/_apis/connectionData` (`authenticatedUser.id`), в документации REST не найден, проверяется двойником.
 
 Оповещения: GitHub — падение CI и комментарии; GitLab, Gitea — новое падение CI; Azure — нет (CI не читается). Ограничения записаны в матрице возможностей и видны в UI.
 
