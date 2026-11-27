@@ -315,6 +315,12 @@ export async function buildPlan(
       if (sameNameExactly(lastSegment(req.sources[0].path), req.newName)) {
         throw new CommanderError("invalid_name", "The new name equals the current name");
       }
+      // On a case-insensitive endpoint both Unicode forms name one entry, so a form-only change cannot be listed or checked.
+      const current = lastSegment(req.sources[0].path);
+      if (!deps.provider(req.sources[0].endpoint).endpoint.caseSensitive && "t" in current && "t" in req.newName
+          && current.t.normalize("NFC") === req.newName.t.normalize("NFC")) {
+        throw new CommanderError("invalid_name", "The new name differs from the current name only in Unicode form");
+      }
       targetEndpoint = sourceEndpoint;
       assertWritable(deps.provider(sourceEndpoint!).endpoint);
       assertRemovable(req.sources[0], deps.protectedPathsFor(req.sources[0].endpoint));
