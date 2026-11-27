@@ -5,7 +5,7 @@ import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
-import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
+import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
 import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
@@ -39,7 +39,7 @@ export function publicError(error: unknown) {
 
 function damaged(job: OperationJob): DamagedJob | null {
   return job.state === "unknown" && job.error?.code === "internal" && job.error.message === "Stored job is damaged"
-    ? { id: job.id, state: "unknown", damaged: true, message: "Stored job is damaged" }
+    ? { id: job.id, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: job.createdAt }
     : null;
 }
 
@@ -310,6 +310,16 @@ export function createOperations(deps: {
       await runner.decide(jobId, decision);
       return {};
     },
+    async checkPlan({ jobId, digest }: RpcInput<"plan_check">, signal: AbortSignal) {
+      await deps.ready();
+      const { plan } = await pending(jobId, digest);
+      await endpoints.prepare(refs(plan), signal);
+      const result = await revalidate(plan, planner, signal);
+      signal.throwIfAborted();
+      await pending(jobId, digest);
+      const checkedAt = planner.now().toISOString();
+      return result.ok ? { ok: true as const, checkedAt } : { ok: false as const, changed: result.changed, checkedAt };
+    },
     async approve({ jobId, digest }: RpcInput<"plan_approve">, signal: AbortSignal) {
       await deps.ready();
       const job = await pending(jobId, digest);
@@ -384,6 +394,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     job_list: (input) => ops.jobs(input),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
+    plan_check: (input, ctx) => ops.checkPlan(input, ctx.experimental_signal),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),
     plan_reject: (input) => ops.reject(input),
     agent_grants_list: async () => ({ grants: await ops.listGrants() }),

@@ -36,6 +36,7 @@ export const PlanInput = z.strictObject({
 export const DamagedJob = z.strictObject({
   id: z.uuid(), state: z.literal("unknown"), damaged: z.literal(true),
   message: z.literal("Stored job is damaged"),
+  createdAt: z.iso.datetime(),
 });
 export type DamagedJob = z.infer<typeof DamagedJob>;
 export const JobView = z.union([OperationJob, DamagedJob]);
@@ -85,6 +86,20 @@ export const rpcSchemas = {
   },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
+  // Read-only preflight for an owner client. Approval repeats validation against live metadata.
+  plan_check: {
+    input: jobId.extend({ digest }),
+    output: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true), checkedAt: z.iso.datetime() }),
+      z.strictObject({
+        ok: z.literal(false), checkedAt: z.iso.datetime(),
+        changed: z.array(z.strictObject({
+          index: z.int().nonnegative(),
+          reason: z.enum(["source_changed", "target_changed"]),
+        })).min(1).max(100_000),
+      }),
+    ]),
+  },
   plan_approve: { input: jobId.extend({ digest }), output: OperationJob },
   plan_reject: { input: jobId.extend({ digest }), output: OperationJob },
   agent_grants_list: { input: empty, output: z.strictObject({ grants: z.array(AgentGrant).max(256) }) },
