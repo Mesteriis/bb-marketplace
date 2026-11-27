@@ -16,7 +16,9 @@
 ## Контракт
 
 Источник истины — `plugins/remote-hub/src/core/sftp-contract.ts` ветки
-`feat/remote-hub-sftp` (коммит `37fdffcd`, правки после `0bdc04d8`: `ea8e3bfa`, `37fdffcd`; рабочая копия
+`feat/remote-hub-sftp` (после переноса ветки на новый main — коммит `22933aad`; содержимое
+`sftp-contract.ts` то же, что в `37fdffcd`; история правок: `0bdc04d8`,
+`ea8e3bfa`, `37fdffcd`; рабочая копия
 `/Users/avm/projects/Personal/bb-main/.worktrees/remote-hub-sftp`), id плагина
 `makosh-remote-hub`. Плагины не импортируют файлы друг друга (AGENTS.md), поэтому
 `src/core/wire/remote-hub-sftp.ts` — ручное zod-зеркало этого файла:
@@ -25,7 +27,7 @@
 `hub_sftp_request_access`, `hub_sftp_grants`, `hub_sftp_open`, `hub_sftp_op`,
 `hub_sftp_close`, `SFTP_REFUSALS`, `SFTP_EVENTS_CHANNEL = "remote-hub.sftp"`,
 события `sftp.consent {profileId, state}`, `sftp.channel {channelId, state}`.
-Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@37fdffcd"`; тест-зеркало
+Константа `REMOTE_HUB_SFTP_CONTRACT = "remote-hub@22933aad"`; тест-зеркало
 сверяет те же примеры, что `sftp-contract.test.ts` Remote Hub (переписать
 значения литералами, не импортировать).
 
@@ -152,3 +154,19 @@ export function createSftpProvider(opts: {
 ## Ожидаемый diff
 
 3 модуля + тесты, ~800–1200 строк.
+
+## Расхождение слитого кода с контрактом (после слияния S5 @ `8a0837a2`)
+
+Код S5 в ветке Commander следует контракту `ea8e3bfa`
+(`REMOTE_HUB_SFTP_CONTRACT = "remote-hub@ea8e3bfa"`). До `37fdffcd`/`22933aad`
+не доведено:
+- в зеркале `SFTP_REFUSALS` нет кода `outcome_unknown` (conflict);
+- `channel_closed` на мутации трактуется как неоднозначный исход
+  (`outcome_unknown`), а по контракту он означает «запрос не отправлялся» —
+  нужно переоткрыть канал и повторить один раз;
+- константа контракта.
+
+Поведение сейчас осторожнее контракта (лишние `unknown`, без риска двойной
+записи). Доводку делает отдельная задача S5-follow-up: зеркало и мок по
+`22933aad`, правило повтора из раздела «Поведение», тесты из «Проверок».
+
