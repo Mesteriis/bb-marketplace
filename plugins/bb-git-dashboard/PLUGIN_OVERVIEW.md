@@ -16,15 +16,15 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## Line review
 
-**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer. It follows the copy, keeps drafts, marks Viewed, reverts and finds; Reviews lists all.
+**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer. It follows the copy, keeps drafts, marks Viewed, reverts and finds.
 
 ## My PRs
 
-**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, j/k moves. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.
+**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab, each led by what blocks it, with tiles on Open. Search (on GitHub the whole merged or closed history), fold or hide repositories, j/k moves. Alerts on failing CI and new comments come as toasts, a count and Push notifications.
 
 ## Pull requests and issues
 
-A pull request opens with its discussion, checks, files with line threads and commits. Comment, reply and resolve, comment on lines, submit a review, request reviewers, rename, mark ready or draft, close, reopen and merge, each after a confirmation and where the forge allows it. Fix with agent sends a thread or failed check to an agent; its answers wait as drafts you post. Issues open with their comments, can be closed, reopened and created.
+A pull request opens with its Markdown discussion and Jira links, checks, files (list, side by side, Shiki highlighting in BB's code theme) with line threads, and commits. Comment, reply, resolve, delete your comments, review, request reviewers, edit, close and merge, each confirmed first, where the forge allows. Link it to a thread, ask or explain it; Fix with agent hands a thread or failed check to an agent; its answers wait as drafts. github.com PR links open here. Issues open, close, reopen and are created.
 
 ## CI/CD
 
