@@ -15,6 +15,12 @@ agent tools и CLI, с одинаковыми проверками. Агент �
 `src/adapters/bb/agent-grants.ts`, `skills/commander/SKILL.md`,
 `docs/security.md`.
 
+Исключения владения: S7 добавляет `bb.skills: ["skills"]` в `package.json`
+вместе с `skills/commander/SKILL.md`; и, как каждый срез с видимым
+поведением, синхронно обновляет описание в трёх местах — `bb.description`
+в `package.json`, первая строка `PLUGIN_OVERVIEW.md`, запись `commander` в
+`marketplace.json` (только эти поля; затем `check-manifests`).
+
 ## Контракт
 
 `src/core/wire/rpc.ts` (zod, используется `defineRpcContract` в server.ts и

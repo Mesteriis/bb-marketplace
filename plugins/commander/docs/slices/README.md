@@ -30,11 +30,25 @@
   изменении (AGENTS.md). Запись о иконках Lucide в артбордах `docs/design/v2`
   уже есть (тред Commander) — не дублировать.
 
+## Исключения владения
+
+- `bb.description` в `package.json`, первая строка `PLUGIN_OVERVIEW.md` и
+  запись `commander` в `marketplace.json` меняет синхронно любой срез,
+  который вводит видимое поведение (S7, S8), — только эти поля.
+- `bb.skills` в `package.json` добавляет S7 вместе с
+  `skills/commander/SKILL.md`.
+- `THIRD_PARTY_NOTICES.md`: S0 — запись о вендоренных компонентах, S2 —
+  записи о коде доноров; новые записи добавляются рядом, чужие не
+  переписываются.
+- `src/ui/index.ts` создаёт S0 как заглушку, дальше им владеет S8;
+  `src/core/index.ts` — заглушка S0, срезы ядра её не трогают (экспорт из
+  своих модулей).
+
 ## Порядок и владение
 
 | Срез | Файл спецификации | Зависит от | Владеет (пути от `plugins/commander/`, если не указано иное) |
 |---|---|---|---|
-| S0 | `S0-scaffold.md` | — | `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `tests/architecture.test.ts`, `components/**`, `lib/**`, `hooks/**`, `assets/icon.svg`, `PLUGIN_OVERVIEW.md`, `README.md`, `CHANGELOG.md`, `.gitignore`; в корне: запись `commander` в `.bb/plugins.json` и `marketplace.json`, запись о вендоренных компонентах в `THIRD_PARTY_NOTICES.md` |
+| S0 | `S0-scaffold.md` | — | `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `tests/architecture.test.ts`, `components/**`, `lib/**`, `hooks/**`, `assets/icon.svg`, `src/core/index.ts`, `src/ui/index.ts` (заглушки слоёв), `PLUGIN_OVERVIEW.md`, `README.md`, `CHANGELOG.md`, `.gitignore`; в корне: запись `commander` в `.bb/plugins.json` и `marketplace.json`, запись о вендоренных компонентах в `THIRD_PARTY_NOTICES.md` |
 | S1 | `S1-core-model.md` | S0 | `src/core/model.ts`, `src/core/provider.ts`, `src/core/errors.ts`, `src/core/size.ts`, `src/core/path.ts` и их `*.test.ts` |
 | S2 | `S2-core-planning.md` | S1 | `src/core/planner.ts`, `src/core/guards.ts`, `src/core/naming.ts`, `src/core/permissions.ts` и их тесты; корневой `THIRD_PARTY_NOTICES.md` |
 | S3 | `S3-core-jobs.md` | S1 | `src/core/job-machine.ts`, `src/core/job-runner.ts`, `src/core/reconcile.ts`, `src/core/job-store.ts`, `src/core/testing/fake-provider.ts`, `src/core/testing/memory-job-store.ts` и тесты |
