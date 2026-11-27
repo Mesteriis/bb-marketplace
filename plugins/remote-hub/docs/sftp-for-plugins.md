@@ -66,10 +66,17 @@ the contract. Two of them describe a lost channel:
 
 `agent_unavailable` means a connection that signs in with the SSH agent was refused and no agent socket is there.
 The agent is the one ssh itself would use for that host: an `IdentityAgent` in the owner's `~/.ssh/config` (1Password,
-Secretive) wins over `SSH_AUTH_SOCK`, so Remote Hub looks at that socket when it names the refusal. Remote Hub does not
-override the owner's configuration.
+Secretive) wins over `SSH_AUTH_SOCK`, so Remote Hub looks at that socket when it names the refusal. It reads the
+configuration as text, with its `Include` files (nested up to 16 deep, at most 64 files, inside `~/.ssh`), and runs
+nothing. When the text cannot settle which agent applies (a `Match` block, an unknown `%`-token or `~user`, an Include it
+will not follow) it does not claim the agent is missing: the refusal is `auth_failed`. Remote Hub does not override the
+owner's configuration.
 
-`keychain_unavailable` means the saved credential could not be read because the Keychain or Credential Vault could not
+**Unknown codes.** The set of codes grows. A client treats a code it does not know as `failure` (an internal failure of
+the operation) and keeps the message only for a log, never for a decision. The class of a refusal (`forbidden`,
+`not_found`, `conflict`, `invalid`) always stays one of those four.
+
+`keychain_unavailable` (new in Remote Hub 0.2.2; 0.2.1 answered `failure` in this case) means the saved credential could not be read because the Keychain or Credential Vault could not
 be reached at all (as opposed to `keychain_locked` and `keychain_needs_approval`, which the owner can fix with an unlock
 or Allow access).
 

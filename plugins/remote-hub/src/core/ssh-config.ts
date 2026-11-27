@@ -312,3 +312,28 @@ export function parseSshConfig(text: string, opts: ConfigOptions): ConfigParse {
   }
   return { entries, patternBlocks, issues: state.issues, incomplete: state.incomplete };
 }
+
+/** What the text alone says about one single-value directive for a host. */
+export type DirectiveLookup = { kind: "value"; value: string } | { kind: "none" } | { kind: "unknown" };
+
+/** ssh's own limit on nested Include files. */
+export const SSH_INCLUDE_MAX_DEPTH = 16;
+
+/**
+ * The first value of a directive (`IdentityAgent`...) that ssh would take for `host`, from the text of a config and the files
+ * its Include lines name, read where the Include stands. `none`: no line applies. `unknown`: the text cannot say: a Match
+ * block holds the directive before any certain value, or something was not read faithfully (a refused, cyclic, too deep or
+ * cut Include, a file cut at its limit). `rootPath` is the identity of the main file, so an Include of it is a cycle.
+ */
+export function lookupDirective(text: string, key: string, host: string, opts: ConfigOptions & { rootPath?: string }): DirectiveLookup {
+  const state: ReadState = { opts: { ...opts, maxDepth: opts.maxDepth ?? SSH_INCLUDE_MAX_DEPTH }, issues: [], items: [], hostChains: [], incomplete: opts.truncated === true, stack: opts.rootPath === undefined ? [] : [opts.rootPath] };
+  readInto(text, [], 0, state);
+  const wanted = key.toLowerCase();
+  for (const { conds, directive: d } of state.items) {
+    if (d.key !== wanted) continue;
+    if (conds.some((c) => c.kind === "host" && !hostSelects(c.patterns, host))) continue;
+    if (conds.some((c) => c.kind === "match")) return { kind: "unknown" };
+    return state.incomplete ? { kind: "unknown" } : { kind: "value", value: splitWords(d.value)[0] ?? "" };
+  }
+  return state.incomplete ? { kind: "unknown" } : { kind: "none" };
+}
