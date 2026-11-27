@@ -53,6 +53,12 @@ export const hostContract = defineRpcContract({
   reviewCommits: {input:z.object({root:path,identity}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),commits:z.array(z.object({sha:z.string(),subject:z.string()}))})])},
   /** The copy's files whose path holds every word of `query` (Any file view). */
+  /** What a copy's stack is told by at HEAD (CI templates). */
+  ciStack: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),head:z.string().nullable(),
+    paths:z.array(z.string().max(4096)).max(5000),manifests:z.record(z.string(),z.string().max(64*1024))})])},
+  /** The own CI templates folder's JSON files. */
+  ciTemplateFolder: {input:z.object({folder:z.string().min(1).max(1000)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),
+    files:z.array(z.object({name:z.string().max(255),text:z.string().max(64*1024)})).max(50),skipped:z.array(z.string().max(255)).max(1000)})])},
   reviewFiles: {input:z.object({root:path,identity,query:z.string().max(200)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),paths:z.array(z.string()),more:z.boolean()})])},
   /** Reverts an uncommitted file, or hunks of it, while its change is still the one shown (`changeRevision`). */

@@ -81,6 +81,15 @@ export function gitlabProvider(account: Account, http: Http): Provider {
         checks: pipeline.id === undefined ? [] : [{name: "Pipeline #" + String(pipeline.id), state: text(pipeline.status)}],
       };
     },
+    async createFile(repo, change) {
+      const {payload} = await http(project(repo) + "/repository/commits", {method: "POST", body: {
+        branch: change.branch, start_sha: change.base, commit_message: change.message,
+        actions: [{action: "create", file_path: change.path, content: change.content}],
+      }});
+      const made = sha(object(payload).id);
+      if (!made) throw new Error("OUTCOME_UNKNOWN");
+      return made;
+    },
     async mutate(repo, action) {
       if (action.kind === "create") {
         if (await getBranch(repo, action.head) !== action.expected) throw new Error("STALE_HEAD");

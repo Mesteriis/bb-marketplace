@@ -103,6 +103,21 @@ export function forgeProvider(account: Account, request: Http): Provider {
         ],
       };
     },
+    async createFile(repo, change) {
+      const root = forgeRepositoryPath(repo);
+      const file = root + "/contents/" + change.path.split("/").map(segment).join("/");
+      const content = Buffer.from(change.content).toString("base64");
+      if (github) await http(root + "/git/refs",{method:"POST",body:{ref:"refs/heads/" + change.branch,sha:change.base}});
+      const {payload} = await http(file,github ? {method:"PUT",body:{message:change.message,content,branch:change.branch}}
+        : {method:"POST",body:{message:change.message,content,branch:change.baseBranch,new_branch:change.branch}});
+      const commit = object(object(payload).commit);
+      const made = sha(commit.sha);
+      if (!made) throw new Error("OUTCOME_UNKNOWN");
+      // Gitea starts the branch at the base branch's head, which may have moved since the base was read.
+      const parents = array(commit.parents).map(parent => sha(object(parent).sha));
+      if (!github && parents.length && !parents.includes(change.base)) throw new Error("STALE_HEAD");
+      return made;
+    },
     async mutate(repo, action) {
       const root = forgeRepositoryPath(repo);
       if (action.kind === "create") {

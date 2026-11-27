@@ -3,6 +3,10 @@ import type { DispatchSpec } from "../../core/ci/dispatch.ts";
 import { queuedMinutes, type Job, type Run, type RunFilter } from "../../core/ci/model.ts";
 import type { JobLog, Workflow } from "../../core/ci/pipelines.ts";
 import type { CiOperation } from "../../core/ci/capabilities.ts";
+import type { CiTemplatesView } from "../../core/ci-templates/contract.ts";
+import type { CiValues } from "../../core/ci-templates/render.ts";
+
+export type TemplateRequest = {copyId: string; key: string; values: CiValues; branch: string; title: string; body: string};
 
 export type RunsPage = {items: Run[]; more: boolean; forge: "github" | "gitlab" | "gitea" | "azure";
   operations: Record<CiOperation, boolean>; limitations: Record<string, string>};
@@ -30,6 +34,12 @@ export type CiApi = {
   copy(text: string): Promise<boolean>;
   subscribe(copyId: string, threadIds: string[]): Promise<{subscribed: string[]}>;
   openThread(threadId: string): void;
+  /** CI templates for the copy's forge, with the stack found at HEAD. */
+  templates(copyId: string): Promise<CiTemplatesView>;
+  /** The server's render of a template and the preview of its new branch and pull request. */
+  prepareTemplate(request: TemplateRequest): Promise<{preview: {id: string; lines: string[]}; file: {path: string; text: string}}>;
+  /** Creates the branch and the pull request of a prepared template; the outcome names the pull request. */
+  publishTemplate(previewId: string): Promise<{status: string; code?: string; pullNumber?: number; summary: string[]}>;
 };
 
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";

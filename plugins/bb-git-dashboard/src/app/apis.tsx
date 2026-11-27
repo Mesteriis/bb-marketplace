@@ -41,6 +41,9 @@ export function ciApi(client: Client, navigate: Navigate): CiApi {
     subscribe: async (copyId, threadIds) => okValue(await client.call("ciSubscribe", {copyId, threadIds})),
     openThread: threadId => navigate.toThread(threadId),
     copy: text => experimental_copyToClipboard({text}),
+    templates: async copyId => okValue(await client.call("ciTemplatesView", {copyId})),
+    prepareTemplate: async request => okValue(await client.call("ciTemplatePrepare", request)),
+    publishTemplate: async previewId => okValue(await client.call("publish", {previewId})).value,
   };
 }
 

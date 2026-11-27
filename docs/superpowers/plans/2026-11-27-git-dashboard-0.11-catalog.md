@@ -1,6 +1,6 @@
 # Makosh Git 0.11 — каталог проектов
 
-Ветка `feature/bb-git-dashboard-catalog` от main 8ae848fe. Дизайн: строка 0.11.0 и §12 («настоящие проекты»). Перенос из GitWand `gitwand/v0.2.0`: `core/git-remotes.ts` (ключ репозитория по адресу remote, чтение remote из `.git/config`) и `core/repo-catalog.ts` (объединение локальных и удалённых, отметка «клонирован», сохранение прошлого списка источника при ошибке). Список удалённых берётся не из gh/glab, как в GitWand, а через API подключённых аккаунтов всех четырёх форджей (`Provider.repositories`).
+Ветка `feature/bb-git-dashboard-catalog` от main 84aeaa65. Дизайн: строка 0.11.0 и §12 («настоящие проекты»). Перенос из GitWand `gitwand/v0.2.0`: `core/git-remotes.ts` (ключ репозитория по адресу remote, чтение remote из `.git/config`) и `core/repo-catalog.ts` (объединение локальных и удалённых, отметка «клонирован», сохранение прошлого списка источника при ошибке). Список удалённых берётся не из gh/glab, как в GitWand, а через API подключённых аккаунтов всех четырёх форджей (`Provider.repositories`).
 
 ## Решения
 

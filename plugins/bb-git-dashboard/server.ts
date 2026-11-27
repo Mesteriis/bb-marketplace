@@ -10,6 +10,7 @@ import { remoteService } from "./src/adapters/bb/remote-service.ts";
 import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { projectCatalog } from "./src/adapters/bb/project-catalog.ts";
 import { catalogHandlers } from "./src/adapters/bb/catalog-rpc.ts";
+import { ciTemplateHandlers } from "./src/adapters/bb/ci-templates-rpc.ts";
 import { ciHandlers } from "./src/adapters/bb/ci-rpc.ts";
 import { historyHandlers } from "./src/adapters/bb/history-rpc.ts";
 import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
@@ -125,6 +126,15 @@ export default function plugin(bb: BbPluginApi) {
     },
   }, copyId => bb.realtime.publish("ci-changed", {copyId}));
   type Target = z.infer<typeof remoteTarget>;
+  const ciTemplates = ciTemplateHandlers(bb, {
+    copy: linkedCopy,
+    async linked(copy) {
+      const target = await kv.get<Target>(linkKey(copy));
+      if (!target) throw new Error("ACCOUNT_UNCONFIGURED");
+      return remote.linked(target, copy);
+    },
+    prepare: request => remote.prepare(request),
+  });
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);
   // Previously attached copies can be grouped after the host verifies the stored identity.
@@ -166,6 +176,7 @@ export default function plugin(bb: BbPluginApi) {
   bb.http.route("GET", "/grammar", grammarRoute());
   bb.rpc.register(rpc, {
     ...ci.handlers,
+    ...ciTemplates,
     ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
     ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
@@ -177,7 +188,8 @@ export default function plugin(bb: BbPluginApi) {
     repositories: (input,context) => clientOnly(context) ? remote.repositories(input) : denied(),
     pulls: (input,context) => clientOnly(context) ? remote.pulls(input) : denied(),
     pull: (input,context) => clientOnly(context) ? remote.pull(input) : denied(),
-    prepare: (input,context) => clientOnly(context) ? remote.prepare(input) : denied(),
+    // A CI file is prepared only from a template the server renders (ciTemplatePrepare).
+    prepare: (input,context) => clientOnly(context) && input.action.kind !== "ciFile" ? remote.prepare(input) : denied(),
     publish: ({previewId},context) => clientOnly(context) ? remote.publish(previewId) : denied(),
     remoteActivity: (_,context) => clientOnly(context) ? remote.activity() : [],
     repositoryLink: async ({copyId},context) => {

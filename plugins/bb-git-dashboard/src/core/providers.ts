@@ -17,7 +17,7 @@ export const repo = z.object({
 });
 export type Repo = z.infer<typeof repo>;
 const sha = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/);
-const branch = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.\/-]{0,249}$/);
+export const branch = z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9_.\/-]{0,249}$/);
 export const pull = z.object({
   number:z.number().int().positive(), title:z.string(), body:z.string(), state:z.string(),
   head:z.object({repo:z.string(), branch:z.string(), sha:sha.nullable()}),
@@ -53,4 +53,7 @@ export interface Provider {
   details(repo: Repo, number: number): Promise<PullDetails>;
   branch(repo: Repo, branch: string): Promise<string>;
   mutate(repo: Repo, action: PullMutation): Promise<{number: number; outcome: "accepted" | "completed"}>;
+  /** Creates one new file in a new branch started at the `base` commit of `baseBranch`; returns the new commit. */
+  createFile(repo: Repo, change: NewFile): Promise<string>;
 }
+export type NewFile = {branch: string; base: string; baseBranch: string; path: string; content: string; message: string};

@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { catalogGit, catalogLocal } from "./src/adapters/bb/catalog-host.ts";
+import { ciStack, ciTemplateFolder } from "./src/adapters/bb/ci-template-host.ts";
 
 /** The watches of copies whose Review is open; built on the first renewal, with that call's context. */
 let leases: WatchLeases | null = null;
@@ -121,6 +122,17 @@ export default experimental_defineHostEntry({
         return {ok:true as const, url:await originUrl(root,signal)};
       }
       catch (error) { return failureFor(error,"NO_ORIGIN"); }
+    },
+    async ciStack({root, identity}, {signal}) {
+      try {
+        await assertWorktree(root, identity, signal);
+        const found = await ciStack(root, signal);
+        return {ok:true as const, ...found, paths:found.paths.slice(0, 5000)};
+      } catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async ciTemplateFolder({folder}) {
+      try { const found = await ciTemplateFolder(folder); return {ok:true as const, files:found.files, skipped:found.skipped.slice(0, 1000)}; }
+      catch (error) { return failureFor(error,"INVALID_PATH"); }
     },
     async catalogLocal({root, exclude}, {signal}) {
       try { return {ok:true as const, ...await catalogLocal(root, exclude, signal)}; }

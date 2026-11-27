@@ -28,6 +28,8 @@ const inbox = {created_open: [issue(3, "[ABC-12] Add greeting check", "stand", "
   created_closed: [issue(1, "Initial import", "stand", "closed", true)]};
 const pulls = {3: {mergeable: false, additions: 12, deletions: 3, head: {ref: "greeting", sha: "e".repeat(40)}},
   4: {mergeable: true, additions: 2, deletions: 2, head: {ref: "readme", sha: "f".repeat(40)}}};
+// Branches: main, and the ones a new file was committed to (ci-templates.mjs).
+const branches = {main: "a".repeat(40)};
 const json = (res, status, body) => { res.writeHead(status, {"content-type": "application/json"}); res.end(body === undefined ? "" : JSON.stringify(body)); };
 
 createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
@@ -41,6 +43,15 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     if (req.method !== "GET") {
       appendFileSync(log, JSON.stringify({method: req.method, path, body: body ? JSON.parse(body) : null}) + "\n");
       if (/\/actions\/(workflows\/[^/]+\/dispatches|runs\/\d+\/(rerun|rerun-failed-jobs|cancel))$/.test(path)) return json(res, 204);
+      // A CI template's file in a new branch, then its pull request (ci-templates.mjs).
+      const file = /^\/api\/v1\/repos\/stand\/beta\/contents\/(.+)$/.exec(path);
+      if (req.method === "POST" && file) {
+        const input = JSON.parse(body);
+        if (branches[input.new_branch] || !branches[input.branch]) return json(res, 422, {message: "branch exists or base missing"});
+        branches[input.new_branch] = "d".repeat(40);
+        return json(res, 201, {content: {path: decodeURIComponent(file[1])}, commit: {sha: "d".repeat(40), parents: [{sha: branches[input.branch]}]}});
+      }
+      if (req.method === "POST" && path === "/api/v1/repos/stand/beta/pulls") return json(res, 201, {number: 9});
       // Deleting one's own discussion comment (pr-parity.mjs).
       if (req.method === "DELETE" && /^\/api\/v1\/repos\/stand\/beta\/issues\/comments\/\d+$/.test(path)) return json(res, 204);
       // Pull request and issue writes of the review probe.
@@ -53,6 +64,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     // A second repository no working copy has, for the catalog's clone (catalog.mjs).
     if (path === "/api/v1/user/repos") return json(res, 200, [repo, {...repo, id: 6, name: "delta", full_name: "stand/delta", clone_url: origin + "/stand/delta.git"}]);
     if (path === r) return json(res, 200, repo);
+    const named = /^\/api\/v1\/repos\/stand\/beta\/branches\/(.+)$/.exec(path);
+    if (named) { const head = branches[decodeURIComponent(named[1])]; return head ? json(res, 200, {name: decodeURIComponent(named[1]), commit: {id: head}}) : json(res, 404, {message: "not found"}); }
     if (path === "/api/v1/repos/issues/search") {
       const flag = ["created", "review_requested", "reviewed", "assigned"].find(name => url.searchParams.get(name) === "true");
       const items = inbox[flag + "_" + url.searchParams.get("state")] ?? [];

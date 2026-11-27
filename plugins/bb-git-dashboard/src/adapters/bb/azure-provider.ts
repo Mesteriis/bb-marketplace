@@ -140,6 +140,16 @@ export function azureProvider(account: Account, http: Http): Provider {
       return {pull:value, diff:null, changes, comments, checks, issues};
     },
     branch,
+    async createFile(repo, change) {
+      // A push whose ref update names the base commit as the old value starts the new branch there.
+      const {payload} = await http(endpoint(repoPath(repo) + "/pushes"), {method:"POST", body:{
+        refUpdates:[{name:refPrefix + change.branch, oldObjectId:change.base}],
+        commits:[{comment:change.message, changes:[{changeType:"add", item:{path:"/" + change.path}, newContent:{content:change.content, contentType:"rawtext"}}]}],
+      }});
+      const made = sha(object(array(object(payload).commits)[0]).commitId);
+      if (!made) throw new Error("OUTCOME_UNKNOWN");
+      return made;
+    },
     async mutate(repo, action) {
       if (action.kind === "create") {
         if (action.body.length > 4000) throw new Error("INVALID_INPUT");

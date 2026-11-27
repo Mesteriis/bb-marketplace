@@ -1,6 +1,6 @@
 # Makosh Git 0.10 — merge, rebase и редактор конфликтов
 
-Ветка `feature/bb-git-dashboard-merge` от main f2336832. Дизайн: `docs/superpowers/specs/2026-11-27-unified-git-plugin-design.md`, строка 0.10.0 и п. 7 («merge/rebase/abort/continue с approval; редактор конфликтов: ours/theirs/base, построчный выбор, ручная правка»). Rebase только обычный, без интерактивного.
+Ветка `feature/bb-git-dashboard-merge` от main 45b981ed. Дизайн: `docs/superpowers/specs/2026-11-27-unified-git-plugin-design.md`, строка 0.10.0 и п. 7 («merge/rebase/abort/continue с approval; редактор конфликтов: ours/theirs/base, построчный выбор, ручная правка»). Rebase только обычный, без интерактивного.
 
 ## Решения
 

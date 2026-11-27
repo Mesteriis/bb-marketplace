@@ -4,6 +4,7 @@ import { ciSummary, elapsed } from "../../core/ci/summary.ts";
 import { message, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { DispatchForm } from "./dispatch-form.tsx";
 import { RunDetail } from "./run-detail.tsx";
+import { TemplatePage } from "./template-page.tsx";
 import { ThreadPicker } from "./thread-picker.tsx";
 import "./ci.css";
 
@@ -39,6 +40,7 @@ export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: str
   const [selected, setSelected] = useState<string | null>(null);
   const [dispatching, setDispatching] = useState<{workflowId: string | null; ref: string | null} | null>(null);
   const [notifying, setNotifying] = useState(false);
+  const [templates, setTemplates] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let active = true;
@@ -57,6 +59,7 @@ export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: str
   const now = useNow(!!data?.items.some(run => isActive(run.state)));
   const refresh = () => setRevision(value => value + 1);
   const rerunWith = (run: Run) => { setSelected(null); setDispatching({workflowId: run.workflowId, ref: run.branch}); };
+  if (templates) return <TemplatePage api={api} copyId={copyId} onClose={() => { setTemplates(false); refresh(); }}/>;
   if (selected && data) return <RunDetail api={api} copyId={copyId} runId={selected} page={data} onBack={() => setSelected(null)} onChanged={refresh}
     currentThreadId={currentThreadId} onRunWith={data.operations.dispatch ? rerunWith : undefined}/>;
   return <div className="git-stack git-ci">
@@ -67,6 +70,7 @@ export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: str
       {data?.operations.dispatch && <button type="button" className="git-primary" aria-expanded={!!dispatching}
         onClick={() => setDispatching(value => value ? null : {workflowId: null, ref: null})}>Run workflow</button>}
       {data?.limitations.dispatch && !data.operations.dispatch && <span className="git-muted">{data.limitations.dispatch}</span>}
+      <button type="button" onClick={() => setTemplates(true)}>Templates</button>
       <button type="button" aria-expanded={notifying} onClick={() => setNotifying(value => !value)}>Failure notifications</button>
       <button type="button" onClick={refresh}>Refresh</button>
     </div>

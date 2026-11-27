@@ -195,6 +195,15 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
           snapshot = {branch:result.value.branch,head:result.value.head};
           lines.push(snapshot.head + " → refs/heads/" + snapshot.branch);
         }
+      } else if (action.kind === "ciFile") {
+        const copy = await loadCopy(action.copyId);
+        if (!copy) throw new Error("NOT_FOUND");
+        await assertOrigin(repo,copy);
+        if (repo.canPush === false) throw new Error("PROVIDER_DENIED");
+        if (!repo.branch) throw new Error("NO_REMOTE_BRANCH");
+        base = await api.branch(repo,repo.branch);
+        lines.push("Template · " + action.template, action.path + " · " + action.content.split("\n").length + " lines",
+          repo.path + ":" + repo.branch + " @ " + base, "New branch · " + action.branch, action.title);
       } else {
         const command = action.action;
         if (command.kind === "create") {
@@ -234,6 +243,7 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
         const base = command.kind === "create" ? await latest.api.branch(repo,command.base) : (await latest.api.pull(repo,command.number)).base.sha;
         if (base !== record.base) throw new Error("STALE_HEAD");
       }
+      if (action.kind === "ciFile" && await latest.api.branch(repo,repo.branch!) !== record.base) throw new Error("STALE_HEAD");
       if (record.generation !== generation) throw new Error("PREVIEW_EXPIRED");
       const pending:RemoteOutcome = {id,kind:action.kind,target,status:"pending",actor,at:new Date().toISOString(),summary:value.lines};
       active.add(id);
@@ -244,6 +254,18 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
           if (action.kind === "pull") {
             const result = await latest.api.mutate(repo,action.action);
             outcome = {...pending,status:result.outcome,pullNumber:result.number};
+          } else if (action.kind === "ciFile") {
+            const made = await latest.api.createFile(repo,{branch:action.branch,base:record.base!,baseBranch:repo.branch!,
+              path:action.path,content:action.content,message:action.title});
+            try {
+              const result = await latest.api.mutate(repo,{kind:"create",head:action.branch,base:repo.branch!,expected:made,title:action.title,body:action.body});
+              outcome = {...pending,status:result.outcome,pullNumber:result.number};
+            } catch (error) {
+              // The branch is there: the outcome says so, so the pull request can be opened by hand.
+              const known = failureFor(error,"OUTCOME_UNKNOWN");
+              outcome = {...pending,status:known.code === "OUTCOME_UNKNOWN" ? "unknown" : "failed",code:known.code,
+                summary:[...pending.summary,"Branch " + action.branch + " was created at " + made + "; the pull request was not opened."]};
+            }
           } else if (action.kind === "clone") {
             const result = await host.call("cloneHttps",{clone:repo.clone, username:latest.selected.username,destination:action.destination},{hostId:action.hostId});
             if (!result.ok) throw new Error(result.code);
