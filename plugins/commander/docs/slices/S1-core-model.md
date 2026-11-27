@@ -163,6 +163,7 @@ export const OperationJob = z.object({
   progress: JobProgress,
   currentItem: z.number().int().min(0).nullable(),
   pendingConflict: Conflict.nullable(),
+  awaitsOwner: z.boolean(),               // план агента вне гранта или с удалением: ждёт plan_approve (S7)
   items: z.array(z.object({ outcome: ItemOutcome, error: z.string().max(500).nullable() }).strict()),
   error: CommanderErrorShape.nullable(),
   createdAt: z.string().datetime(),

@@ -52,7 +52,9 @@ export interface RunnerDeps {
 }
 export class JobRunner {
   constructor(deps: RunnerDeps);
-  submit(plan: OperationPlan): Promise<OperationJob>;     // state pending, затем фоновое исполнение
+  submit(plan: OperationPlan, opts?: { awaitsOwner: boolean }): Promise<OperationJob>;  // pending; при awaitsOwner не исполняется до approve
+  approve(jobId: string): Promise<void>;                  // снимает awaitsOwner, revalidate плана, затем start
+  reject(jobId: string): Promise<void>;                   // pending → cancel_requested → cancelled, ни одной записи
   decide(jobId: string, d: ConflictDecision): Promise<void>;
   cancel(jobId: string): Promise<void>;                    // cancel_requested; AbortSignal в текущий шаг
   recover(): Promise<{ resumed: string[]; unknown: string[] }>;   // вызывается при старте сервера
@@ -112,6 +114,8 @@ export class JobRunner {
 - Move: сбой verify → источник не удалён, элемент `failed`.
 - Отмена посреди файла → temp удалён, цель не создана, job `cancelled`,
   `items` = `[done, pending, …]`.
+- `submit(plan, {awaitsOwner:true})` → ни одного вызова провайдера до
+  `approve`; `reject` → `cancelled`, провайдер не вызывался.
 - Recover: три сценария правила 8 → `resumed`, `resumed` (после verify),
   `unknown`.
 - Ошибка `retryable` дважды, затем успех → `done`; трижды неретрайная →

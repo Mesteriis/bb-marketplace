@@ -488,3 +488,14 @@ SOFTWARE.
   `@get-bb/plugin-sdk` 0.6.132 (<https://www.npmjs.com/package/@get-bb/plugin-sdk>),
   whose package declares no license; it is the same runtime BB plugin builds
   bundle into their `dist/`.
+
+## Lucide icons in Commander design artboards
+
+- Source: npm `lucide-static@1.82.0` (<https://lucide.dev>), SVG files
+  unchanged; also embedded as data URIs in the artboard HTML.
+- Paths: `plugins/commander/docs/design/v2/icons/`,
+  `plugins/commander/docs/design/v2/*.html`. Design reference only, not
+  shipped in the plugin build. The artboards name the Inter font, which is
+  not vendored here.
+- License: ISC, Copyright (c) 2026 Lucide Icons and Contributors (full text in
+  `plugins/commander/docs/design/v2/icons/LICENSE-lucide`).

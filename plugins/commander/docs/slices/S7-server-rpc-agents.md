@@ -31,6 +31,7 @@ agent tools и CLI, с одинаковыми проверками. Агент �
 | `job_list` | `{ states?, limit ≤ 200 }` | `{ jobs: OperationJob[] }` |
 | `job_decide` | `ConflictDecision & { jobId }` | `{}` |
 | `job_cancel` | `{ jobId }` | `{}` |
+| `plan_approve` / `plan_reject` | `{ jobId, digest }` | `OperationJob` — только для job с `awaitsOwner`; digest сверяется, перед запуском `revalidate` (S2) |
 | `agent_grants_list` / `agent_grants_set` / `agent_grants_revoke` | — | гранты агентам: `{ threadId \| "*", endpoint, scope, permissions }` |
 | `sftp_request_access` | `{ profileId, level }` | проксирует в Remote Hub |
 | `ui_state_get` / `ui_state_set` | `{}` / `{ state: UiState }` | состояние панелей для S8: `UiState` — zod в `rpc.ts` (вкладки: endpoint, path, sort, filter, selection ≤ 10 000 имён, scrollTop; активная панель; раскладка), хранится в `bb.storage.kv` ≤ 256 KB |
@@ -60,9 +61,12 @@ Realtime: `bb.realtime.publish("commander", { kind: "job"|"dir"|"endpoints", id 
 Agent tools (`bb.agents.registerTool`, zod-схемы):
 `commander_endpoints`, `commander_list`, `commander_stat`,
 `commander_plan` (строит план от имени `{kind:"agent", threadId}`),
-`commander_run` (`planId` + `digest`; `authorize` S2 по грантам агента;
-без гранта — понятный отказ со ссылкой «владелец выдаёт доступ на странице
-Commander»), `commander_jobs`, `commander_cancel` (только свои jobs).
+`commander_run` (`planId` + `digest`; `authorize` S2 по грантам агента:
+план внутри гранта и без удаления — запускается сразу; иначе job создаётся
+в состоянии `pending` с флагом `awaitsOwner: true`, владелец видит диалог
+«План агента» (S8) и разрешает или отклоняет через RPC
+`plan_approve`/`plan_reject`; tool отвечает агенту `awaiting_owner` и не
+ждёт синхронно; отклонение → job `cancelled` с причиной `rejected_by_owner`), `commander_jobs`, `commander_cancel` (только свои jobs).
 Содержимое файлов агент не получает (в v1 нет tool чтения содержимого).
 
 CLI `bb makosh-commander`: `endpoints`, `ls <endpoint> <path>`,
@@ -77,7 +81,8 @@ CLI `bb makosh-commander`: `endpoints`, `ls <endpoint> <path>`,
 - `server.test.ts` с фейковым `bb` (как `plugins/mail/server.test.ts`):
   RPC-контракт регистрируется; `plan_run` с чужим digest → отказ;
   `kind: "plugin"` → `forbidden`.
-- Агент без гранта: `commander_run` → отказ, job не создан; с грантом scope
+- Агент без гранта: `commander_run` → job `pending` + `awaitsOwner`, ничего не
+  записано до `plan_approve`; `plan_reject` → `cancelled`; с грантом scope
   `/data` — run `/data/a` ok, `/etc` — отказ; `commander_cancel` чужого job —
   отказ.
 - Изменение выделения человеком после плана агента не меняет план (план
