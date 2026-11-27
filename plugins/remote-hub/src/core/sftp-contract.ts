@@ -107,7 +107,7 @@ const writeSchema = onChannel("write", {
 
 export const sftpOpInputSchema = z.union([
   z.discriminatedUnion("op", [
-    onChannel("list", { path: sftpPathSchema, cursor: z.string().min(1).max(128).optional(), limit: z.number().int().min(1).max(SFTP_LIMITS.listPage).optional() }),
+    onChannel("list", { path: sftpPathSchema, /** Opaque: what the previous page returned as `nextCursor`. */ cursor: z.string().min(1).max(1024).optional(), limit: z.number().int().min(1).max(SFTP_LIMITS.listPage).optional() }),
     onChannel("stat", { path: sftpPathSchema, /** true: what a symlink points to; false: the link itself. */ follow: z.boolean() }),
     onChannel("realpath", { path: sftpPathSchema }),
     onChannel("read", { path: sftpPathSchema, offset: uint64Schema, length: z.number().int().min(1).max(SFTP_LIMITS.chunkBytes) }),
