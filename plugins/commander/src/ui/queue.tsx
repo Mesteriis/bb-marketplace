@@ -1,25 +1,24 @@
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { OperationJob } from "../core/model.ts";
-import { displayPath, parent } from "../core/path.ts";
+import { displayPath, join, parent } from "../core/path.ts";
 import { tempNameFor } from "../core/reconcile.ts";
 import { parentSkipNote } from "../core/retry-note.ts";
 import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type Problem } from "./model.ts";
 import { ProblemLine } from "./pane.tsx";
 import { approvalState, batchRenameText, operationText, reasonText, ru, stateText } from "./strings.ts";
 
-/** Owner-only: where an unconfirmed batch item may still hold its temporary name. */
-function tempNameHint(job: OperationJob): string | null {
+/**
+ * Owner-only: where an unconfirmed batch item may still hold its temporary name. Only
+ * unknown items get a hint, and only batch renames (a single rename has no temporary names).
+ */
+export function tempNameHint(job: OperationJob): string | null {
   if (job.plan.kind !== "rename" || job.plan.items.length < 2) return null;
   const paths = job.items.flatMap((item, index) => {
     const dir = parent(job.plan.items[index].source!.path);
-    return item.outcome === "unknown" && dir ? [displayPath(dir) + "/" + nameText(tempNameFor(job.id, index))] : [];
+    return item.outcome === "unknown" && dir ? [displayPath(join(dir, tempNameFor(job.id, index)))] : [];
   });
   return paths.length ? batchRenameText.tempNames(paths) : null;
-}
-
-function nameText(name: { t: string } | { b: string }): string {
-  return "t" in name ? name.t : name.b;
 }
 
 const plurals = new Intl.PluralRules("ru");

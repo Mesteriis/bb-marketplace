@@ -105,3 +105,30 @@ test("offers retry on a finished job whose skipped item waits on a parent direct
     {...handlers} onRetry={vi.fn()} />);
   expect(screen.getByRole("button", { name: "Повторить невыполненное" })).toBeDefined();
 });
+
+test("the temporary-name hint gives each unknown item its own path: root, nested, and none for other outcomes", async () => {
+  const { tempNameHint } = await import("./queue.tsx");
+  const { parsePosix } = await import("../core/path.ts");
+  const id = "323e4567-e89b-42d3-a456-426614174000";
+  const batch = (paths: string[], outcomes: string[], kind: "rename" | "copy" = "rename") => ({
+    id,
+    plan: {
+      kind,
+      items: paths.map((path, index) => ({
+        source: { endpoint: "host:x", path: parsePosix(path) },
+        target: { endpoint: "host:x", path: parsePosix("/t" + index) },
+        kind: "file",
+      })),
+    },
+    items: outcomes.map((outcome) => ({ outcome, error: null })),
+  } as unknown as Parameters<typeof tempNameHint>[0]);
+  // Index 0 sits in the root, index 1 in /d: the joined paths have no double slash.
+  expect(tempNameHint(batch(["/a.txt", "/d/b.txt"], ["unknown", "unknown"]))).toBe(
+    "Файлы могли остаться под временными именами: /.commander-323e4567-e89b-42d3-a456-426614174000-0.part, /d/.commander-323e4567-e89b-42d3-a456-426614174000-1.part. Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
+  );
+  expect(tempNameHint(batch(["/a.txt", "/d/b.txt"], ["done", "unknown"]))).toBe(
+    "Файлы могли остаться под временными именами: /d/.commander-323e4567-e89b-42d3-a456-426614174000-1.part. Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
+  );
+  expect(tempNameHint(batch(["/a.txt", "/d/b.txt"], ["done", "failed"]))).toBeNull();
+  expect(tempNameHint(batch(["/a.txt"], ["unknown"]))).toBeNull();
+});
