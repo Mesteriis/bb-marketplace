@@ -566,7 +566,7 @@ export class JobRunner {
             } else {
               if (caseOnly && code === "changed_since_plan") {
                 // The target is the source itself, so the version that changed is the source's.
-                throw new ItemConflict("source_changed", fingerprint(await observe(source, context)), null);
+                throw new ItemConflict("source_changed", fingerprint(await observe(source, context, Boolean(sourceFingerprint?.sha256))), null);
               }
               if (code === "changed_since_plan" || code === "already_exists") {
                 throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));

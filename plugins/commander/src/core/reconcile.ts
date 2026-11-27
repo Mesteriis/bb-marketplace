@@ -266,9 +266,18 @@ async function recoverTemp(
 
 /** One entry named by two spellings that differ only in case on a case-insensitive endpoint. */
 export function isCaseOnlyPair(source: Location, target: Location): boolean {
+  const from = source.path.segments.at(-1);
+  const to = target.path.segments.at(-1);
   return source.provider.endpoint.id === target.provider.endpoint.id
     && samePath(source.path, target.path, source.provider.endpoint.caseSensitive)
-    && !samePath(source.path, target.path, true);
+    && !samePath(source.path, target.path, true)
+    // A change of Unicode form alone is an ordinary rename: the listing cannot tell the spellings apart.
+    && from !== undefined && to !== undefined && nameKey(from) !== nameKey(to);
+}
+
+// Same spelling after NFC normalisation; case stays exact.
+function nameKey(name: NameSegment): string {
+  return "b" in name ? "b:" + name.b : "t:" + name.t.normalize("NFC");
 }
 
 /** Listing pages read when checking a spelling; a longer listing is treated as unreadable. */
@@ -285,10 +294,8 @@ export async function nameSpelling(
   const from = source.path.segments.at(-1);
   const to = target.path.segments.at(-1);
   if (!dir || !from || !to) return null;
-  // Same spelling after NFC normalisation; case stays exact.
-  const key = (name: NameSegment) => "b" in name ? "b:" + name.b : "t:" + name.t.normalize("NFC");
-  const fromKey = key(from);
-  const toKey = key(to);
+  const fromKey = nameKey(from);
+  const toKey = nameKey(to);
   let sawSource = false;
   let sawTarget = false;
   const seenCursors = new Set<string>();
@@ -300,8 +307,8 @@ export async function nameSpelling(
     // A page without entries but with a cursor, a repeated cursor or an endless listing proves nothing.
     if (page.entries.length === 0 && page.cursor !== null) return null;
     for (const { name } of page.entries) {
-      sawSource ||= key(name) === fromKey;
-      sawTarget ||= key(name) === toKey;
+      sawSource ||= nameKey(name) === fromKey;
+      sawTarget ||= nameKey(name) === toKey;
     }
     if (page.cursor === null) break;
     if (pages >= SPELLING_PAGE_BUDGET || seenCursors.has(page.cursor)) return null;

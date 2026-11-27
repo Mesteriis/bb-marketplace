@@ -5,7 +5,7 @@ import { Conflict, OperationJob, planDigest, type JobState, type OperationPlan }
 import { parsePosix } from "./path.ts";
 import { buildPlan } from "./planner.ts";
 import { FakeProvider } from "./testing/fake-provider.ts";
-import { tempNameFor } from "./reconcile.ts";
+import { isCaseOnlyPair, tempNameFor } from "./reconcile.ts";
 import type { Checkpoint } from "./job-store.ts";
 import { MemoryJobStore } from "./testing/memory-job-store.ts";
 
@@ -1497,4 +1497,37 @@ test("a broken listing after a case-only rename leaves the item unknown after a 
   expect(await newRunner().recover()).toEqual({ resumed: [], unknown: [id] });
   expect((await at(id, "unknown")).items[0].outcome).toBe("unknown");
   expect(list).toHaveBeenCalledTimes(2);
+});
+
+test("a case-only conflict keeps the source hash, so a second same-size replacement is caught before renaming", async () => {
+  const { fake, upper, plan, store, runner, at, renames } = await caseRename();
+  const { digest: _digest, ...unsigned } = plan;
+  unsigned.items[0].fingerprint!.sha256 = "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81";
+  const original = fake.rename.bind(fake);
+  vi.spyOn(fake, "rename").mockImplementationOnce(async (...args) => {
+    fake.put(upper, Uint8Array.of(9, 9, 9), "7");
+    return original(...args);
+  });
+  const { id } = await runner.submit({ ...unsigned, digest: await planDigest(unsigned) });
+  const first = (await at(id, "awaiting_decision")).pendingConflict!;
+  expect(first.reason).toBe("source_changed");
+  expect(first.source).toEqual({ size: "3", mtimeNs: "7", sha256: "e740a6faf2db65f5853148d75d9a335d7c4b94ab106fe5f237bc34fdcfc74584" });
+  fake.put(upper, Uint8Array.of(8, 8, 8), "7");
+  await runner.decide(id, { conflictId: first.id, action: "rename", applyTo: "this" });
+  const second = await vi.waitFor(async () => {
+    const job = (await store.get(id))!;
+    expect(job.state).toBe("awaiting_decision");
+    expect(job.pendingConflict?.id).not.toBe(first.id);
+    return job.pendingConflict!;
+  });
+  expect(second.reason).toBe("source_changed");
+  expect(renames()).toHaveLength(1);
+});
+
+test("a rename that only changes the Unicode normalisation form is not a case-only rename", () => {
+  const provider = new FakeProvider("host:ci", false);
+  const at = (name: string) => ({ provider, path: parsePosix("/d/" + name) });
+  expect(isCaseOnlyPair(at("\u00c4"), at("\u00e4"))).toBe(true);
+  expect(isCaseOnlyPair(at("\u00e4"), at("a\u0308"))).toBe(false);
+  expect(isCaseOnlyPair(at("A"), at("a"))).toBe(true);
 });
