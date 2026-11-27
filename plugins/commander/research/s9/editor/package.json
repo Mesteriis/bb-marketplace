@@ -1,0 +1,1 @@
+{"name":"bb-plugin-s9-preview","version":"0.0.0","private":true,"type":"module","bb":{"name":"S9 Preview","description":"Isolated editor probe","server":"./server.ts","app":"./app.tsx","host":"./host.ts","branding":{"icon":"./icon.svg"}},"dependencies":{"zod":"^4.6.5"},"devDependencies":{"@get-bb/plugin-sdk":"0.6.132"}}
