@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { EndpointId, Entry, Fingerprint, OperationJob, OperationPlan, planDigest } from "./model.ts";
 
 const plan = {
@@ -176,4 +176,65 @@ it("accepts an unknown job with an unknown item outcome", () => {
 it("accepts a conflict for an awaiting-decision job", () => {
   const awaiting = { ...job, state: "awaiting_decision", pendingConflict: conflict, currentItem: 0 };
   expect(OperationJob.parse(awaiting)).toEqual(awaiting);
+});
+
+describe("OperationPlan targetDir rules", () => {
+  const copyItem = {
+    source: { endpoint: "host:test", path: { segments: [{ t: "src" }] } },
+    target: { endpoint: "host:test", path: { segments: [{ t: "out" }, { t: "src" }] } },
+    kind: "dir",
+    fingerprint: { size: "0", mtimeNs: "1000000000" },
+    expectTarget: "absent",
+  } as const;
+  const copyPlan = {
+    ...plan,
+    digest,
+    kind: "copy",
+    sourceEndpoint: "host:test",
+    targetDir: { endpoint: "host:test", path: { segments: [{ t: "out" }] } },
+    items: [copyItem],
+  } as const;
+
+  it("accepts a copy whose targetDir matches its target endpoint and contains its targets", () => {
+    expect(OperationPlan.safeParse(copyPlan).success).toBe(true);
+  });
+
+  it("refuses mkdir without a targetDir", () => {
+    expect(OperationPlan.safeParse({ ...plan, digest, targetDir: null }).success).toBe(false);
+  });
+
+  it("refuses copy without a targetDir", () => {
+    expect(OperationPlan.safeParse({ ...copyPlan, targetDir: null }).success).toBe(false);
+  });
+
+  it("refuses move without a targetDir", () => {
+    expect(OperationPlan.safeParse({ ...copyPlan, kind: "move", targetDir: null }).success).toBe(false);
+  });
+
+  it("refuses delete with a targetDir", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      kind: "delete",
+      targetEndpoint: null,
+      items: [{ ...copyItem, target: null, expectTarget: null }],
+    }).success).toBe(false);
+  });
+
+  it("refuses rename with a targetDir", () => {
+    expect(OperationPlan.safeParse({ ...copyPlan, kind: "rename", targetEndpoint: "host:test" }).success).toBe(false);
+  });
+
+  it("refuses a targetDir on another endpoint than targetEndpoint", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      targetDir: { endpoint: "host:other", path: { segments: [{ t: "out" }] } },
+    }).success).toBe(false);
+  });
+
+  it("refuses an item target that is not under targetDir", () => {
+    expect(OperationPlan.safeParse({
+      ...copyPlan,
+      targetDir: { endpoint: "host:test", path: { segments: [{ t: "elsewhere" }] } },
+    }).success).toBe(false);
+  });
 });

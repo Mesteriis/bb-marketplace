@@ -55,6 +55,11 @@ class MemoryProvider implements FileProvider {
   private readonly byKey = new Map<string, Stored>();
   private readonly childKeys = new Map<string, Set<string>>();
 
+  /** Lookups fold case on a case-insensitive endpoint, as the real filesystem does. */
+  private fold(text: string): string {
+    return this.endpoint.caseSensitive ? text : text.normalize("NFC").toLowerCase();
+  }
+
   constructor(
     readonly endpoint: Endpoint,
     files: Array<[string, EntryKind, string]>,
@@ -67,22 +72,22 @@ class MemoryProvider implements FileProvider {
     const path = parsePosix(text);
     const name = path.segments.at(-1);
     if (name === undefined) throw new Error("fixture needs a non-root path");
-    const key = displayPath(path);
+    const key = this.fold(displayPath(path));
     this.byKey.set(key, { path, entry: { ...fileEntry("", size), name, kind } });
-    const parentKey = displayPath(parent(path) ?? { segments: [] });
+    const parentKey = this.fold(displayPath(parent(path) ?? { segments: [] }));
     const siblings = this.childKeys.get(parentKey) ?? new Set<string>();
     siblings.add(key);
     this.childKeys.set(parentKey, siblings);
   }
 
   setSize(text: string, size: string): void {
-    const stored = this.byKey.get(displayPath(parsePosix(text)));
+    const stored = this.byKey.get(this.fold(displayPath(parsePosix(text))));
     if (!stored) throw new Error(`no fixture at ${text}`);
     stored.entry = { ...stored.entry, size };
   }
 
   setKind(text: string, kind: EntryKind): void {
-    const stored = this.byKey.get(displayPath(parsePosix(text)));
+    const stored = this.byKey.get(this.fold(displayPath(parsePosix(text))));
     if (!stored) throw new Error(`no fixture at ${text}`);
     stored.entry = { ...stored.entry, kind };
   }
@@ -94,7 +99,7 @@ class MemoryProvider implements FileProvider {
   ): Promise<ListPage> {
     signal.throwIfAborted();
     this.listCalls++;
-    const keys = [...(this.childKeys.get(displayPath(path)) ?? [])];
+    const keys = [...(this.childKeys.get(this.fold(displayPath(path))) ?? [])];
     const start = opts.cursor === null ? 0 : Number(opts.cursor);
     const size = Math.min(opts.limit, this.pageSize);
     const page = keys.slice(start, start + size).map((key) => this.byKey.get(key)!.entry);
@@ -104,7 +109,7 @@ class MemoryProvider implements FileProvider {
 
   async stat(path: ResourcePath, signal: AbortSignal) {
     signal.throwIfAborted();
-    return this.byKey.get(displayPath(path))?.entry ?? null;
+    return this.byKey.get(this.fold(displayPath(path)))?.entry ?? null;
   }
 
   async read(): Promise<Uint8Array> {
@@ -688,7 +693,10 @@ describe("revalidate", () => {
     const deps = depsFor(treeProviders(src));
     const plan = await copyPlan(src, deps);
     src.setSize("/src/a.txt", "9");
-    expect(await revalidate(plan, deps, signal())).toEqual({ ok: false, changed: [1] });
+    expect(await revalidate(plan, deps, signal())).toEqual({
+      ok: false,
+      changed: [{ index: 1, reason: "source_changed" }],
+    });
   });
 
   it("rejects a plan whose content no longer matches its digest", async () => {
@@ -900,7 +908,10 @@ describe("expectTarget", () => {
     const plan = await buildPlan(copyRequest([ref("host:x", "/src/a.txt")], ref("host:x", "/out")), deps, signal());
     expect(plan.items[0].expectTarget).toEqual({ size: "5", mtimeNs: MTIME });
     src.setSize("/out/a.txt", "6");
-    expect(await revalidate(plan, deps, signal())).toEqual({ ok: false, changed: [0] });
+    expect(await revalidate(plan, deps, signal())).toEqual({
+      ok: false,
+      changed: [{ index: 0, reason: "target_changed" }],
+    });
   });
 
   it("reports changed when a target appears after planning", async () => {
@@ -908,7 +919,10 @@ describe("expectTarget", () => {
     const deps = depsFor(treeProviders(src));
     const plan = await buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), deps, signal());
     src.addEntry("/out/src", "dir", "0");
-    expect(await revalidate(plan, deps, signal())).toEqual({ ok: false, changed: [0] });
+    expect(await revalidate(plan, deps, signal())).toEqual({
+      ok: false,
+      changed: [{ index: 0, reason: "target_changed" }],
+    });
   });
 });
 
@@ -924,5 +938,89 @@ describe("digest literal", () => {
     // plan (sorted keys), not with planDigest.
     expect(plan.digest).toBe("2ef62f82151071052c9d928a4fe6fd66f7c81cc8732e6ca0e5d1aa5ddc0da2c9");
     expect(plan.totalBytes).toBe("1");
+  });
+});
+
+// ---- Third round: self-target rule, case-only rename, page budget, change reasons ----
+
+describe("self-target rule", () => {
+  // /d/a/a is an entry inside /d/a. Moving or copying it into /d lands it at /d/a, which
+  // is the strict ancestor of its own source. Only an exact same-path rename is exempt.
+  function nestedFixture() {
+    return new MemoryProvider(endpoint("host:x"), [
+      ["/d", "dir", "0"],
+      ["/d/a", "dir", "0"],
+      ["/d/a/a", "file", "1"],
+    ]);
+  }
+
+  it("refuses to move /d/a/a into /d: the target /d/a is an ancestor of its own source", async () => {
+    await expect(
+      buildPlan(moveRequest([ref("host:x", "/d/a/a")], ref("host:x", "/d")), depsFor(treeProviders(nestedFixture())), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("refuses to copy /d/a/a into /d for the same reason", async () => {
+    await expect(
+      buildPlan(copyRequest([ref("host:x", "/d/a/a")], ref("host:x", "/d")), depsFor(treeProviders(nestedFixture())), signal()),
+    ).rejects.toMatchObject({ code: "invalid_path" });
+  });
+
+  it("records expectTarget absent for a case-only rename whose target is its own source", async () => {
+    const dir = new MemoryProvider(endpoint("host:x", false, false), [["/d", "dir", "0"], ["/d/A", "file", "1"]]);
+    const deps = depsFor(treeProviders(dir));
+    const plan = await buildPlan(
+      {
+        kind: "rename",
+        initiator: { kind: "owner" },
+        sources: [ref("host:x", "/d/A")],
+        targetDir: null,
+        newName: { t: "a" },
+        conflictPolicy: "ask",
+        verify: "size",
+      },
+      deps,
+      signal(),
+    );
+    expect(displayPath(plan.items[0].target!.path)).toBe("/d/a");
+    expect(plan.items[0].expectTarget).toBe("absent");
+    expect((await revalidate(plan, deps, signal())).ok).toBe(true);
+  });
+});
+
+describe("page budget", () => {
+  it("allows 6 list calls for a root with three empty subdirectories, one name per page, maxItems 4", async () => {
+    // Root listing: 3 pages (2 with a cursor). Each empty subdirectory: 1 page, no cursor.
+    const src = new MemoryProvider(endpoint("host:x"), [
+      ["/root", "dir", "0"],
+      ["/root/d1", "dir", "0"],
+      ["/root/d2", "dir", "0"],
+      ["/root/d3", "dir", "0"],
+      ["/out", "dir", "0"],
+    ], 1);
+    const plan = await buildPlan(
+      copyRequest([ref("host:x", "/root")], ref("host:x", "/out")),
+      depsFor(treeProviders(src), { limits: { maxItems: 4, maxDepth: 64 } }),
+      signal(),
+    );
+    expect(plan.items.length).toBe(4);
+    expect(src.listCalls).toBe(6);
+  });
+});
+
+describe("revalidate change reasons", () => {
+  it("reports source_changed when a source moved, and target_changed when a target appeared", async () => {
+    const src = srcTree();
+    const deps = depsFor(treeProviders(src));
+    const plan = await buildPlan(copyRequest([ref("host:x", "/src")], ref("host:x", "/out")), deps, signal());
+    src.setSize("/src/b.txt", "7");
+    src.addEntry("/out/src", "dir", "0");
+    expect(await revalidate(plan, deps, signal())).toEqual({
+      ok: false,
+      changed: [
+        { index: 0, reason: "target_changed" },
+        { index: 2, reason: "source_changed" },
+      ],
+    });
   });
 });

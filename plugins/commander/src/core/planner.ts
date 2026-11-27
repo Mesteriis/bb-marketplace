@@ -7,6 +7,7 @@ import {
   assertNotReplacingSource,
   assertRemovable,
   assertWritable,
+  sameEntryRef,
   segmentKey,
 } from "./guards.ts";
 import {
@@ -210,10 +211,6 @@ async function walkChildren(
   let cursor: string | null = null;
   do {
     w.signal.throwIfAborted();
-    w.budget.pages++;
-    if (w.budget.pages > w.maxItems + 1) {
-      throw new CommanderError("limit_exceeded", "The listing used too many pages");
-    }
     const page = await w.provider.list(srcPath, { cursor, limit: LIST_PAGE_MAX }, w.signal);
     // A page with no entries and a cursor makes no progress: the provider is broken.
     if (page.entries.length === 0 && page.cursor !== null) {
@@ -232,6 +229,10 @@ async function walkChildren(
     }
     cursor = page.cursor;
     if (cursor !== null) {
+      w.budget.pages++;
+      if (w.budget.pages > 2 * w.maxItems + 1) {
+        throw new CommanderError("limit_exceeded", "The listing used too many pages");
+      }
       if (seenCursors.has(cursor)) {
         throw new CommanderError("internal", "The provider repeated a listing cursor");
       }
@@ -356,13 +357,18 @@ export async function buildPlan(
     const sourceParent = parent(source.path);
     if (sourceParent === null) throw invalidRequest("The root cannot be renamed");
     const entry = await statExisting(provider, source.path, signal, "not_found");
-    const targetPath = join(sourceParent, req.newName!);
+    const target: ResourceRef = { endpoint: source.endpoint, path: join(sourceParent, req.newName!) };
+    const targetIsSource = sameEntryRef(
+      { endpoint: source.endpoint, path: source.path },
+      target,
+      caseOf,
+    );
     items.push({
       source: { endpoint: source.endpoint, path: source.path },
-      target: { endpoint: source.endpoint, path: targetPath },
+      target,
       kind: entry.kind,
       fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
-      expectTarget: await expectationAt(provider, targetPath, signal),
+      expectTarget: targetIsSource ? "absent" : await expectationAt(provider, target.path, signal),
     });
   } else {
     const targetProvider = targetEndpoint === null ? null : deps.provider(targetEndpoint);
@@ -389,7 +395,7 @@ export async function buildPlan(
       );
     }
   }
-  assertNoTargetOverlap(items, caseOf);
+  assertNoTargetOverlap(items, caseOf, req.kind);
 
   const unsigned = {
     id: deps.uuid(),
@@ -440,11 +446,17 @@ function sameFingerprint(current: Entry, expected: { size: string; mtimeNs: stri
  * A null matches null, so a change to such a directory's contents is not seen
  * unless its children are themselves planned items.
  */
+export type ChangeReason = "source_changed" | "target_changed";
+export interface ChangedItem {
+  index: number;
+  reason: ChangeReason;
+}
+
 export async function revalidate(
   plan: OperationPlan,
   deps: PlannerDeps,
   signal: AbortSignal,
-): Promise<{ ok: true; plan: OperationPlan } | { ok: false; changed: number[] }> {
+): Promise<{ ok: true; plan: OperationPlan } | { ok: false; changed: ChangedItem[] }> {
   const parsed = OperationPlan.safeParse(structuredClone(plan));
   if (!parsed.success) throw new CommanderError("internal", "The plan does not match its schema");
   const snapshot = parsed.data;
@@ -455,23 +467,35 @@ export async function revalidate(
   }
   await assertPlanStillAllowed(snapshot, deps, signal);
 
-  const changed: number[] = [];
+  const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
+  const changed: ChangedItem[] = [];
   for (const [index, item] of snapshot.items.entries()) {
     signal.throwIfAborted();
-    let unchanged = true;
-    if (item.source !== null && item.fingerprint !== null) {
-      const entry = await deps.provider(item.source.endpoint).stat(item.source.path, signal);
-      unchanged = entry !== null
-        && entry.kind === item.kind
-        && sameFingerprint(entry, item.fingerprint);
-    }
-    if (unchanged && item.target !== null && item.expectTarget !== null) {
-      const current = await deps.provider(item.target.endpoint).stat(item.target.path, signal);
-      unchanged = item.expectTarget === "absent"
-        ? current === null
-        : current !== null && sameFingerprint(current, item.expectTarget);
-    }
-    if (!unchanged) changed.push(index);
+    const reason = await itemChange(item, deps, caseOf, signal);
+    if (reason !== null) changed.push({ index, reason });
   }
   return changed.length === 0 ? { ok: true, plan: snapshot } : { ok: false, changed };
+}
+
+/** The first thing that changed for one item, or null. A target that is the item's own source is checked as a source only. */
+async function itemChange(
+  item: PlanItem,
+  deps: PlannerDeps,
+  caseOf: (id: EndpointId) => boolean,
+  signal: AbortSignal,
+): Promise<ChangeReason | null> {
+  if (item.source !== null && item.fingerprint !== null) {
+    const entry = await deps.provider(item.source.endpoint).stat(item.source.path, signal);
+    const unchanged = entry !== null && entry.kind === item.kind && sameFingerprint(entry, item.fingerprint);
+    if (!unchanged) return "source_changed";
+  }
+  if (item.target !== null && item.expectTarget !== null) {
+    if (item.source !== null && sameEntryRef(item.source, item.target, caseOf)) return null;
+    const current = await deps.provider(item.target.endpoint).stat(item.target.path, signal);
+    const unchanged = item.expectTarget === "absent"
+      ? current === null
+      : current !== null && sameFingerprint(current, item.expectTarget);
+    if (!unchanged) return "target_changed";
+  }
+  return null;
 }

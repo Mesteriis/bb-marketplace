@@ -1,5 +1,5 @@
 import { CommanderError } from "./errors.ts";
-import type { EndpointId, Endpoint, PlanItem, ResourceRef } from "./model.ts";
+import type { EndpointId, Endpoint, OperationKind, PlanItem, ResourceRef } from "./model.ts";
 import { isAncestorOrSelf, parent, samePath, type NameSegment, type ResourcePath } from "./path.ts";
 
 /**
@@ -128,17 +128,23 @@ function selfKey(ref: ResourceRef, caseOf: CaseOf): string {
   return keys[keys.length - 1];
 }
 
+/** Same endpoint and same path under that endpoint's case rules. */
+export function sameEntryRef(a: ResourceRef, b: ResourceRef, caseOf: CaseOf): boolean {
+  return a.endpoint === b.endpoint && selfKey(a, caseOf) === selfKey(b, caseOf);
+}
+
 /**
  * Rejects two items that write to the same target, and a target that lands on
  * another item's source on the same endpoint. Such a plan would overwrite material
  * it still has to read. Example: move [/src/a, /out/a/b] into /out lands /src/a at
  * /out/a, which contains the source /out/a/b.
  *
- * An item's own source is not compared with its own target: a rename that only
- * changes letter case on a case-insensitive endpoint (/d/A -> /d/a) is allowed.
- * An exact no-op rename is refused by the planner.
+ * The one exemption is a rename whose target is its own source (the same path under
+ * the endpoint's case rules, so /d/A -> /d/a on a case-insensitive endpoint). Every
+ * other item whose target is its own source or an ancestor of it is refused, even
+ * when it is the item's own: /d/a/a moved into /d lands on /d/a, which contains it.
  */
-export function assertNoTargetOverlap(items: PlanItem[], caseOf: CaseOf): void {
+export function assertNoTargetOverlap(items: PlanItem[], caseOf: CaseOf, kind: OperationKind): void {
   const owners = new Map<string, number>();
   items.forEach((item, index) => {
     if (item.target === null) return;
@@ -150,11 +156,15 @@ export function assertNoTargetOverlap(items: PlanItem[], caseOf: CaseOf): void {
   });
   items.forEach((item, index) => {
     if (item.source === null) return;
+    const ownSelf = selfKey(item.source, caseOf);
     for (const key of prefixKeys(item.source, caseOf(item.source.endpoint))) {
       const owner = owners.get(key);
-      if (owner !== undefined && owner !== index) {
-        throw new CommanderError("invalid_path", "A target would land on another item's source");
+      if (owner === undefined) continue;
+      if (owner === index) {
+        if (kind === "rename" && key === ownSelf) continue;
+        throw new CommanderError("invalid_path", "An item cannot be placed on its own path or above it");
       }
+      throw new CommanderError("invalid_path", "A target would land on another item's source");
     }
   });
 }
