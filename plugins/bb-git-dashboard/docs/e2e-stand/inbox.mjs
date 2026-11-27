@@ -26,7 +26,7 @@ try {
     /Merge conflicts/.test(await greeting.innerText()) && /CI failing \(1 check\)/.test(await greeting.innerText()) && /\+12\s*−3/.test(await greeting.innerText()));
   check("a running pipeline is amber", await row("Retry flaky test").getAttribute("data-severity") === "amber" && /CI running/.test(await row("Retry flaky test").innerText()));
   check("a merge request on another one's branch is stacked on it", /Draft/.test(await row("Follow-up on retries").innerText()) && /Stacked on #5/.test(await row("Follow-up on retries").innerText()));
-  check("a row opens the forge page", /\/stand\/beta\/pulls\/3$/.test(await greeting.locator("a").getAttribute("href") ?? ""));
+  check("a row opens the forge page", /\/stand\/beta\/pulls\/3$/.test(await greeting.locator("a").first().getAttribute("href") ?? ""));
   await page.screenshot({ path: out + "/inbox-open.png", fullPage: true });
 
   await page.locator(".git-inbox").press("j");

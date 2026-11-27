@@ -38,9 +38,12 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   let body = "";
   req.on("data", chunk => { body += chunk; });
   req.on("end", () => {
-    if (req.method === "POST") {
+    if (req.method !== "GET") {
       appendFileSync(log, JSON.stringify({method: req.method, path, body: body ? JSON.parse(body) : null}) + "\n");
       if (/\/actions\/(workflows\/[^/]+\/dispatches|runs\/\d+\/(rerun|rerun-failed-jobs|cancel))$/.test(path)) return json(res, 204);
+      // Pull request and issue writes of the review probe.
+      if (/^\/api\/v1\/repos\/stand\/beta\/(issues(\/\d+\/comments)?|pulls\/\d+(\/(reviews|requested_reviewers|merge|comments\/\d+\/replies))?|issues\/\d+)$|^\/api\/v1\/repos\/stand\/beta\/pulls\/comments\/\d+\/(resolve|unresolve)$/.test(path))
+        return json(res, 201, {id: 99, number: 9});
       return json(res, 404, {message: "not found"});
     }
     const r = "/api/v1/repos/stand/beta";
@@ -54,7 +57,20 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
       return json(res, 200, items.slice(0, Number(url.searchParams.get("limit") ?? 50)));
     }
     const pull = /^\/api\/v1\/repos\/stand\/beta\/pulls\/(\d+)$/.exec(path);
-    if (pull && pulls[pull[1]]) return json(res, 200, {number: Number(pull[1]), ...pulls[pull[1]], base: {ref: "main", repo: {default_branch: "main"}}});
+    if (pull && pulls[pull[1]]) {
+      const found = inbox.created_open.concat(inbox.review_requested_open).find(item => item.number === Number(pull[1]));
+      return json(res, 200, {id: 900 + Number(pull[1]), number: Number(pull[1]), title: found?.title ?? "", body: "Checks the greeting.", state: "open", merged: false,
+        user: {login: found?.user.login ?? "stand"}, html_url: found?.html_url, changed_files: 1, labels: [], requested_reviewers: [], created_at: found?.created_at,
+        ...pulls[pull[1]], base: {ref: "main", repo: {default_branch: "main"}}});
+    }
+    if (path === r + "/pulls/3/files") return json(res, 200, [{filename: "src/greeting.txt", status: "changed", additions: 1, deletions: 1}]);
+    if (path === r + "/pulls/3.diff") { res.writeHead(200, {"content-type": "text/plain"});
+      return res.end("diff --git a/src/greeting.txt b/src/greeting.txt\n--- a/src/greeting.txt\n+++ b/src/greeting.txt\n@@ -1,2 +1,2 @@\n hello\n-world\n+wrold\n"); }
+    if (path === r + "/issues/3/comments") return json(res, 200, [{id: 31, body: "Looks close.", user: {login: "alice"}, created_at: "2026-11-27T10:30:00Z", html_url: origin + "/stand/beta/pulls/3#c31"}]);
+    if (path === r + "/pulls/3/reviews") return json(res, 200, [{id: 41, user: {login: "alice"}, state: "REQUEST_CHANGES", body: "Typo on line 2.", submitted_at: "2026-11-27T10:40:00Z"}]);
+    if (path === r + "/pulls/3/reviews/41/comments") return json(res, 200, [{id: 42, body: "wrold?", user: {login: "alice"}, path: "src/greeting.txt", position: 2,
+      original_position: 2, commit_id: "e".repeat(40), created_at: "2026-11-27T10:40:00Z", html_url: origin + "/stand/beta/pulls/3#c42", resolver: null}]);
+    if (path === r + "/pulls/3/commits") return json(res, 200, [{sha: "e".repeat(40), commit: {message: "Check the greeting", author: {name: "stand", date: "2026-11-27T09:30:00Z"}}}]);
     if (path === r + "/commits/" + "e".repeat(40) + "/status") return json(res, 200, {state: "failure", statuses: [{context: "ci/test", status: "failure", target_url: origin + "/stand/beta/actions/runs/2"}]});
     if (path === r + "/commits/" + "f".repeat(40) + "/status") return json(res, 200, {state: "success", statuses: [{context: "ci/test", status: "success"}]});
     if (path === r + "/actions/runs") {

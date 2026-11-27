@@ -48,7 +48,7 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
         {rows.map((row, index) => <div key={index} role="row">
           <div className="git-review-row" data-kind={row.kind} data-selected={selected(index) || undefined}>
             {row.kind === "hunk" ? <span className="git-review-hunk">{row.text}</span> : <>
-              <button type="button" className="git-review-number" disabled={!canComment} aria-label={"Comment on line " + (row.newLine ?? row.oldLine)}
+              <button type="button" className="git-review-number" disabled={!canComment} aria-label={row.kind === "del" ? "Comment on old line " + row.oldLine : "Comment on line " + row.newLine}
                 onClick={event => pick(index, event.shiftKey)}>{row.oldLine ?? ""}</button>
               <button type="button" className="git-review-number" disabled={!canComment} tabIndex={-1} aria-hidden="true"
                 onClick={event => pick(index, event.shiftKey)}>{row.newLine ?? ""}</button>

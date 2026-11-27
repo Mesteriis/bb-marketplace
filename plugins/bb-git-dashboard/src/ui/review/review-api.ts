@@ -23,15 +23,16 @@ export type ReviewApi = {
 };
 
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
-/** `pr/<account>/<repo>/<number>` and `issue/…`: the repository path is one encoded segment. */
+/**
+ * `pr/<account>/<number>/<repo path>` and `issue/…`. BB encodes the sub-path itself when navigating, so the repository
+ * path goes last, as its own segments, and nothing is encoded here.
+ */
 export const refPath = (kind: "pr" | "issue", ref: {accountId: string; repo: string; number: number | "new"}) =>
-  kind + "/" + encodeURIComponent(ref.accountId) + "/" + encodeURIComponent(ref.repo) + "/" + ref.number;
+  [kind, ref.accountId, String(ref.number), ref.repo].join("/");
 export function parseRef(subPath: string): {kind: "pr" | "issue"; accountId: string; repo: string; number: number | "new"} | null {
-  const [kind, account, repo, number] = subPath.split("/");
-  if ((kind !== "pr" && kind !== "issue") || !account || !repo || !number) return null;
-  try {
-    const parsed = number === "new" && kind === "issue" ? "new" as const : Number(number);
-    if (parsed !== "new" && (!Number.isSafeInteger(parsed) || parsed < 1)) return null;
-    return {kind, accountId: decodeURIComponent(account), repo: decodeURIComponent(repo), number: parsed};
-  } catch { return null; }
+  const [kind, accountId, number, ...repo] = subPath.split("/");
+  if ((kind !== "pr" && kind !== "issue") || !accountId || !number || repo.length < 2 || repo.some(part => !part || part === "." || part === "..")) return null;
+  const parsed = number === "new" && kind === "issue" ? "new" as const : Number(number);
+  if (parsed !== "new" && (!Number.isSafeInteger(parsed) || parsed < 1)) return null;
+  return {kind, accountId, repo: repo.join("/"), number: parsed};
 }

@@ -24,13 +24,15 @@ test("rows are grouped by account and repository, newest first, without hidden r
   assert.deepEqual(result[0].repos.map(repo => [repo.repo, repo.items.map(row => row.id)]), [["o/r", ["3", "1"]]]);
 });
 
-test("pull request and issue pages are addressed by account, encoded repository path and number", async () => {
+test("pull request and issue pages are addressed by account, number and repository path", async () => {
   const {parseRef, refPath} = await import("../src/ui/review/review-api.ts");
   const path = refPath("pr", {accountId: "gl", repo: "group/sub/app", number: 7});
-  assert.equal(path, "pr/gl/group%2Fsub%2Fapp/7");
+  assert.equal(path, "pr/gl/7/group/sub/app");
   assert.deepEqual(parseRef(path), {kind: "pr", accountId: "gl", repo: "group/sub/app", number: 7});
-  assert.deepEqual(parseRef("issue/gh/o%2Fr/new"), {kind: "issue", accountId: "gh", repo: "o/r", number: "new"});
-  assert.equal(parseRef("pr/gh/o%2Fr/new"), null);
-  assert.equal(parseRef("pr/gh/o%2Fr/0"), null);
-  assert.equal(parseRef("pr/gh/%E0%A4%A/1"), null);
+  assert.deepEqual(parseRef("issue/gh/new/o/r"), {kind: "issue", accountId: "gh", repo: "o/r", number: "new"});
+  assert.deepEqual(parseRef("pr/az/3/My Project/app"), {kind: "pr", accountId: "az", repo: "My Project/app", number: 3});
+  assert.equal(parseRef("pr/gh/new/o/r"), null);
+  assert.equal(parseRef("pr/gh/0/o/r"), null);
+  assert.equal(parseRef("pr/gh/1/o"), null);
+  assert.equal(parseRef("pr/gh/1/o/../r"), null);
 });

@@ -139,7 +139,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
 
     {tab === "Files" && <div className="git-stack">
       <div className="git-row">
-        <label className="git-row"><input type="checkbox" checked={wrap} onChange={change => setWrap(change.target.checked)}/> Wrap long lines</label>
+        <label className="git-review-check"><input type="checkbox" checked={wrap} onChange={change => setWrap(change.target.checked)}/> Wrap long lines</label>
         {!can.lineComment && <span className="git-muted">{limitations.lineComment}</span>}
         {drafts.length > 0 && <span className="git-muted">{drafts.length} comment{drafts.length === 1 ? "" : "s"} in your review</span>}
       </div>

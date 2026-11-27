@@ -28,7 +28,8 @@ const started = Date.now();
 const mr = (iid, title, author, extra) => ({id: 700 + iid, iid, project_id: 7, title, state: "opened", draft: false, web_url: web + "/-/merge_requests/" + iid,
   references: {full: "stand/gamma!" + iid}, author: {username: author}, source_branch: "topic-" + iid, target_branch: "main",
   created_at: "2026-11-27T09:00:00Z", updated_at: "2026-11-27T11:0" + iid + ":00Z", merged_at: null, closed_at: null, has_conflicts: false,
-  detailed_merge_status: "mergeable", ...extra});
+  detailed_merge_status: "mergeable", description: "Retries the flaky test.", sha: "d".repeat(40),
+  diff_refs: {base_sha: "b".repeat(40), head_sha: "d".repeat(40), start_sha: "b".repeat(40)}, reviewers: [], labels: [], ...extra});
 const mrs = {created_by_me: [mr(5, "Retry flaky test", "stand", {detailed_merge_status: "ci_still_running"}),
   mr(6, "Follow-up on retries", "stand", {source_branch: "topic-6", target_branch: "topic-5", draft: true, detailed_merge_status: "draft_status"})],
   reviews_for_me: [mr(8, "Rename variables", "alice", {detailed_merge_status: "requested_changes"})]};
@@ -37,16 +38,18 @@ const text = (res, body) => { res.writeHead(200, {"content-type": "text/plain"})
 
 createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   const url = new URL(req.url, origin);
-  // The path keeps %2F: GitLab addresses a project by its encoded full path.
-  const path = req.url.split("?")[0];
+  // The path keeps %2F: GitLab addresses a project by its encoded full path, the same project as id 7.
+  const path = req.url.split("?")[0].replace(/^\/api\/v4\/projects\/stand%2Fgamma(?=\/)/, "/api/v4/projects/7");
   if (path === "/api/v4/version") return req.headers.authorization ? json(res, 200, {version: "17.5.0", revision: "stand"}) : json(res, 401, {message: "401 Unauthorized"});
   if (req.headers.authorization !== "Bearer stand-gitlab-token") return json(res, 401, {message: "401 Unauthorized"});
   let body = "";
   req.on("data", chunk => { body += chunk; });
   req.on("end", () => {
     const p = "/api/v4/projects/7";
-    if (req.method === "POST") {
+    if (req.method !== "GET") {
       appendFileSync(log, JSON.stringify({method: req.method, path, body: body ? JSON.parse(body) : null}) + "\n");
+      if (/^\/api\/v4\/projects\/7\/(merge_requests\/\d+(\/(notes|discussions(\/[\w-]+(\/notes)?)?|approve|merge))?|issues(\/\d+(\/notes)?)?)$/.test(path))
+        return json(res, 201, {id: 99, iid: 9, state: "merged"});
       if (path === p + "/pipeline") return json(res, 201, pipeline(104, "created", "api"));
       const one = /^\/api\/v4\/projects\/7\/pipelines\/(\d+)\/(retry|cancel)$/.exec(path);
       if (one) return json(res, 201, pipelines.find(item => item.id === Number(one[1])) ?? {});
@@ -73,6 +76,15 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     }
     if (path === p + "/repository/files/.gitlab-ci.yml/raw") return text(res, config);
     if (path === p + "/issues") return json(res, 200, issues, {"x-next-page": ""});
+    if (path === p + "/issues/4") return json(res, 200, {...issues[0], description: "It says wrold.", author: {username: "alice"}, created_at: "2026-11-27T10:00:00Z"});
+    if (path === p + "/issues/4/notes") return json(res, 200, [{body: "Confirmed.", author: {username: "stand"}, created_at: "2026-11-27T10:10:00Z", system: false}], {"x-next-page": ""});
+    if (path === p + "/merge_requests/5/discussions") return json(res, 200, [{id: "disc-1", individual_note: false, notes: [{id: 1, type: "DiffNote", body: "Why retry three times?",
+      author: {username: "alice"}, created_at: "2026-11-27T10:20:00Z", system: false, resolvable: true, resolved: false,
+      position: {new_path: "src/retry.ts", old_path: "src/retry.ts", new_line: 2, old_line: null, head_sha: "d".repeat(40)}}]}], {"x-next-page": ""});
+    if (/^\/api\/v4\/projects\/7\/merge_requests\/[568]\/approvals$/.test(path)) return json(res, 200, {approved_by: []});
+    if (/^\/api\/v4\/projects\/7\/merge_requests\/[568]\/(commits|discussions|diffs)$/.test(path)) return json(res, 200, [], {"x-next-page": ""});
+    if (path === p + "/merge_requests/5/diffs") return json(res, 200, [{old_path: "src/retry.ts", new_path: "src/retry.ts", new_file: false, renamed_file: false, deleted_file: false,
+      diff: "@@ -1,2 +1,3 @@\n export const tries = 1;\n+export const backoff = 100;\n export default tries;\n"}], {"x-next-page": ""});
     if (path === p + "/variables") return json(res, 200, variables);
     if (path === p + "/merge_requests") return json(res, 200, [], {"x-next-page": ""});
     if (path === "/api/v4/merge_requests") {

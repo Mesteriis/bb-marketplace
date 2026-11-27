@@ -21,8 +21,9 @@
 .git-ws .git-review-file { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; min-width: 0; }
 .git-ws .git-review-file-head { padding: 6px 10px; background: var(--card); border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
 .git-ws .git-review-file > .git-muted, .git-ws .git-review-file > .git-review-thread { margin: 8px 10px; }
-.git-ws .git-review-diff { font: 12px/1.5 ui-monospace, monospace; overflow-x: auto; }
-.git-ws .git-review-row { display: grid; grid-template-columns: 3.4em 3.4em minmax(0, 1fr); min-width: max-content; }
+.git-ws .git-review-diff { overflow-x: auto; }
+.git-ws .git-review-diff .git-review-thread { margin: 6px 10px; }
+.git-ws .git-review-row { font: 12px/1.5 ui-monospace, monospace; display: grid; grid-template-columns: 3.4em 3.4em minmax(0, 1fr); min-width: max-content; }
 .git-ws .git-review-diff[data-wrap] .git-review-row { min-width: 0; }
 .git-ws .git-review-diff[data-wrap] .git-review-code { white-space: pre-wrap; overflow-wrap: anywhere; }
 .git-ws .git-review-row[data-kind="add"] { background: color-mix(in srgb, #42a675 14%, transparent); }
@@ -33,4 +34,6 @@
 .git-ws .git-review-number:disabled { cursor: default; }
 .git-ws .git-review-code { white-space: pre; padding-inline-end: 10px; }
 .git-ws .git-review-composer { margin: 6px 10px 10px; display: grid; gap: 6px; }
+.git-ws .git-review-check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.git-ws .git-review-check > input { padding: 0; margin: 0; }
 .git-ws .git-review-submit { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: var(--card); }
