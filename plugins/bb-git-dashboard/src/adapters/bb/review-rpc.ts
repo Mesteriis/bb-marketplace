@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { agentPlan, projectsOfRepo, type AgentThread } from "../../core/pulls/agent-target.ts";
+import { agentPlan, projectsOfRepo, spawnHost, type AgentThread } from "../../core/pulls/agent-target.ts";
 import type { FixSubject } from "../../core/pulls/detail.ts";
 import { answerNote, findingsPrompt, fixPrompt } from "../../core/pulls/prompt.ts";
 import type { codeReviewService } from "./code-review-service.ts";
@@ -40,7 +40,8 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
     const text = (subject.kind === "all" ? findingsPrompt(detail, subjects) : fixPrompt(detail, subjects[0]))
       + answerNote(sent.map(thread => ({id: ids[thread.id], path: thread.path, line: thread.line})));
     const mirrored = sent.map(thread => ids[thread.id]);
-    const projectIds = projectsOfRepo(account.kind, repo, await bb.sdk.projects.list());
+    const projects = await bb.sdk.projects.list();
+    const projectIds = projectsOfRepo(account.kind, repo, projects);
     const threads = (await Promise.all(projectIds.map(projectId => bb.sdk.threads.list({projectId, archived: false, limit: 100})))).flat();
     const plan = agentPlan(detail, projectIds, threads as unknown as AgentThread[]);
     if ("error" in plan) throw new Error(plan.error);
@@ -52,9 +53,9 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
       return {threadId: plan.send, created: false};
     }
     // A managed worktree started from the head branch, so the project's own checkout is left alone; on the machine
-    // that holds the project's environments (BB requires the host for any workspace but a personal one).
-    const environments = await bb.sdk.environments.list({projectId: plan.spawn.projectId, limit: 20}) as {hostId?: string | null}[];
-    const hostId = environments.find(environment => environment.hostId)?.hostId;
+    // that holds the project's working copy (BB requires the host for any workspace but a personal one).
+    const project = projects.find(item => item.id === plan.spawn.projectId);
+    const hostId = spawnHost(project, project?.sources.length ? [] : await bb.sdk.environments.list({projectId: plan.spawn.projectId, limit: 50}));
     if (!hostId) throw new Error("HOST_UNAVAILABLE");
     const spawned = await bb.sdk.threads.spawn({projectId: plan.spawn.projectId, prompt: text, title: "Fix " + repo + " #" + number,
       environment: {type: "host", hostId, workspace: {type: "managed-worktree",
