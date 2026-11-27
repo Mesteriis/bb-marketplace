@@ -4,6 +4,7 @@ import { forgeProvider } from "./forge-provider.ts";
 import { azureProvider } from "./azure-provider.ts";
 
 export function provider(account: Account, token: string, transport: typeof fetch = fetch): Provider {
+  if (account.kind === "gitlab") throw new Error("PROVIDER_UNSUPPORTED");
   const http = client(account, token, transport);
   return account.kind === "azure" ? azureProvider(account, http) : forgeProvider(account, http);
 }

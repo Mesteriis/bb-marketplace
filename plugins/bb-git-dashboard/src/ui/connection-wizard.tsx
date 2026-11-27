@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { limitation } from "../core/forge/capabilities.ts";
 import { connectionInput, detectProvider, type ConnectionCheck, type ConnectionInput } from "../core/connection.ts";
 import type { Account } from "../core/providers.ts";
 import "./connection-wizard.css";
@@ -7,7 +8,7 @@ export type ConnectionApi = {
   checkConnection(input:ConnectionInput):Promise<ConnectionCheck>;
   saveConnection(input:ConnectionInput):Promise<Account>;
 };
-const providerLabels = {github:"GitHub",azure:"Azure DevOps",gitea:"Gitea"};
+const providerLabels = {github:"GitHub",azure:"Azure DevOps",gitea:"Gitea",gitlab:"GitLab"};
 const steps = ["Provider","Token","Review"];
 const errors:Record<string,string> = {
   INVALID_INPUT:"Check the provider address and required fields.",
@@ -52,6 +53,11 @@ export function ConnectionWizard({api,onClose,onSaved}:{
     setError("");
     if (!detection || !provider) {
       setError("Enter a Git URL and select a provider.");
+      return;
+    }
+    const unsupported = limitation(provider,"repositories");
+    if (unsupported) {
+      setError(unsupported);
       return;
     }
     if (step === 0) {

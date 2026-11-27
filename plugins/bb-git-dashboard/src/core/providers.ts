@@ -1,11 +1,15 @@
 import { z } from "zod";
 import { id } from "./workspace.ts";
 
-export const providerKind = z.enum(["github", "azure", "gitea"]);
+export const providerKind = z.enum(["github", "azure", "gitea", "gitlab"]);
+export const tokenSource = z.enum(["vault", "gh", "glab"]);
 export const account = z.object({
   kind: providerKind, id, label:z.string().min(1).max(80), origin:z.url().max(300),
   organization:z.string().max(100).default(""), username:z.string().min(1).max(128).regex(/^[^\s\r\n:=]+$/),
+  // Absent means "vault"; omitted so that accounts saved by 0.1.0 keep their JSON stamp.
+  tokenSource:tokenSource.optional(),
 });
+export const sourceOf = (value: {tokenSource?: z.infer<typeof tokenSource>}) => value.tokenSource ?? "vault";
 export type Account = z.infer<typeof account>;
 export const repo = z.object({
   id:z.string().min(1).max(500), accountId:id, project:z.string(), name:z.string(),

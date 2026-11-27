@@ -1,5 +1,6 @@
 import type { Account, Repo } from "../../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../../core/repository-features.ts";
+import { limitation } from "../../core/forge/capabilities.ts";
 import { forgePrefix, forgeRepositoryPath } from "./forge-provider.ts";
 import { array, object, segment, text, type Http } from "./provider-http.ts";
 
@@ -15,8 +16,8 @@ function link(value:unknown, repo:Repo) {
 export async function repositoryFeatures(account:Account, repo:Repo, section:RepositorySection, http:Http):Promise<FeatureList> {
   const read = async (path:string) => (await http(path)).payload;
   if (account.kind === "azure") {
-    if (section === "issues") return {items:[],notice:"Azure Boards are scoped to the Azure DevOps project."};
-    if (section === "variables") return {items:[],notice:"Azure variable groups are scoped to the Azure DevOps project."};
+    if (section === "issues") return {items:[],notice:limitation("azure","issues")};
+    if (section === "variables") return {items:[],notice:limitation("azure","variables")};
     const query = new URLSearchParams({repositoryId:repo.id,repositoryType:"TfsGit","$top":"30","api-version":"7.1"});
     const payload = object(await read("/" + segment(account.organization) + "/" + segment(repo.project) + "/_apis/build/builds?" + query));
     const items = array(payload.value).map(object).filter(row => Number.isSafeInteger(row.id)).map((row):Row => ({

@@ -25,12 +25,13 @@ export function detectProvider(input:string) {
     if ((!ssh && url.protocol !== "https:") || (!ssh && url.username) || url.password || url.search || url.hash) return null;
     const origin = ssh ? "https://" + url.hostname : url.origin;
     const host = url.hostname;
-    if (url.port && ["github.com","api.github.com","dev.azure.com","ssh.dev.azure.com","gitea.com"].includes(host)) return null;
+    if (url.port && ["github.com","api.github.com","dev.azure.com","ssh.dev.azure.com","gitea.com","gitlab.com"].includes(host)) return null;
     if (host === "github.com" || host === "api.github.com") return {kind:"github" as const,origin,organization:""};
     if (host === "dev.azure.com" || host === "ssh.dev.azure.com") {
       const parts = url.pathname.split("/").filter(Boolean);
       return {kind:"azure" as const,origin:"https://dev.azure.com",organization:parts[parts[0] === "v3" ? 1 : 0] ?? ""};
     }
+    if (host === "gitlab.com") return {kind:"gitlab" as const,origin,organization:""};
     if (host === "gitea.com") return {kind:"gitea" as const,origin,organization:""};
     return {kind:null,origin,organization:""};
   } catch { return null; }
