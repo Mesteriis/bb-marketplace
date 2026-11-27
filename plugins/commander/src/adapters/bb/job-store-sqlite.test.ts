@@ -351,11 +351,12 @@ test("assigns distinct stable UUIDs from rowid and preserves valid initiators on
   expect(await store.list({ states: ["unknown"], limit: 2 })).toStrictEqual([first, second]);
 });
 
-test("a damaged row keeps its UUID after an occupied neighbor is pruned and the database reopens", async () => {
+test("a damaged row keeps its UUID after a neighbor is pruned and the database reopens", async () => {
   const alias = "00000000-0000-8000-8000-000000000400";
+  const neighborId = "223e4567-e89b-42d3-a456-426614174003";
   await store.create({
     ...job,
-    id: alias,
+    id: neighborId,
     state: "completed",
     awaitsOwner: false,
     updatedAt: "2026-11-26T00:00:00.000Z",
@@ -367,16 +368,27 @@ test("a damaged row keeps its UUID after an occupied neighbor is pruned and the 
 
   const [damaged] = await store.list({ states: ["unknown"], limit: 1 });
   expect(damaged).toMatchObject({ id: alias, state: "unknown" });
-  expect(await store.get(alias)).toBeNull();
+  expect(await store.get(alias)).toStrictEqual(damaged);
 
   await store.create({ ...job, id: secondId });
-  expect(db.prepare("SELECT id FROM jobs WHERE id = ?").pluck().get(alias)).toBeUndefined();
+  expect(await store.get(neighborId)).toBeNull();
 
   db.close();
   db = new Database(filename);
   store = createSqliteJobStore(db);
   expect(await store.list({ states: ["unknown"], limit: 1 })).toStrictEqual([damaged]);
   expect(await store.get(alias)).toStrictEqual(damaged);
+});
+
+test.each([
+  "00000000-0000-8000-8000-00000000002a",
+  "00000000-0000-8000-8000-00000000002A",
+  "00000000-0020-8000-8000-000000000000",
+])("reserves %s even in an empty database", async (id) => {
+  await expect(store.create({ ...job, id })).rejects.toMatchObject({
+    code: "already_exists", message: "Job already exists",
+  });
+  expect(await store.get(id)).toBeNull();
 });
 
 test("only the exact damaged UUID resolves to the row and is reserved during create", async () => {
@@ -394,9 +406,25 @@ test("only the exact damaged UUID resolves to the row and is reserved during cre
   });
   expect(await store.get(alias)).toStrictEqual(damaged);
 
+  await expect(store.update(alias, { state: "running" }, "unknown")).rejects.toMatchObject({
+    code: "internal", message: "Damaged job aliases are read-only",
+  });
+  await expect(store.checkpoint({ ...checkpoint, jobId: alias })).rejects.toMatchObject({
+    code: "internal", message: "Damaged job aliases are read-only",
+  });
+  expect(await store.get(alias)).toStrictEqual(damaged);
+
   const unrelated = { ...job, id: unrelatedId };
   await store.create(unrelated);
   expect(await store.get(unrelatedId)).toStrictEqual(unrelated);
+});
+
+test("ordinary UUIDv4 jobs still support creation, update and checkpoint writes", async () => {
+  await store.create(job);
+  expect(await store.update(job.id, { state: "running" }, "pending")).toBe(true);
+  await store.checkpoint(checkpoint);
+  expect(await store.get(job.id)).toStrictEqual({ ...job, state: "running", awaitsOwner: false });
+  expect(await store.lastCheckpoint(job.id, 0)).toStrictEqual(checkpoint);
 });
 
 test("SQLite rejects setting awaits_owner directly on a running job", async () => {

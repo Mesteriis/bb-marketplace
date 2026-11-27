@@ -31,6 +31,8 @@ const TERMINAL_LIMIT = 1000;
 
 const Timestamp = z.string().datetime();
 const JobId = z.string().uuid();
+// Reserve the UUIDv8 prefix, including the group that holds the high rowid bits.
+const DAMAGED_ALIAS = /^00000000-([0-9a-f]{4})-8000-8000-([0-9a-f]{12})$/i;
 const CheckpointValue = z.strictObject({
   jobId: JobId,
   itemIndex: z.number().int().min(0),
@@ -112,8 +114,16 @@ function rowUuid(rowId: string): string {
 }
 
 function rowIdFromUuid(uuid: string): string | null {
-  const parts = /^00000000-([0-9a-f]{4})-8000-8000-([0-9a-f]{12})$/.exec(uuid);
-  return parts && parts[0] === uuid ? BigInt.asIntN(64, BigInt(`0x${parts[1]}${parts[2]}`)).toString() : null;
+  const parts = DAMAGED_ALIAS.exec(uuid);
+  return parts && parts[0] === uuid && uuid === uuid.toLowerCase()
+    ? BigInt.asIntN(64, BigInt(`0x${parts[1]}${parts[2]}`)).toString()
+    : null;
+}
+
+function assertWritableJobId(id: string): void {
+  if (DAMAGED_ALIAS.test(id)) {
+    throw new CommanderError("internal", "Damaged job aliases are read-only");
+  }
 }
 
 function unreadableJob(row: JobRow, id: string): OperationJob {
@@ -224,9 +234,9 @@ export function createSqliteJobStore(db: Database): JobStore {
 
   const create = db.transaction((input: OperationJob) => {
     const job = OperationJob.parse(input);
-    // An existing damaged row reserves its exact UUIDv8 alias. Creating a job
-    // with that ID reports already_exists. randomUUID() produces UUIDv4.
-    if (findDamagedRowByAlias(job.id)) throw new CommanderError("already_exists", "Job already exists");
+    // Alias IDs are reserved even when their row does not exist.
+    // Normal job IDs come from randomUUID(), which produces UUIDv4.
+    if (DAMAGED_ALIAS.test(job.id)) throw new CommanderError("already_exists", "Job already exists");
     const { initiator } = job.plan;
     const { changes } = insert.run({
       ...mutableColumns(job),
@@ -294,10 +304,12 @@ export function createSqliteJobStore(db: Database): JobStore {
       return jobs;
     },
     async update(id, patch, expected) {
+      assertWritableJobId(id);
       // Acquire the write lock before reading the row used to validate the patch.
       return update.immediate(id, patch, expected);
     },
     async checkpoint(input: Checkpoint) {
+      assertWritableJobId(input.jobId);
       const checkpoint = CheckpointValue.parse(input);
       const { changes } = writeCheckpoint.run({
         ...checkpoint,
