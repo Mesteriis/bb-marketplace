@@ -50,6 +50,8 @@ export const gitAction = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("resolve"), path, expected: token, text: z.string().max(4 * 1024 * 1024)}),
   /** `expected` is the hash of the file's bytes as it was read, null when it was missing: hand edits since then are not overwritten. */
   z.object({kind: z.literal("take"), path, side: z.enum(["ours", "theirs", "delete"]), expected: token.nullable()}),
+  /** Puts the branch back where it was before a finished merge or rebase (ORIG_HEAD), while HEAD is still `expected`. */
+  z.object({kind: z.literal("undo"), to: revision, expected: revision}),
 ]);
 export type GitAction = z.infer<typeof gitAction>;
 export const gitResult = z.object({
@@ -66,6 +68,8 @@ export const gitResult = z.object({
   hunks: z.array(z.object({token, text: z.string()})).optional(),
   worktrees: z.array(z.object({path, head: z.string().optional(), branch: z.string().optional()})).optional(),
   sequence: sequence.optional(),
+  /** A commit that reached the branch between the confirmation and the merge or rebase, which then took it in. */
+  raced: z.string().optional(),
   /** What a merge would bring: commits in and out, and the files it would leave in conflict. */
   preview: z.object({incoming: z.number().int(), outgoing: z.number().int(), conflicts: z.array(path), fastForward: z.boolean(), upToDate: z.boolean()}).optional(),
   /** One conflicted file: each side whole (null where it has none), Git's merged text with zdiff3 markers, and the file as it is. */

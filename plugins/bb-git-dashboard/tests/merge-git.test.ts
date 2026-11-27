@@ -153,3 +153,27 @@ test("Continue that Git refuses with nothing left in conflict says so", async ()
   await assert.rejects(localGit(root, {kind: "continue"}), {message: "SEQUENCE_STOPPED"});
   assert.equal((await localGit(root, {kind: "sequence"})).sequence?.kind, "cherry-pick");
 });
+
+test("a commit that lands while the merge is confirmed is reported with it, and Undo goes back to before the merge", async () => {
+  const {mergeGit} = await import("../src/adapters/bb/merge-git.ts");
+  const {gitRunner} = await import("../src/adapters/bb/git-process.ts");
+  const shown = rev("HEAD");
+  // The commit arrives after the head was checked: the status the merge reads still says the head that was shown.
+  writeFileSync(join(root, "late.txt"), "late\n"); git("add", "late.txt"); git("commit", "-qm", "late arrival");
+  const late = rev("HEAD");
+  const gitRun = gitRunner(root);
+  const context = {git: gitRun, root, filePath: async (path: string) => path,
+    status: async () => ({...await localGit(root, {kind: "status"}), head: shown})};
+  const merged = await mergeGit(context, {kind: "merge", ref: "refs/heads/side", target: rev("side"), expected: shown, fastForward: false});
+  assert.equal(merged.raced, late);
+  assert.equal(git("log", "-1", "--format=%P").trim().split(" ")[0], late);
+  await assert.rejects(localGit(root, {kind: "undo", to: shown, expected: rev("HEAD")}), {message: "STALE_HEAD"});
+  const undone = await localGit(root, {kind: "undo", to: late, expected: rev("HEAD")});
+  assert.equal(undone.head, late);
+  assert.equal(git("status", "--porcelain"), "");
+});
+
+test("a merge at the head that was shown reports no race", async () => {
+  const merged = await localGit(root, {kind: "merge", ref: "refs/heads/side", target: rev("side"), expected: rev("HEAD"), fastForward: false});
+  assert.equal(merged.raced, undefined);
+});

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { GitAction, GitResult } from "../core/git.ts";
 import type { Copy, Operation } from "../core/workspace.ts";
 import { ConflictEditor } from "./merge/conflict-editor.tsx";
-import { BranchList, SequenceBar, type Sequence } from "./merge/merge-actions.tsx";
+import { BranchList, RaceNotice, SequenceBar, type Sequence } from "./merge/merge-actions.tsx";
 
 export type RunGit = (action: GitAction) => Promise<GitResult>;
 type View = "Changes" | "History" | "Branches" | "Worktrees" | "Activity";
@@ -36,6 +36,8 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
   // A merge, rebase, cherry-pick or revert left in progress, and the conflicted file open in the editor.
   const [sequence, setSequence] = useState<Sequence | null>(null);
   const [resolving, setResolving] = useState<string | null>(null);
+  // A commit taken in by a merge or rebase that arrived while it was being confirmed.
+  const [raced, setRaced] = useState<string | null>(null);
 
   const report = useCallback((cause: unknown) => setError(cause instanceof Error ? cause.message : "Request failed"), []);
   useEffect(() => {
@@ -132,6 +134,8 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
     </nav>
     {error && <p role="alert" className="git-error">{error}</p>}
     {pending && <p role="status">Git operation in progress…</p>}
+    {state && raced && <RaceNotice raced={raced} head={state.head ?? null} branch={state.branch ?? null} sequence={sequence} run={run} onError={report}
+      onChanged={() => setRevision(value => value + 1)} onDismiss={() => setRaced(null)}/>}
     {state && sequence && <SequenceBar sequence={sequence} state={state} run={run} onError={report} onResolve={setResolving}
       onChanged={() => { setResolving(null); setRevision(value => value + 1); }}/>}
     {resolving && sequence && <ConflictEditor key={resolving} path={resolving} kind={sequence.kind} run={run} onError={report}
@@ -219,7 +223,7 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin}
         </>}
       </div>
       {view === "Branches" && (detail?.text !== undefined && state ? <BranchList text={detail.text} state={state} sequence={sequence} run={run} onError={report}
-        onChanged={result => { setRevision(value => value + 1); if (result.sequence?.conflicts.length) setResolving(result.sequence.conflicts[0]!.path); }}/>
+        onChanged={result => { setRevision(value => value + 1); setRaced(result.raced ?? null); if (result.sequence?.conflicts.length) setResolving(result.sequence.conflicts[0]!.path); }}/>
         : <p className="git-muted" role="status">Reading branches…</p>)}
       {view === "Worktrees" && (detail?.worktrees ?? []).map(tree => <div className="git-row git-path" key={tree.path}>
         <span>{tree.branch ?? "Detached"} · {tree.path}</span>

@@ -6,7 +6,7 @@ import { author, type GitAction, type GitResult } from "../../core/git.ts";
 import { gitRunner, type GitRun } from "./git-process.ts";
 import { mergeGit, type MergeAction } from "./merge-git.ts";
 
-const mergeKinds = new Set<GitAction["kind"]>(["sequence", "mergePreview", "conflict", "merge", "rebase", "abort", "continue", "skip", "resolve", "take"]);
+const mergeKinds = new Set<GitAction["kind"]>(["sequence", "mergePreview", "conflict", "merge", "rebase", "abort", "continue", "skip", "resolve", "take", "undo"]);
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const gitError = (code: string): never => { throw new Error(code); };

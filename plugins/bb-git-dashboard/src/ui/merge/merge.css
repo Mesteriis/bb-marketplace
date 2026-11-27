@@ -27,3 +27,4 @@
 .git-ws .git-merge-line code, .git-ws .git-merge-base { white-space: pre; font-size: 12px; }
 .git-ws .git-merge-text { width: 100%; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
 @media (max-width: 900px) { .git-ws .git-merge-sides, .git-ws .git-merge-sides[data-three] { grid-template-columns: minmax(0, 1fr); } }
+.git-ws .git-merge-race { display: grid; gap: 6px; padding: 8px 12px; margin: 8px 0; border: 1px solid var(--destructive); border-radius: 6px; }

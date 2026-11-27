@@ -118,3 +118,25 @@ export function SequenceBar({sequence, state, run, onChanged, onError, onResolve
   </section>;
 }
 
+
+/**
+ * A commit reached the branch between the confirmation and the merge or rebase, which took it in. While the operation
+ * is still in progress Abort puts everything back; once it is done, Undo returns the branch to where it was just
+ * before (the late commit included), after a confirmation.
+ */
+export function RaceNotice({raced, head, branch, sequence, run, onChanged, onDismiss, onError}: {raced: string; head: string | null; branch: string | null;
+  sequence: Sequence | null; run: RunGit; onChanged(result: GitResult): void; onDismiss(): void; onError(error: unknown): void}) {
+  const [asked, setAsked] = useState(false);
+  return <section className="git-merge-race" role="alert" aria-label="A commit arrived during the confirmation">
+    <p>While you were confirming, commit <code>{raced.slice(0, 12)}</code> reached {branch ?? "the branch"}; the {sequence?.kind ?? "operation"} took it in.</p>
+    <div className="git-row">
+      {sequence ? <span className="git-muted">Abort the {sequence.kind} above to put everything back.</span>
+        : head && <button type="button" onClick={() => setAsked(true)}>Undo</button>}
+      <button type="button" onClick={onDismiss}>Keep it</button>
+    </div>
+    {asked && head && <ConfirmDialog title="Undo the merge or rebase" lines={["Put " + (branch ?? "the branch") + " back at " + raced.slice(0, 12) + ", the commit that arrived, as it was just before.",
+      "Commits made by the merge or rebase leave the branch; local changes stay."]}
+      onConfirm={async () => { onChanged(await run({kind: "undo", to: raced, expected: head})); onDismiss(); }}
+      onClose={() => setAsked(false)}/>}
+  </section>;
+}

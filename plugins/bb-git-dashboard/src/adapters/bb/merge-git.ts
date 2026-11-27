@@ -10,7 +10,7 @@ import { CodedError } from "../../core/workspace.ts";
 
 type Sequence = NonNullable<GitResult["sequence"]>;
 type Conflict = Sequence["conflicts"][number];
-export type MergeAction = Extract<GitAction, {kind: "sequence" | "mergePreview" | "conflict" | "merge" | "rebase" | "abort" | "continue" | "skip" | "resolve" | "take"}>;
+export type MergeAction = Extract<GitAction, {kind: "sequence" | "mergePreview" | "conflict" | "merge" | "rebase" | "abort" | "continue" | "skip" | "resolve" | "take" | "undo"}>;
 /** What the merge work needs of the worktree: its Git, its root, a status read, and a checked literal path. */
 type Context = {git: GitRun; root: string; status(): Promise<GitResult>; filePath(path: string): Promise<string>};
 
@@ -152,6 +152,15 @@ async function unmerged(context: Context, path: string) {
 }
 
 /**
+ * The head a merge or rebase started from is ORIG_HEAD. When it is not the head that was confirmed, a commit came in
+ * meanwhile and was taken in with the rest: the answer names it, so the page can offer Abort or Undo.
+ */
+async function racedFrom(git: GitRun, expected: string): Promise<{raced?: string}> {
+  const orig = (await git(["rev-parse", "--verify", "--quiet", "ORIG_HEAD"], {codes: [0, 1]})).text.trim();
+  return orig && orig !== expected ? {raced: orig} : {};
+}
+
+/**
  * Git answered 1 and left the operation in progress with nothing in conflict: it refused to go on (a cherry-pick whose
  * commit became empty), which is not a step done. A stop on the next conflict is one.
  */
@@ -177,7 +186,7 @@ export async function mergeGit(context: Context, action: MergeAction): Promise<G
       const result = await answer();
       // A refusal (an untracked file in the way) leaves no merge behind: report it rather than a silent no-op.
       if (merged.code === 1 && !result.sequence) fail("GIT_REJECTED");
-      return result;
+      return {...result, ...await racedFrom(git, action.expected)};
     }
     case "rebase": {
       await verifiedRef(git, action.ref, action.target);
@@ -186,7 +195,7 @@ export async function mergeGit(context: Context, action: MergeAction): Promise<G
       const rebased = await git([...zdiff3, "rebase", "--no-autostash", "--no-autosquash", "--no-update-refs", action.target], {codes: [0, 1], committer: identity, timeout: long});
       const result = await answer();
       if (rebased.code === 1 && !result.sequence) fail("GIT_REJECTED");
-      return result;
+      return {...result, ...await racedFrom(git, action.expected)};
     }
     case "abort": {
       const current = await sequenceOf(git) ?? fail("NO_SEQUENCE");
@@ -215,6 +224,14 @@ export async function mergeGit(context: Context, action: MergeAction): Promise<G
       if (hasMarkers(action.text)) fail("CONFLICT_MARKERS");
       await writeReviewFile(context.root, file, action.expected, action.text);
       await git(["add", "--", file]);
+      return answer();
+    }
+    case "undo": {
+      if (await sequenceOf(git)) fail("GIT_SEQUENCE_ACTIVE");
+      const [head, orig] = await Promise.all(["HEAD", "ORIG_HEAD"].map(async name => (await git(["rev-parse", "--verify", "--quiet", name], {codes: [0, 1]})).text.trim()));
+      if (head !== action.expected || orig !== action.to) fail("STALE_HEAD");
+      // --keep refuses rather than drops a local change the reset would touch.
+      await git(["reset", "--keep", action.to]);
       return answer();
     }
     case "take": {
