@@ -123,11 +123,12 @@ describe("consent, host key, access", () => {
 
 describe("ambiguous outcome of a mutation (a transport failure after sending)", () => {
   it("a dropped connection after a write applied is outcome_unknown, not retryable, and not repeated", async () => {
-    const { mock, provider } = setup({ faultNext: "drop" });
+    const { mock, provider } = setup();
     const session = await openWrite(provider, at("f.txt"), signal());
+    mock.arm("drop");
     const error = await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
-    expect(mock.opCount("op:write")).toBe(1);
+    expect(mock.opCount("op:write")).toBe(2);
     expect(mock.exists(`/${tempName(session)}`)).toBe(true);
   });
 
@@ -152,46 +153,41 @@ describe("ambiguous outcome of a mutation (a transport failure after sending)", 
     expect(mock.exists("/d")).toBe(true);
   });
 
-  it.each(["unreachable", "failure", "channel_closed"] as const)("a write refused with %s is outcome_unknown", async (code) => {
+  it.each(["unreachable", "failure", "channel_closed"] as const)("a creating write refused with %s is outcome_unknown from openWrite", async (code) => {
     const { provider } = setup({ failAll: code });
-    const session = await openWrite(provider, at("f.txt"), signal());
-    const error = await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
+    const error = await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
   });
 
-  it("a definitive refusal on a write keeps its own code", async () => {
+  it("a definitive refusal on the creating write keeps its own code", async () => {
     const { provider } = setup({ failAll: "permission_denied" });
-    const session = await openWrite(provider, at("f.txt"), signal());
-    await expectCode(session.write(0n, bytes("abc"), signal()), "permission_denied");
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "permission_denied");
   });
+
 });
 
 describe("temporary file after an uncertain or refused creation", () => {
-  it("exists on the first exclusive write forbids further writes and never removes the temp", async () => {
+  it("a creation refused with exists is already_exists from openWrite, and no removal is sent", async () => {
     const { mock, provider } = setup({ failNext: "exists" });
-    const session = await openWrite(provider, at("f.txt"), signal());
-    await expectCode(session.write(0n, bytes("abc"), signal()), "already_exists");
-    await session.abort();
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "already_exists");
     expect(mock.opCount("op:remove")).toBe(0);
-    await expectCode(session.write(0n, bytes("abc"), signal()), "already_exists");
-    expect(mock.opCount("op:write")).toBe(1);
   });
 
-  it("after an outcome_unknown on the first write, abort does not remove the temp", async () => {
+  it("an unknown outcome of the creation leaves no session, and nothing is removed", async () => {
     const { mock, provider } = setup({ faultNext: "drop" });
-    const session = await openWrite(provider, at("f.txt"), signal());
-    await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
-    await session.abort();
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
     expect(mock.opCount("op:remove")).toBe(0);
-    expect(mock.exists(`/${tempName(session)}`)).toBe(true);
+    expect(mock.exists("/.commander-test.part")).toBe(true);
   });
 
-  it("a session whose temp was never confirmed created removes nothing on abort", async () => {
+  it("abort of a fresh session removes the empty temp it created", async () => {
     const { mock, provider } = setup();
     const session = await openWrite(provider, at("f.txt"), signal());
     await session.abort();
-    expect(mock.opCount("op:remove")).toBe(0);
+    expect(mock.opCount("op:remove")).toBe(1);
+    expect(mock.exists("/.commander-test.part")).toBe(false);
   });
+
 });
 
 describe("cancellation", () => {
@@ -206,10 +202,11 @@ describe("cancellation", () => {
   it("an aborted write before sending is cancelled and sends no write", async () => {
     const { mock, provider } = setup();
     const session = await openWrite(provider, at("f.txt"), signal());
+    const before = mock.opCount("op:write");
     const aborted = new AbortController();
     aborted.abort();
     await expectCode(session.write(0n, bytes("abc"), aborted.signal), "cancelled");
-    expect(mock.opCount("op:write")).toBe(0);
+    expect(mock.opCount("op:write")).toBe(before);
   });
 
   it("an abort during a read is cancelled", async () => {
@@ -219,10 +216,12 @@ describe("cancellation", () => {
   });
 
   it("an AbortError from the port during a mutation is outcome_unknown", async () => {
-    const { provider } = setup({ faultNext: "abort" });
+    const { mock, provider } = setup();
     const session = await openWrite(provider, at("f.txt"), signal());
+    mock.arm("abort");
     await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
   });
+
 });
 
 describe("listing and attributes", () => {
@@ -388,13 +387,12 @@ describe("generation change", () => {
     expect(mock.opCount("op:list")).toBe(3);
   });
 
-  it("a write across a restart is outcome_unknown and is not repeated", async () => {
+  it("a creating write across a restart is outcome_unknown from openWrite, and not repeated", async () => {
     const { mock, provider } = setup({ generationBumpAfter: 2 });
     mock.seedFile("/a.txt", "a");
     await provider.stat(at("a.txt"), signal());
     await provider.stat(at("a.txt"), signal());
-    const session = await openWrite(provider, at("new.txt"), signal());
-    await expectCode(session.write(0n, new Uint8Array([1, 2, 3]), signal()), "outcome_unknown");
+    await expectCode(openWrite(provider, at("new.txt"), signal()), "outcome_unknown");
     expect(mock.opCount("op:write")).toBe(1);
     expect(mock.opCount("open")).toBe(1);
   });
@@ -461,10 +459,9 @@ describe("atomic replace", () => {
     expect(error.retryable).toBe(false);
   });
 
-  it("a write whose reply is for another operation is outcome_unknown", async () => {
+  it("a creating write whose reply is for another operation is outcome_unknown from openWrite", async () => {
     const { provider } = setup({ misreply: true });
-    const session = await openWrite(provider, at("f.txt"), signal());
-    await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
   });
 
   it("a read whose reply is for another operation is internal", async () => {
@@ -534,11 +531,10 @@ describe("writes", () => {
     expect(text(mock.bytesAt("/dir/report.txt"))).toBe("abc");
   });
 
-  it("a temp name already taken is exists, and the file there is not overwritten", async () => {
+  it("a temp name already taken is already_exists from openWrite, and the file there is not overwritten", async () => {
     const { mock, provider } = setup();
     mock.seedFile("/.taken", "keep");
-    const session = await openWrite(provider, at("f.txt"), signal(), { t: ".taken" });
-    await expectCode(session.write(0n, bytes("abc"), signal()), "already_exists");
+    await expectCode(openWrite(provider, at("f.txt"), signal(), { t: ".taken" }), "already_exists");
     expect(text(mock.bytesAt("/.taken"))).toBe("keep");
   });
 
@@ -571,7 +567,7 @@ describe("writes", () => {
     expect(mock.bytesAt("/empty.txt")?.byteLength).toBe(0);
   });
 
-  it("a file of 5 MiB goes in two chunks: exclusive at 0, then existing at 4194304", async () => {
+  it("a file of 5 MiB: the empty creation, then two chunks at 0 and 4194304", async () => {
     const { mock, provider } = setup();
     const session = await openWrite(provider, at("big.bin"), signal());
     await session.write(0n, new Uint8Array(5 * MIB), signal());
@@ -581,6 +577,7 @@ describe("writes", () => {
       .map((c) => c.input as { offset: string; create: string });
     expect(writes.map((w) => [w.offset, w.create])).toEqual([
       ["0", "exclusive"],
+      ["0", "existing"],
       ["4194304", "existing"],
     ]);
     expect(mock.bytesAt("/big.bin")?.byteLength).toBe(5 * MIB);
@@ -686,12 +683,12 @@ describe("error mapping", () => {
     expect(mock.exists("/b.txt")).toBe(true);
   });
 
-  it("a full 4 MiB write chunk goes through the schema in one call", async () => {
+  it("a full 4 MiB write chunk goes through the schema in one call (after the creation)", async () => {
     const { mock, provider } = setup();
     const session = await openWrite(provider, at("full.bin"), signal());
     await session.write(0n, new Uint8Array(4 * MIB), signal());
     await session.commit({ replace: false, expectTarget: null }, signal());
-    expect(mock.opCount("op:write")).toBe(1);
+    expect(mock.opCount("op:write")).toBe(2);
     expect(mock.bytesAt("/full.bin")?.byteLength).toBe(4 * MIB);
   });
 
@@ -818,13 +815,13 @@ describe("abort checked before each port call (review repair)", () => {
 });
 
 describe("empty commit checks the written count (review repair)", () => {
-  it("a write reply that disagrees on the empty file is outcome_unknown, with no rename or remove", async () => {
+  it("a creation whose reply disagrees is outcome_unknown from openWrite, with no rename or remove", async () => {
     const { mock, provider } = setup({ writtenOverride: 5 });
-    const session = await openWrite(provider, at("empty.txt"), signal());
-    await expectCode(session.commit({ replace: false, expectTarget: null }, signal()), "outcome_unknown");
+    await expectCode(openWrite(provider, at("empty.txt"), signal()), "outcome_unknown");
     expect(mock.opCount("op:rename")).toBe(0);
     expect(mock.opCount("op:remove")).toBe(0);
   });
+
 });
 
 describe("shared open, reopen after abort, race with a held rename (third review)", () => {
@@ -900,5 +897,51 @@ describe("shared open failure with an already aborted caller (final review)", ()
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+describe("temp file created before the session is returned (review C4)", () => {
+  it("a taken temp name is already_exists from openWrite, the file is untouched, and nothing else is sent", async () => {
+    const { mock, provider } = setup();
+    mock.seedFile("/.taken", "keep");
+    await expectCode(openWrite(provider, at("f.txt"), signal(), { t: ".taken" }), "already_exists");
+    expect(text(mock.bytesAt("/.taken"))).toBe("keep");
+    expect(mock.opCount("op:write")).toBe(1);
+    expect(mock.opCount("op:remove")).toBe(0);
+  });
+
+  it("openWrite returns only after the empty temp file exists", async () => {
+    const { mock, provider } = setup();
+    const session = await openWrite(provider, at("f.txt"), signal(), { t: ".fresh" });
+    expect(session.tempPath).toEqual({ segments: [{ t: ".fresh" }] });
+    expect(mock.bytesAt("/.fresh")?.byteLength).toBe(0);
+  });
+
+  it("an unknown outcome of the creation is outcome_unknown from openWrite, and no session is returned", async () => {
+    const { provider } = setup({ failAll: "unreachable" });
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
+  });
+
+  it("a creation whose reply says other than 0 bytes is outcome_unknown from openWrite", async () => {
+    const { mock, provider } = setup({ writtenOverride: 5 });
+    await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
+    expect(mock.opCount("op:rename")).toBe(0);
+  });
+});
+
+describe("temp name equal to the target under the endpoint's case rule (review C4)", () => {
+  const insensitive = (mock: RemoteHubMock) =>
+    createSftpProvider({ port: mock, profileId: PROFILE, endpoint: { ...endpoint, caseSensitive: false } });
+
+  it("Report with the temp name report is invalid_name on a case-insensitive endpoint, with no call sent", async () => {
+    const mock = new RemoteHubMock({ consent: "granted", level: "write", hostKey: "trusted" });
+    await expectCode(openWrite(insensitive(mock), at("Report"), signal(), { t: "report" }), "invalid_name");
+    expect(mock.calls).toHaveLength(0);
+  });
+
+  it("the same two names are a different file on a case-sensitive endpoint, and are accepted", async () => {
+    const { provider } = setup();
+    const session = await openWrite(provider, at("Report"), signal(), { t: "report" });
+    expect(session.tempPath).toEqual({ segments: [{ t: "report" }] });
   });
 });

@@ -9,7 +9,7 @@
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
 import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
-import { NameSegment, type ResourcePath } from "../../core/path.ts";
+import { NameSegment, type ResourcePath, samePath } from "../../core/path.ts";
 import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider, type WriteSession } from "../../core/provider.ts";
 import {
   SFTP_LIMITS,
@@ -455,23 +455,27 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
   }
 
   /**
-   * A session whose temp file is the caller's name in the target's directory. The name is checked as a core segment
-   * and must differ from the target's own name; the creation is exclusive, so a name already taken is exists and the
-   * file there is never overwritten.
+   * Opens a session on the caller's temp name. The temp file is created exclusively here, before the session is
+   * returned: a taken name is already_exists from this call, the file there is untouched, and no session exists.
+   * The name is checked as a core segment and must not name the target on this endpoint (case rule included).
    */
-  async function openWriteSession(target: ResourcePath, tempName: NameSegment): Promise<SftpWriteSession> {
+  async function openWriteSession(target: ResourcePath, tempName: NameSegment, signal: AbortSignal): Promise<SftpWriteSession> {
     const last = target.segments.at(-1);
     if (last === undefined) throw commanderError("invalid_path");
     const parsed = NameSegment.safeParse(tempName);
-    if (!parsed.success || JSON.stringify(parsed.data) === JSON.stringify(last)) throw commanderError("invalid_name");
+    if (!parsed.success) throw commanderError("invalid_name");
     const parent = target.segments.slice(0, -1);
     const tempPath: ResourcePath = { segments: [...parent, parsed.data] };
+    if (samePath(tempPath, target, endpoint.caseSensitive)) throw commanderError("invalid_name");
 
-    // created: a creating write has been answered, so the temp is known to exist and is ours to remove.
-    // halt: the session may no longer touch the temp (a refused creation, or an unknown outcome).
-    let created = false;
+    // The creation is the first call of the session. Its reply must confirm 0 bytes written.
+    const created = await writeChunk(tempPath, 0n, new Uint8Array(0), "exclusive", signal, () => undefined);
+    if (created !== 0) throw commanderError("outcome_unknown");
+
+    // halt: the session may no longer touch the temp (an unknown outcome of a later call).
     let halt: ErrorCode | null = null;
     let finished = false;
+    let exists = true;
     const setHalt = (code: ErrorCode) => {
       halt = code;
     };
@@ -486,17 +490,13 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       async write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void> {
         return guard(async () => {
           checkOpen();
-          if (bytes.length === 0) return;
-          if (!created && offset !== 0n) throw new CommanderError("internal", "A write session starts at offset 0");
           for (let done = 0; done < bytes.length; done += READ_CHUNK_MAX) {
             const slice = bytes.subarray(done, done + READ_CHUNK_MAX);
-            const create = created ? "existing" : "exclusive";
-            const written = await writeChunk(tempPath, offset + BigInt(done), slice, create, signal, setHalt);
+            const written = await writeChunk(tempPath, offset + BigInt(done), slice, "existing", signal, setHalt);
             if (written !== slice.length) {
               setHalt("outcome_unknown");
               throw commanderError("outcome_unknown");
             }
-            created = true;
           }
         });
       },
@@ -504,15 +504,6 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       async commit(opts, signal: AbortSignal): Promise<Fingerprint> {
         return guard(async () => {
           checkOpen();
-          if (!created) {
-            // An empty file: the contract allows an empty first chunk. Its reply must say 0 bytes written.
-            const written = await writeChunk(tempPath, 0n, new Uint8Array(0), "exclusive", signal, setHalt);
-            if (written !== 0) {
-              setHalt("outcome_unknown");
-              throw commanderError("outcome_unknown");
-            }
-            created = true;
-          }
           const target: ResourcePath = { segments: [...parent, last] };
           const expectTarget = opts.replace && opts.expectTarget !== null ? opts.expectTarget : undefined;
           try {
@@ -535,19 +526,19 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
 
       async abort(): Promise<void> {
         return guard(async () => {
-          // Only a temp this session created, and whose state is known, may be removed.
-          if (halt !== null || finished || !created) return;
+          // Only the temp this session created, and whose state is known, may be removed.
+          if (halt !== null || finished || !exists) return;
           try {
             await removeOp(tempPath, "file", new AbortController().signal);
           } catch (error) {
             if (error instanceof SftpRefusal && error.code === "no_such_file") {
-              created = false;
+              exists = false;
               return;
             }
             if (isUnknown(error)) setHalt("outcome_unknown");
             throw error;
           }
-          created = false;
+          exists = false;
         });
       },
     };
@@ -620,8 +611,8 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       });
     },
 
-    openWrite(target, opts, _signal) {
-      return guard(() => openWriteSession(target, opts.tempName));
+    openWrite(target, opts, signal) {
+      return guard(() => openWriteSession(target, opts.tempName, signal));
     },
 
     async mkdir(path, signal) {
