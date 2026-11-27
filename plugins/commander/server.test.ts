@@ -135,8 +135,8 @@ test("hides damaged plans in RPC, agent tools and CLI and refuses mutation", asy
   try {
     const { id, digest } = ticket.parse(await bb.tool("commander_plan", request));
     const { jobId } = submission.parse(await bb.tool("commander_run", { planId: id, digest }));
-    bb.db.prepare("UPDATE jobs SET plan_json = ? WHERE id = ?").run("{", jobId);
-    const expected = { jobs: [{ id: jobId, state: "unknown", damaged: true, message: "Stored job is damaged" }] };
+    bb.db.prepare("UPDATE jobs SET plan_json = ?, created_at = ? WHERE id = ?").run("{", "2026-11-27T10:00:00.000Z", jobId);
+    const expected = { jobs: [{ id: jobId, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: "2026-11-27T10:00:00.000Z" }] };
     expect(await bb.rpc("job_list", {})).toEqual(expected);
     expect(await bb.tool("commander_jobs", {})).toEqual(expected);
     const cli = await bb.cli(["jobs"]);
@@ -164,6 +164,36 @@ test("limits agent metadata to grants and runs an authorized immutable plan", as
     expect(run.status).toBe("submitted");
     await vi.waitFor(() => expect(bb.disk.contents(parsePosix("/data/out/a"))).toEqual(Uint8Array.of(42)));
     expect(bb.disk.contents(parsePosix("/data/out/secret"))).toBeNull();
+  } finally { await bb.dispose(); }
+});
+
+test("checks a pending plan without starting it and reports changed fingerprints", async () => {
+  const bb = await backend();
+  try {
+    const { id, digest } = ticket.parse(await bb.tool("commander_plan", request));
+    const { jobId } = submission.parse(await bb.tool("commander_run", { planId: id, digest }));
+    const checkedAt = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+    await expect(Promise.resolve().then(() => bb.rpc("plan_check", { jobId, digest })))
+      .resolves.toEqual({ ok: true, checkedAt });
+    bb.disk.put(parsePosix("/data/a"), Uint8Array.of(4, 5), "2");
+    await expect(bb.rpc("plan_check", { jobId, digest }))
+      .resolves.toEqual({ ok: false, changed: [{ index: 0, reason: "source_changed" }], checkedAt });
+    await expect(bb.rpc("job_list", {})).resolves.toMatchObject({ jobs: [{ id: jobId, state: "pending", awaitsOwner: true }] });
+    expect(bb.disk.contents(parsePosix("/out/a"))).toBeNull();
+  } finally { await bb.dispose(); }
+});
+
+test("refuses a plan check with the wrong digest, a plugin caller or a settled job", async () => {
+  const bb = await backend();
+  try {
+    const { id, digest } = ticket.parse(await bb.tool("commander_plan", request));
+    const { jobId } = submission.parse(await bb.tool("commander_run", { planId: id, digest }));
+    await expect(Promise.resolve().then(() => bb.rpc("plan_check", { jobId, digest: "0".repeat(64) })))
+      .rejects.toMatchObject({ code: "conflict" });
+    await expect(bb.rpc("plan_check", { jobId, digest }, { ...client, experimental_caller: { kind: "plugin", pluginId: "other" } }))
+      .rejects.toMatchObject({ code: "forbidden" });
+    await bb.rpc("plan_reject", { jobId, digest });
+    await expect(bb.rpc("plan_check", { jobId, digest })).rejects.toMatchObject({ code: "conflict" });
   } finally { await bb.dispose(); }
 });
 
@@ -305,12 +335,12 @@ test("a limited agent page decodes only matching jobs up to the limit, including
       const { id, digest } = ticket.parse(await bb.tool("commander_plan", request, thread));
       await bb.tool("commander_run", { planId: id, digest }, thread);
     }
-    bb.db.prepare("UPDATE jobs SET plan_json = ?, updated_at = ? WHERE id = ?")
-      .run("{", "2099-01-01T00:00:00.000Z", owned.jobId);
+    bb.db.prepare("UPDATE jobs SET plan_json = ?, created_at = ?, updated_at = ? WHERE id = ?")
+      .run("{", "2026-11-27T10:00:00.000Z", "2099-01-01T00:00:00.000Z", owned.jobId);
     const parseJob = vi.spyOn(OperationJob, "parse");
     try {
       expect(await bb.tool("commander_jobs", { limit: 1 })).toEqual({ jobs: [{
-        id: owned.jobId, state: "unknown", damaged: true, message: "Stored job is damaged",
+        id: owned.jobId, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: "2026-11-27T10:00:00.000Z",
       }] });
       expect(parseJob).toHaveBeenCalledTimes(1);
     } finally { parseJob.mockRestore(); }
@@ -613,7 +643,7 @@ test("an unknown page with no matches decodes at most 200 rows and resumes at it
   const bb = await backend();
   try {
     const first = await submitAgent(bb, request);
-    bb.db.prepare("UPDATE jobs SET plan_json = '{' WHERE id = ?").run(first.jobId);
+    bb.db.prepare("UPDATE jobs SET plan_json = '{', created_at = ? WHERE id = ?").run("2026-11-27T10:00:00.000Z", first.jobId);
     const seed = await submitAgent(bb, request);
     seedApprovalRows(bb.db, seed.jobId, agent.threadId, 205, "completed");
     const decode = vi.spyOn(OperationJob, "parse");
@@ -624,7 +654,7 @@ test("an unknown page with no matches decodes at most 200 rows and resumes at it
       expect(decode).toHaveBeenCalledTimes(200);
       decode.mockClear();
       expect(await bb.tool("commander_jobs", { limit: 1, states: ["unknown"], cursor: page.nextCursor })).toEqual({
-        jobs: [{ id: first.jobId, state: "unknown", damaged: true, message: "Stored job is damaged" }],
+        jobs: [{ id: first.jobId, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: "2026-11-27T10:00:00.000Z" }],
       });
       expect(decode).toHaveBeenCalledTimes(7);
     } finally { decode.mockRestore(); }
@@ -827,4 +857,30 @@ test("cancels a recovering move before source removal and records the verified c
     else if (firstDisposed) bb.db.close();
     else await bb.dispose();
   }
+});
+
+test("keeps the Commander page and two thread layouts separate and reads the old page state", async () => {
+  const bb = await backend();
+  try {
+    const emptyPane = { tabs: [], activeTab: null };
+    const page = { left: emptyPane, right: emptyPane, activePane: "left", layout: "horizontal", split: 0.5 };
+    bb.kv.set("ui-state", page);
+    const first = { ...page, activePane: "right", inspectorCollapsed: true };
+    const second = { ...page, split: 0.7, inspectorCollapsed: false };
+    await expect(bb.rpc("ui_state_set", { threadId: "thread-a", state: first })).resolves.toEqual({});
+    await expect(bb.rpc("ui_state_set", { threadId: "thread-b", state: second })).resolves.toEqual({});
+    await expect(bb.rpc("ui_state_get", {})).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "left", layout: "horizontal", split: 0.5,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-a" })).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "right", layout: "horizontal", split: 0.5, inspectorCollapsed: true,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-b" })).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "left", layout: "horizontal", split: 0.7, inspectorCollapsed: false,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-c" })).resolves.toEqual({ state: null });
+  } finally { await bb.dispose(); }
 });

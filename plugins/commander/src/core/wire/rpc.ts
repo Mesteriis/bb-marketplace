@@ -36,6 +36,7 @@ export const PlanInput = z.strictObject({
 export const DamagedJob = z.strictObject({
   id: z.uuid(), state: z.literal("unknown"), damaged: z.literal(true),
   message: z.literal("Stored job is damaged"),
+  createdAt: z.iso.datetime(),
 });
 export type DamagedJob = z.infer<typeof DamagedJob>;
 export const JobView = z.union([OperationJob, DamagedJob]);
@@ -59,8 +60,11 @@ export const UiState = z.strictObject({
   activePane: z.enum(["left", "right"]),
   layout: z.enum(["horizontal", "vertical"]),
   split: z.number().min(0.1).max(0.9),
+  inspectorCollapsed: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof UiState>;
+
+const uiScope = z.strictObject({ threadId: threadId.optional() });
 
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
@@ -85,6 +89,20 @@ export const rpcSchemas = {
   },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
+  // Read-only preflight for an owner client. Approval repeats validation against live metadata.
+  plan_check: {
+    input: jobId.extend({ digest }),
+    output: z.discriminatedUnion("ok", [
+      z.strictObject({ ok: z.literal(true), checkedAt: z.iso.datetime() }),
+      z.strictObject({
+        ok: z.literal(false), checkedAt: z.iso.datetime(),
+        changed: z.array(z.strictObject({
+          index: z.int().nonnegative(),
+          reason: z.enum(["source_changed", "target_changed"]),
+        })).min(1).max(100_000),
+      }),
+    ]),
+  },
   plan_approve: { input: jobId.extend({ digest }), output: OperationJob },
   plan_reject: { input: jobId.extend({ digest }), output: OperationJob },
   agent_grants_list: { input: empty, output: z.strictObject({ grants: z.array(AgentGrant).max(256) }) },
@@ -94,8 +112,8 @@ export const rpcSchemas = {
     input: sftpMethods.hub_sftp_request_access.input.omit({ reason: true }),
     output: sftpMethods.hub_sftp_request_access.output,
   },
-  ui_state_get: { input: empty, output: z.strictObject({ state: UiState.nullable() }) },
-  ui_state_set: { input: z.strictObject({ state: UiState }), output: empty },
+  ui_state_get: { input: uiScope, output: z.strictObject({ state: UiState.nullable() }) },
+  ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
 };
 
 export type RpcInput<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["input"]>;

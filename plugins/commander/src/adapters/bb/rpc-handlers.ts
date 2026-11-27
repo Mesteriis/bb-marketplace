@@ -5,14 +5,14 @@ import type { AgentJobStore } from "../../core/job-store.ts";
 import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
 import { parent } from "../../core/path.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
-import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
+import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
 import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
 
 const owner = { kind: "owner" } as const;
-const stateKey = "ui-state";
+const stateKey = (threadId?: string) => threadId === undefined ? "ui-state" : "ui-state:thread:" + threadId;
 const maxPlanBytes = 16 * 1024 * 1024;
 const maxPlans = 128;
 const maxAgentPlanBytes = 4 * 1024 * 1024;
@@ -39,7 +39,7 @@ export function publicError(error: unknown) {
 
 function damaged(job: OperationJob): DamagedJob | null {
   return job.state === "unknown" && job.error?.code === "internal" && job.error.message === "Stored job is damaged"
-    ? { id: job.id, state: "unknown", damaged: true, message: "Stored job is damaged" }
+    ? { id: job.id, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: job.createdAt }
     : null;
 }
 
@@ -310,6 +310,16 @@ export function createOperations(deps: {
       await runner.decide(jobId, decision);
       return {};
     },
+    async checkPlan({ jobId, digest }: RpcInput<"plan_check">, signal: AbortSignal) {
+      await deps.ready();
+      const { plan } = await pending(jobId, digest);
+      await endpoints.prepare(refs(plan), signal);
+      const result = await revalidate(plan, planner, signal);
+      signal.throwIfAborted();
+      await pending(jobId, digest);
+      const checkedAt = planner.now().toISOString();
+      return result.ok ? { ok: true as const, checkedAt } : { ok: false as const, changed: result.changed, checkedAt };
+    },
     async approve({ jobId, digest }: RpcInput<"plan_approve">, signal: AbortSignal) {
       await deps.ready();
       const job = await pending(jobId, digest);
@@ -334,12 +344,12 @@ export function createOperations(deps: {
       publish("endpoints", "sftp:" + input.profileId);
       return result;
     },
-    async getState() {
-      return { state: UiState.safeParse(await kv.get(stateKey)).data ?? null };
+    async getState(threadId?: string) {
+      return { state: UiState.safeParse(await kv.get(stateKey(threadId))).data ?? null };
     },
-    async setState(state: UiState) {
+    async setState(state: UiState, threadId?: string) {
       if (Buffer.byteLength(JSON.stringify(state)) > 256 * 1024) throw refusal("invalid", "UI state exceeds 256 KB");
-      await kv.set(stateKey, state);
+      await kv.set(stateKey(threadId), state);
       return {};
     },
     async prepareRecovery(signal: AbortSignal) {
@@ -384,14 +394,15 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     job_list: (input) => ops.jobs(input),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
+    plan_check: (input, ctx) => ops.checkPlan(input, ctx.experimental_signal),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),
     plan_reject: (input) => ops.reject(input),
     agent_grants_list: async () => ({ grants: await ops.listGrants() }),
     agent_grants_set: ({ grant }) => ops.setGrant(grant),
     agent_grants_revoke: (input) => ops.revokeGrant(input),
     sftp_request_access: (input, ctx) => ops.requestAccess(input, ctx.experimental_signal),
-    ui_state_get: () => ops.getState(),
-    ui_state_set: ({ state }) => ops.setState(state),
+    ui_state_get: ({ threadId }) => ops.getState(threadId),
+    ui_state_set: ({ state, threadId }) => ops.setState(state, threadId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;
