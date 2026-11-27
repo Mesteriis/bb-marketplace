@@ -1199,3 +1199,68 @@ test("saves the transferred source hash with the committed checkpoint", async ()
   expect(committed).toHaveLength(1);
   expect(committed[0].sourceHash).toBe(sha42);
 });
+
+test.each([["-1", "completed"], ["-3", "unknown"]] as const)(
+  "compares signed mtimeNs without throwing: recorded -2, current %s", async (current, state) => {
+    const { runner, plan, store, to, at } = await setup();
+    const { id } = await runner.submit(plan, { awaitsOwner: true });
+    await store.update(id, { state: "running", currentItem: 0 }, "pending");
+    const tempPath = parsePosix("/" + (tempNameFor(id, 0) as { t: string }).t);
+    to.put(tempPath, new Uint8Array(6).fill(42), current);
+    await store.checkpoint({ jobId: id, itemIndex: 0, phase: "copying", bytesDone: "6", tempPath,
+      tempFingerprint: { size: "3", mtimeNs: "-2" }, via: "copy", targetPath: target, expectTarget: "absent", verified: null });
+    expect(await runner.recover()).toEqual({ resumed: state === "completed" ? [id] : [], unknown: state === "unknown" ? [id] : [] });
+    await at(id, state);
+  });
+
+test("a recorded temp that is missing is unknown without a recorded expectTarget, and nothing is reopened", async () => {
+  const ctx = await setup();
+  const { runner, to, at } = ctx;
+  const { id, tempPath } = await interruptedCopy(ctx, 0, { expectTarget: null });
+  await to.remove(tempPath, { kind: "file" }, signal());
+  to.calls.length = 0;
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  await at(id, "unknown");
+  expect(to.calls.filter(({ op }) => op === "openWrite")).toHaveLength(0);
+});
+
+async function committedMove(sourceBytes: Uint8Array, targetBytes: Uint8Array) {
+  const ctx = await setup({ kind: "move", verify: "sha256" });
+  const { runner, plan, store, from, to } = ctx;
+  const { id } = await runner.submit(plan, { awaitsOwner: true });
+  await store.update(id, { state: "running", currentItem: 0 }, "pending");
+  from.put(source, sourceBytes, "1");
+  to.put(target, targetBytes, "50");
+  await store.checkpoint({ jobId: id, itemIndex: 0, phase: "committed", bytesDone: "3", tempPath: null, via: "copy",
+    targetPath: target, expectTarget: "absent", verified: null, committed: { size: "3", mtimeNs: "50" }, sourceHash: sha42 });
+  return { ...ctx, id };
+}
+
+test("does not remove a surviving source whose bytes differ from the transferred hash", async () => {
+  const { runner, from, to, at, id } = await committedMove(Uint8Array.of(9, 9, 9), Uint8Array.of(9, 9, 9));
+  expect(await runner.recover()).toEqual({ resumed: [], unknown: [id] });
+  await at(id, "unknown");
+  expect(from.contents(source)).toEqual(Uint8Array.of(9, 9, 9));
+  expect(from.calls.filter(({ op }) => op === "remove")).toHaveLength(0);
+  expect(to.contents(target)).toEqual(Uint8Array.of(9, 9, 9));
+});
+
+test("clears the source hash when recovery reaches verified", async () => {
+  const { runner, store, from, at, id } = await committedMove(Uint8Array.of(42, 42, 42), Uint8Array.of(42, 42, 42));
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  await at(id, "completed");
+  expect(from.contents(source)).toBeNull();
+  const point = await store.lastCheckpoint(id, 0);
+  expect(point?.phase).toBe("source_removed");
+  expect(point?.sourceHash).toBeUndefined();
+});
+
+test("clears the source hash when a missing-source recovery is recorded as verified", async () => {
+  const { runner, store, from, at, id } = await committedMove(Uint8Array.of(42, 42, 42), Uint8Array.of(42, 42, 42));
+  await from.remove(source, { kind: "file" }, signal());
+  expect(await runner.recover()).toEqual({ resumed: [id], unknown: [] });
+  await at(id, "completed");
+  const point = await store.lastCheckpoint(id, 0);
+  expect(point?.phase).toBe("verified");
+  expect(point?.sourceHash).toBeUndefined();
+});

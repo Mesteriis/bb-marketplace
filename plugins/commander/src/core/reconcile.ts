@@ -242,14 +242,17 @@ async function recoverTemp(
       // Trust the stat lag window: a buffered handle may have grown the file after it was recorded.
       // Without a write intent the file must also not be older than the recorded version.
       ours = size >= toBig(recorded!.size) && size <= upper
-        && (checkpoint.writing !== undefined || (staged.mtimeNs !== null && recorded!.mtimeNs !== null && toBig(staged.mtimeNs) >= toBig(recorded!.mtimeNs)));
+        && (checkpoint.writing !== undefined || (staged.mtimeNs !== null && recorded!.mtimeNs !== null && BigInt(staged.mtimeNs) >= BigInt(recorded!.mtimeNs)));
     }
     if (!ours) throw unknown("Temporary file does not match the recorded evidence");
     cleanup = { tempPath: temp.path, tempFingerprint: fingerprint(staged)! };
     await save({ ...checkpoint, cleanup });
+  } else if (copying && checkpoint.expectTarget === null) {
+    // Same rule as for a checkpoint without a temp: no recorded target version, no proof.
+    throw unknown("Recorded temporary file is missing without a recorded target version");
   }
-  // A recorded temp that is physically missing is not proof by itself either way:
-  // the caller still checks that source and target match the recorded versions.
+  // A missing temp is not proof by itself either way: the caller still checks
+  // that source and target match the recorded versions.
   if (staged) {
     try {
       await temp.provider.remove(temp.path, { kind: "file", expect: cleanup!.tempFingerprint }, context.signal);
@@ -320,7 +323,7 @@ export async function reconcileItem(
       if (destination?.kind === item.kind && matches(destination, checkpoint.committed)
           && (!hashed || destination.sha256 === hash)) {
         await save({
-          ...checkpoint, phase: "verified",
+          ...checkpoint, phase: "verified", sourceHash: undefined,
           verified: hashed ? { size: destination.size, sha256: hash } : { size: destination.size },
         });
         return "done";
@@ -337,8 +340,11 @@ export async function reconcileItem(
     throw unknown();
   }
   if (observed?.kind !== "file" || !matches(observed, expected) || checkpoint.bytesDone !== expected.size) throw unknown();
+  // Both the hash in the plan and the hash taken during transfer identify the version that was copied.
+  const hash = expected.sha256 ?? checkpoint.sourceHash;
+  if (hash && (observed.sha256 ?? (await observe(source, context, true))?.sha256) !== hash) throw unknown();
   if (checkpoint.verified && !await confirmVerified(target, checkpoint, item.kind, context)) throw unknown();
   const verified = await verifyCopy(source, target, expected, plan.kind === "move" ? "sha256" : plan.verify, context,
-    undefined, checkpoint.committed);
+    hash, checkpoint.committed);
   return plan.kind === "move" ? { verified } : "done";
 }

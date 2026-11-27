@@ -292,7 +292,7 @@ export class JobRunner {
       if (cancelling) {
         warning = moveCancelled;
       } else {
-        await context.mark("verified", { verified: outcome.verified });
+        await context.mark("verified", { verified: outcome.verified, sourceHash: undefined });
         const result = await this.finishMove(source, target, item.fingerprint, context);
         if (result !== "removed") warning = result === "move_cancelled" ? moveCancelled : sourceRetained;
       }
