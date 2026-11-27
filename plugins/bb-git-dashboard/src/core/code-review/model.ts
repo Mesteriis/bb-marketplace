@@ -84,6 +84,37 @@ export const reviewThreadSchema = z.object({
 }).strict();
 export type ReviewThread = z.infer<typeof reviewThreadSchema>;
 
+/**
+ * An AI run started from the review, in a BB thread of its own under the reviewed one: a `review` that leaves
+ * comments and answers @reviewer, a `fix` that got comments sent to a new thread, a `summary` of the change, an
+ * `explain`ed file or lines.
+ */
+export const runKindSchema = z.enum(["review", "fix", "summary", "explain"]);
+export type RunKind = z.infer<typeof runKindSchema>;
+export const runStatusSchema = z.enum(["running", "done", "failed", "closed"]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+export const reviewRunSchema = z.object({
+  id: z.string(), sessionId: z.string(), kind: runKindSchema,
+  /** The run's BB thread; null until BB gives it one, or when it could not start. */
+  threadId: z.string().nullable(),
+  /** A review run's focus, or what an explain run explains. */
+  focus: z.string().nullable(),
+  providerId: z.string(), model: z.string().nullable(), status: runStatusSchema,
+  /** The agent's last message when its turn ended, or why the run could not start. */
+  summary: z.string().nullable(),
+  /** Files that changed in the copy while a read-only run ran; null before it ends. */
+  changedFiles: z.array(z.string()).nullable(),
+  createdAt: z.number(), finishedAt: z.number().nullable(),
+}).strict();
+export type ReviewRun = z.infer<typeof reviewRunSchema>;
+/** The provider, model and reasoning a run's thread starts with, as BB's provider picker gives them. */
+export const executionSchema = z.object({
+  providerId: z.string().min(1).max(128), model: z.string().max(256),
+  reasoningLevel: z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]),
+  serviceTier: z.string().max(128).optional(),
+}).strict();
+export type Execution = z.infer<typeof executionSchema>;
+
 /** The key a session is stored under for a view. */
 export function targetKey(target: Target): string {
   switch (target.kind) {

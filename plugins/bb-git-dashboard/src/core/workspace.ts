@@ -18,7 +18,9 @@ export type Operation = z.infer<typeof operation>;
 export const request = z.object({copyId: id, action: gitAction, operationId: id.optional()});
 /** `retryIn`: seconds until a rate-limited forge takes reads again, when it said so. */
 export const failure = z.object({ok: z.literal(false), code: z.string(), next: z.string(), operationId: id.optional(),
-  retryIn: z.number().int().min(1).max(3600).optional()});
+  retryIn: z.number().int().min(1).max(3600).optional(),
+  /** What exactly was refused, for an agent to retry right: built from the plugin's own data, never from a forge. */
+  detail: z.string().max(2000).optional()});
 export type Failure = z.infer<typeof failure>;
 export const gitResponse = z.discriminatedUnion("ok", [failure,
   z.object({ok: z.literal(true), value: gitResult, operationId: id.optional()}),
@@ -78,7 +80,19 @@ const next: Record<string, string> = {
   NOT_WORKING_COPY: "Suggestions apply to the new side of uncommitted, unstaged or all-changes views, where the file is the working copy.",
   NO_SUGGESTION: "This comment has no suggestion block.",
   THREAD_REQUIRED: "Run this inside a BB thread.",
+  NOT_A_REVIEW_RUN: "Only an open AI review, summary or explanation run can add comments; answer the comment threads sent to you instead.",
+  FILE_NOT_IN_DIFF: "Comment on a file of the diff under review.",
+  RUN_PLACE_REQUIRED: "Attach this working copy to a BB project, or start the run from a thread working in it.",
+  UNKNOWN_RUN: "Refresh the review: this AI run no longer exists.",
 };
+/** An error with a code `failureFor` knows and a `detail` for the agent. */
+export class CodedError extends Error {
+  readonly detail: string;
+  constructor(code: string, detail: string) {
+    super(code);
+    this.detail = detail;
+  }
+}
 const known = new Set([...Object.keys(next), "INVALID_REMOTE", "GIT_PROCESS_UNAVAILABLE", "GIT_REJECTED",
   "GIT_UNSUPPORTED_ENCODING", "INVALID_BRANCH", "INVALID_DESTINATION", "DESTINATION_EXISTS",
   "UNMERGED_PATH", "NOTHING_STAGED", "INVALID_INPUT", "ACCOUNT_EXISTS", "PROVIDER_DENIED", "PROVIDER_UNAVAILABLE",
@@ -90,6 +104,7 @@ export function failureFor(error: unknown, fallback: string, operationId?: strin
   const code = known.has(reason) ? reason : fallback;
   const wait = code === "PROVIDER_RATE_LIMITED" ? (error as {retryAfter?: unknown} | null)?.retryAfter : undefined;
   const retryIn = typeof wait === "number" && wait > 0 && wait <= 3_600_000 ? Math.max(1, Math.ceil(wait / 1000)) : undefined;
+  const detail = error instanceof CodedError && code === reason ? error.detail.slice(0, 2000) : undefined;
   return {ok: false, code, next: next[code] ?? "Review the selected target and refresh its state.", ...(operationId ? {operationId} : {}),
-    ...(retryIn ? {retryIn} : {})};
+    ...(retryIn ? {retryIn} : {}), ...(detail ? {detail} : {})};
 }

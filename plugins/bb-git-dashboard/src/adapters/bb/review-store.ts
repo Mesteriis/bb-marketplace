@@ -68,6 +68,25 @@ export const REVIEW_MIGRATIONS: string[] = [
      previous_delivery TEXT,
      PRIMARY KEY (send_id, thread_id)
    )`,
+  // 0.9.1: AI runs (review-run-store.ts).
+  `CREATE TABLE review_runs (
+     id TEXT PRIMARY KEY,
+     session_id TEXT NOT NULL REFERENCES review_sessions(id) ON DELETE CASCADE,
+     kind TEXT NOT NULL CHECK (kind IN ('review', 'fix', 'summary', 'explain')),
+     bb_thread_id TEXT,
+     parent_thread_id TEXT,
+     focus TEXT,
+     provider_id TEXT NOT NULL,
+     model TEXT,
+     status TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed', 'closed')),
+     summary TEXT,
+     baseline TEXT,
+     changed_files TEXT,
+     created_at INTEGER NOT NULL,
+     finished_at INTEGER
+   )`,
+  `CREATE INDEX review_runs_session ON review_runs(session_id)`,
+  `CREATE INDEX review_runs_bb_thread ON review_runs(bb_thread_id)`,
 ];
 
 export type Session = {id: string; copyId: string; targetKey: string};
@@ -81,6 +100,18 @@ type CommentRow = {id: string; thread_id: string; author_type: "user" | "agent";
 
 /** Twelve hex characters: short enough for an agent to type, and found by any unique prefix of four or more. */
 export const newId = () => randomBytes(6).toString("hex");
+
+/**
+ * Whether the agent in a BB thread may read and answer thread `t` (its last send `s`): the send went to the caller,
+ * or the caller carries an open review run of `t`'s session. A caller whose runs are all closed has lost every
+ * right, those from sends included. Bind with `callerParams`.
+ */
+const agentMay = `
+  NOT (EXISTS (SELECT 1 FROM review_runs r WHERE r.bb_thread_id = ?)
+       AND NOT EXISTS (SELECT 1 FROM review_runs r WHERE r.bb_thread_id = ? AND r.status != 'closed'))
+  AND (s.bb_thread_id = ? OR EXISTS (SELECT 1 FROM review_runs r WHERE r.bb_thread_id = ? AND r.kind = 'review'
+       AND r.status != 'closed' AND r.session_id = t.session_id))`;
+const callerParams = (caller: string) => [caller, caller, caller, caller];
 
 const threadSelect = `
   SELECT t.*, s.bb_thread_id AS bb_thread_id, s.created_at AS sent_at
@@ -122,6 +153,12 @@ export class ReviewStore {
   /** The threads whose last send went to `bbThreadId`, oldest first. */
   threadsSentTo(bbThreadId: string): ReviewThread[] {
     return this.withComments(this.db.prepare(threadSelect + " WHERE s.bb_thread_id = ? ORDER BY t.created_at, t.rowid").all(bbThreadId) as ThreadRow[]);
+  }
+
+  /** The threads the agent in `bbThreadId` may read and answer (`agentMay`), oldest first. */
+  agentThreads(bbThreadId: string): ReviewThread[] {
+    return this.withComments(this.db.prepare(threadSelect + " WHERE " + agentMay + " ORDER BY t.created_at, t.rowid")
+      .all(...callerParams(bbThreadId)) as ThreadRow[]);
   }
 
   /** Makes a thread with its first comment, the owner's unless `author` says otherwise. */
@@ -230,9 +267,9 @@ export class ReviewStore {
   answerAsAgent(input: {threadId: string; callerThreadId: string; ackBefore: number | null; authorName: string; body: string; status: ThreadStatus | null}) {
     const at = this.now();
     return this.db.transaction(() => {
-      const owner = this.db.prepare("SELECT s.bb_thread_id AS bb FROM review_threads t JOIN review_sends s ON s.id = t.send_id WHERE t.id = ?")
-        .get(input.threadId) as {bb: string} | undefined;
-      if (owner?.bb !== input.callerThreadId) return null;
+      const may = this.db.prepare("SELECT 1 FROM review_threads t LEFT JOIN review_sends s ON s.id = t.send_id WHERE t.id = ? AND " + agentMay)
+        .get(input.threadId, ...callerParams(input.callerThreadId));
+      if (may === undefined) return null;
       const commentId = this.insertComment(input.threadId, {type: "agent", name: input.authorName}, input.body, at);
       if (input.status !== null) this.db.prepare("UPDATE review_threads SET status = ? WHERE id = ?").run(input.status, input.threadId);
       this.db.prepare("UPDATE review_threads SET updated_at = ? WHERE id = ?").run(at, input.threadId);

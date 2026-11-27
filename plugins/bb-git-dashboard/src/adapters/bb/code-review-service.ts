@@ -63,7 +63,7 @@ export function codeReviewService(deps: CodeReviewDeps) {
   /** The thread an agent named by a unique prefix of its id, among those sent to its own thread only. */
   function named(callerThreadId: string, prefix: string) {
     if (!/^[0-9a-f]{4,12}$/.test(prefix)) fail("INVALID_ID");
-    const found = store.threadsSentTo(callerThreadId).filter(row => row.id.startsWith(prefix));
+    const found = store.agentThreads(callerThreadId).filter(row => row.id.startsWith(prefix));
     if (found.length > 1) fail("AMBIGUOUS_ID");
     return found[0]?.id ?? fail("NOT_SENT_HERE");
   }
@@ -93,6 +93,14 @@ export function codeReviewService(deps: CodeReviewDeps) {
       if (anchorContent !== null && anchorContent.length > ANCHOR_MAX_CHARS) fail("INVALID_INPUT");
       const made = store.createThread({sessionId, filePath: input.filePath, side: general || wholeFile ? null : input.side,
         startLine: general ? 0 : input.startLine, endLine: general ? 0 : input.endLine, severity: input.severity, anchorContent, body});
+      changed(sessionId);
+      return made;
+    },
+    /** An AI run's comment: placed and checked by the run service, signed with the run's provider. */
+    createAgentThread(sessionId: string, input: Omit<NewThreadInput, "anchorContent"> & {anchorContent: string | null}, authorName: string) {
+      session(sessionId);
+      const made = store.createThread({sessionId, filePath: input.filePath, side: input.side, startLine: input.startLine, endLine: input.endLine,
+        severity: input.severity, anchorContent: input.anchorContent, body: text(input.body)}, {type: "agent", name: authorName});
       changed(sessionId);
       return made;
     },
@@ -139,9 +147,9 @@ export function codeReviewService(deps: CodeReviewDeps) {
       return {count: chosen.length};
     },
 
-    /** The threads sent to an agent's thread: the open ones, or with `all` every one. */
+    /** The threads an agent may answer (sent to its thread, or its review run's session): the open ones, or with `all` every one. */
     sentTo(callerThreadId: string, all: boolean) {
-      return store.threadsSentTo(callerThreadId).filter(row => all || row.status === "open");
+      return store.agentThreads(callerThreadId).filter(row => all || row.status === "open");
     },
 
     /** An agent's reply, resolution or dismissal; allowed only on threads whose last send went to its thread. */
@@ -196,7 +204,7 @@ export function codeReviewService(deps: CodeReviewDeps) {
 }
 
 /** A session's view from its key, when no view was read since the server started. */
-function targetFromKey(key: string): Target {
+export function targetFromKey(key: string): Target {
   if (key === "uncommitted" || key === "staged" || key === "unstaged") return {kind: key};
   const [kind, rest] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
   if (kind === "branch" || kind === "all") return {kind, base: rest};
