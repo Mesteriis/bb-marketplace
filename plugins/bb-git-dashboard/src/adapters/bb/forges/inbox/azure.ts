@@ -56,13 +56,17 @@ export function azureInbox(account: Account, token: string, send: typeof fetch =
         "searchCriteria.status": tab === "merged" ? "completed" : tab === "closed" ? "abandoned" : "active",
         "$top": tab === "merged" || tab === "closed" ? "30" : "50",
       };
+      const top = Number(criteria["$top"]);
       const lists = await inBatches(projects.slice(0, maxProjects), 4, project => get(org + "/" + segment(project) + "/_apis/git/pullrequests", criteria));
       let items = lists.flatMap(list => array(list.value).map(object).flatMap(row => toPr(account, row, me) ?? []));
       // My vote is 0 until I review; any other vote means I already did.
       if (reviewing) items = items.filter(pr => (tab === "reviewed") === (pr.myReview !== null));
       items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      return {items: linkStacks(items), counts: {[tab]: items.length},
-        notice: projects.length > maxProjects ? "Only the first " + maxProjects + " projects of " + account.organization + " are read." : null};
+      // A project that filled its page, or projects left unread, make the length a lower bound, not a total.
+      const complete = projects.length <= maxProjects && lists.every(list => array(list.value).length < top);
+      const notes = [projects.length > maxProjects ? "Only the first " + maxProjects + " projects of " + account.organization + " are read." : "",
+        "Azure build policies are not read, so these pull requests show no CI state."].filter(Boolean);
+      return {items: linkStacks(items), counts: complete ? {[tab]: items.length} : {}, notice: notes.join(" ")};
     },
     watch: async () => null,
   };

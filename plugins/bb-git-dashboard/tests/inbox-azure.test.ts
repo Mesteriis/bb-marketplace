@@ -37,6 +37,13 @@ test("Open reads every project of the organization with the user as creator", as
     createdAt: "2026-11-27T00:00:00Z", updatedAt: "2026-11-27T00:00:00Z", mergedAt: null, closedAt: null, additions: null, deletions: null,
     ci: "none", failingChecks: [], unresolvedThreads: 0, notes: [], reviewDecision: null, conflicts: false, blockers: [], myReview: null});
   assert.deepEqual(page.counts, {open: 1});
+  assert.equal(page.notice, "Azure build policies are not read, so these pull requests show no CI state.");
+});
+
+test("a project that fills its page leaves the total unknown", async () => {
+  const full = Array.from({length: 50}, (_, index) => pr({pullRequestId: index + 1}));
+  const {send} = azure(project => project === "Web" ? full : []);
+  assert.deepEqual((await azureInbox(account, token, send).list("open")).counts, {});
 });
 
 test("Review requested and Reviewed split the user's reviews by their vote", async () => {
@@ -80,5 +87,6 @@ test("an organization with more projects than are read says so", async () => {
   const {send, calls} = azure(() => [], many);
   const page = await azureInbox(account, token, send).list("open");
   assert.equal(calls.filter(call => call.path.endsWith("/pullrequests")).length, 30);
-  assert.equal(page.notice, "Only the first 30 projects of contoso are read.");
+  assert.equal(page.notice, "Only the first 30 projects of contoso are read. Azure build policies are not read, so these pull requests show no CI state.");
+  assert.deepEqual(page.counts, {});
 });

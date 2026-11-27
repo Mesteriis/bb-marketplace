@@ -37,6 +37,8 @@ export function giteaInbox(account: Account, token: string, send: typeof fetch =
     return http(search + "?" + new URLSearchParams({type: "pulls", state, [flag]: "true", limit: String(limit), page: "1"}));
   };
   /** Branches, conflicts and the head's combined status: the search result has none of them. */
+  /** A pull request whose details cannot be read keeps its row as the search gave it. */
+  const detailOrRow = (pr: Pr) => detail(pr).catch(() => ({...pr, blockers: blockersOf(pr)}));
   async function detail(pr: Pr) {
     const pull = object((await http(repoPath(pr.repo) + "/pulls/" + pr.number)).payload);
     const head = object(pull.head), base = object(pull.base);
@@ -68,12 +70,14 @@ export function giteaInbox(account: Account, token: string, send: typeof fetch =
       }
       let items = rows(own.payload);
       if (closedTab) return {items: items.filter(pr => (tab === "merged") === (pr.mergedAt !== null)), counts, notice: null};
-      items = await inBatches(items, 4, detail);
+      items = await inBatches(items, 4, detailOrRow);
       return {items: linkStacks(items), counts, notice: null};
     },
     async watch() {
-      const open = await inBatches(rows((await read("open", 50)).payload), 4, detail);
-      return {viewer: account.username, prs: open.map(pr => ({id: pr.id, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url,
+      const open = await inBatches(rows((await read("open", 50)).payload), 4, detailOrRow);
+      const viewer = text(object((await http("/api/v1/user")).payload).login);
+      if (!viewer) throw new Error("PROVIDER_DENIED");
+      return {viewer, prs: open.map(pr => ({id: pr.id, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url,
         failing: pr.failingChecks.map(check => check.name), lastComment: null}))};
     },
   };

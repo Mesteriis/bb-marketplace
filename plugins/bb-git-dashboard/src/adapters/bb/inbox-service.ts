@@ -61,8 +61,12 @@ export type WatchSettings = {ci: boolean; comments: boolean; ignore: string};
  * One watcher round over every account. Each account keeps its own baseline, keyed by the viewer it was read as,
  * so a first poll, a new account or another login only records a baseline.
  */
-export async function watchRound(deps: Credentials & {kv: Kv; now(): string}, settings: WatchSettings): Promise<InboxAlert[]> {
+export async function watchRound(deps: Credentials & {kv: Kv; now(): string; keys?(): Promise<string[]>}, settings: WatchSettings): Promise<InboxAlert[]> {
   const accounts = await deps.accounts();
+  const known = new Set(accounts.map(account => "inbox-watch/" + account.id));
+  for (const key of await deps.keys?.().catch(() => [] as string[]) ?? []) {
+    if (key.startsWith("inbox-watch/") && !known.has(key)) await deps.kv.delete(key);
+  }
   if (!settings.ci && !settings.comments) {
     for (const account of accounts) await deps.kv.delete("inbox-watch/" + account.id);
     return [];

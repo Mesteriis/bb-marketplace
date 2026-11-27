@@ -24,15 +24,15 @@ const mr = (over: Record<string, unknown> = {}) => ({id: 900, iid: 7, project_id
 
 test("tabs map to GitLab's own scopes, and the other tabs are only counted", async () => {
   const {send, calls} = gitlab({"/api/v4/merge_requests": call => Number(call.query.get("per_page")) === 1
-    ? Response.json([], {headers: {"x-total": call.query.get("scope") === "reviews_for_me" ? "3" : "1"}})
+    ? Response.json([], {headers: {"x-total": call.query.get("scope") === "reviews_for_me" && !call.query.has("approved_by_usernames[]") ? "3" : "1"}})
     : Response.json([mr()], {headers: {"x-total": "1"}})});
   const page = await gitlabInbox(account, token, send).list("open");
   const asked = Object.fromEntries(calls.map(call => [call.query.get("per_page") === "1" ? "count" : "list", call]));
   assert.equal(asked.list.query.get("scope"), "created_by_me");
   assert.equal(asked.list.query.get("state"), "opened");
   const scopes = calls.map(call => [call.query.get("scope"), call.query.get("state"), call.query.get("approved_by_usernames[]")]);
-  assert.deepEqual(scopes.sort(), [["all", "opened", "me"], ["assigned_to_me", "opened", null], ["created_by_me", "closed", null],
-    ["created_by_me", "merged", null], ["created_by_me", "opened", null], ["reviews_for_me", "opened", null]].sort());
+  assert.deepEqual(scopes.sort(), [["assigned_to_me", "opened", null], ["created_by_me", "closed", null],
+    ["created_by_me", "merged", null], ["created_by_me", "opened", null], ["reviews_for_me", "opened", "me"], ["reviews_for_me", "opened", null]].sort());
   assert.deepEqual(page.counts, {open: 1, review: 3, reviewed: 1, assigned: 1, merged: 1, closed: 1});
   assert.deepEqual(page.items[0], {id: "gitlab:900", number: 7, title: "Add retries", url: "https://gitlab.example.org:8443/group/sub/app/-/merge_requests/7",
     repo: "group/sub/app", author: "me", baseRefName: "main", headRefName: "retries", onDefaultBranch: false, stackedOn: null, isDraft: false,
@@ -67,13 +67,15 @@ test("links off the account's server are dropped", async () => {
 
 test("the watcher reads each open MR's head pipeline", async () => {
   const {send, calls} = gitlab({
+    "/api/v4/user": () => Response.json({username: "token-owner"}),
     "/api/v4/merge_requests": () => Response.json([mr(), mr({id: 901, iid: 8, project_id: 43, references: {full: "group/other!8"}})]),
     "/api/v4/projects/42/merge_requests/7": () => Response.json({...mr(), head_pipeline: {id: 501, status: "failed"}}),
     "/api/v4/projects/43/merge_requests/8": () => Response.json({...mr(), head_pipeline: {id: 502, status: "success"}}),
   });
   const result = await gitlabInbox(account, token, send).watch(new Set());
-  assert.equal(calls[0].query.get("scope"), "created_by_me");
-  assert.deepEqual(result, {viewer: "me", prs: [
+  assert.equal(calls.find(call => call.path === "/api/v4/merge_requests")?.query.get("scope"), "created_by_me");
+  // The baseline follows whoever the token belongs to, not the configured name.
+  assert.deepEqual(result, {viewer: "token-owner", prs: [
     {id: "gitlab:900", repo: "group/sub/app", number: 7, title: "Add retries", url: "https://gitlab.example.org:8443/group/sub/app/-/merge_requests/7", failing: ["Pipeline #501"], lastComment: null},
     {id: "gitlab:901", repo: "group/other", number: 8, title: "Add retries", url: "https://gitlab.example.org:8443/group/sub/app/-/merge_requests/7", failing: [], lastComment: null},
   ]});

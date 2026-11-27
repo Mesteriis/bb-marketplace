@@ -6,10 +6,13 @@ import { array, client, object, segment, text, type Json } from "../../provider-
 import { headerCount, inBatches, ownLink } from "./shared.ts";
 
 const api = "/api/v4/merge_requests";
-/** GitLab has no "reviewed by me" filter: Reviewed lists what you approved. */
+/**
+ * GitLab has no "reviewed by me" filter: Reviewed lists merge requests you review and approved. It stays inside
+ * reviews_for_me so that a server ignoring `approved_by_usernames` cannot widen it to every visible merge request.
+ */
 const query = (tab: InboxTab, me: string): Record<string, string> => ({
   open: {scope: "created_by_me", state: "opened"}, review: {scope: "reviews_for_me", state: "opened"},
-  reviewed: {scope: "all", state: "opened", "approved_by_usernames[]": me}, assigned: {scope: "assigned_to_me", state: "opened"},
+  reviewed: {scope: "reviews_for_me", state: "opened", "approved_by_usernames[]": me}, assigned: {scope: "assigned_to_me", state: "opened"},
   merged: {scope: "created_by_me", state: "merged"}, closed: {scope: "created_by_me", state: "closed"},
 })[tab];
 /** `detailed_merge_status` values without a common blocker. */
@@ -68,7 +71,9 @@ export function gitlabInbox(account: Account, token: string, send: typeof fetch 
         return {id: pr.id, repo: pr.repo, number: pr.number, title: pr.title, url: pr.url,
           failing: pipeline.status === "failed" ? ["Pipeline #" + String(pipeline.id)] : [], lastComment: null};
       });
-      return {viewer: account.username, prs: prs.flatMap(item => item ?? [])};
+      const viewer = text(object((await http("/api/v4/user")).payload).username);
+      if (!viewer) throw new Error("PROVIDER_DENIED");
+      return {viewer, prs: prs.flatMap(item => item ?? [])};
     },
   };
 }

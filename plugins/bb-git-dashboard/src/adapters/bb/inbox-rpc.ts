@@ -43,7 +43,7 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
   }
   async function round() {
     const current = await settings.get();
-    const fresh = await watchRound({...deps, kv, now: () => new Date().toISOString()},
+    const fresh = await watchRound({...deps, kv, now: () => new Date().toISOString(), keys: () => kv.list("inbox-watch/")},
       {ci: current.inboxNotifyCi, comments: current.inboxNotifyComments, ignore: current.inboxIgnore});
     if (!fresh.length) return;
     const known = new Set((await stored()).map(alert => alert.id));
@@ -56,9 +56,10 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
   bb.background.service("inbox-watch", {
     async start(signal) {
       while (!signal.aborted) {
-        try { await round(); }
+        let minutes = 5;
+        // Nothing here may end the loop: a failing round or settings read only skips this round.
+        try { await round(); minutes = Math.max(2, (await settings.get()).inboxEveryMinutes); }
         catch (error) { bb.log.warn("My PRs watch skipped: " + (error instanceof Error ? error.message : String(error))); }
-        const minutes = Math.max(2, (await settings.get()).inboxEveryMinutes);
         await new Promise<void>(resolve => {
           const stop = () => { clearTimeout(timer); resolve(); };
           const timer = setTimeout(() => { signal.removeEventListener("abort", stop); resolve(); }, minutes * 60_000);

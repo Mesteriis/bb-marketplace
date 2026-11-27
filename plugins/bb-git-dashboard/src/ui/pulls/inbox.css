@@ -29,6 +29,7 @@
 .git-ws .git-inbox-blocker[data-stale] { border-color: #d4a017; color: #b8860b; }
 .git-inbox-badge { margin-inline-start: 6px; padding: 0 6px; border-radius: 999px; background: var(--destructive); color: var(--primary-foreground, #fff); font-size: 11px; }
 .git-ws .git-inbox-toasts { position: fixed; inset-block-end: 16px; inset-inline-end: 16px; display: grid; gap: 8px; z-index: 20; width: min(360px, calc(100vw - 32px)); }
-.git-ws .git-inbox-toast { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+.git-ws .git-inbox-toast > a { display: grid; gap: 2px; color: inherit; text-decoration: none; min-width: 0; }
+.git-ws .git-inbox-toast { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card);
   color: inherit; text-decoration: none; box-shadow: 0 6px 18px rgb(0 0 0 / .18); overflow-wrap: anywhere; }
 @container (max-width: 720px) { .git-ws .git-inbox-item { grid-template-columns: 1fr; } .git-ws .git-inbox-badges { justify-content: flex-start; } }

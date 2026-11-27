@@ -32,14 +32,14 @@
 | Блокер | GitHub | GitLab | Gitea | Azure |
 |---|---|---|---|---|
 | Draft | `isDraft` | `draft` | `draft` или префикс `WIP:` в заголовке | `isDraft` |
-| Stacked | база — ветка другого открытого PR | база не ветка по умолчанию — «Targets <ветка>» | то же | то же |
+| Stacked | база — ветка другого открытого PR | база — исходная ветка другого открытого MR в том же проекте (`linkStacks`); база без такого MR не считается блокером | то же | то же |
 | Merge conflicts | `mergeable=CONFLICTING` | `has_conflicts` | `mergeable=false` (детали PR) | `mergeStatus=conflicts` |
-| CI | последние запуски каждого job | `detailed_merge_status`: `ci_still_running` / `ci_must_pass` | статус коммита головы | не читается (политики сборки) — сказано в UI |
+| CI | последние запуски каждого job | `ci_still_running` → CI running; `ci_must_pass` → заметка «CI must pass» (статус не различает «упал» и «не запускался», поэтому не красный); упавший пайплайн головы видит наблюдатель | статус коммита головы | не читается (политики сборки) — сказано в UI |
 | Changes requested | `reviewDecision` | `detailed_merge_status=not_approved` → Awaiting review | — | голос −10 / −5 |
 | Unresolved comments | `reviewThreads` | `discussions_not_resolved` | — | — |
 
 Сверено с документацией (2026-11-27):
-- GitLab: `scope` — `created_by_me | assigned_to_me | reviews_for_me | all`; Review requested — `scope=reviews_for_me`; фильтра «отревьюено мной» нет — Reviewed у GitLab = «одобрено мной» (`scope=all&approved_by_usernames[]=<me>`). `head_pipeline` есть только у одного MR (`/projects/:id/merge_requests/:iid`), поэтому наблюдение GitLab читает его по каждому открытому MR. `has_conflicts` в списке может быть устаревшим; перепроверку (`with_merge_status_recheck`) не запрашиваем. `x-total` может не прийти — тогда счётчика нет.
+- GitLab: `scope` — `created_by_me | assigned_to_me | reviews_for_me | all`; Review requested — `scope=reviews_for_me`; фильтра «отревьюено мной» нет — Reviewed у GitLab = «я ревьюер и одобрил» (`scope=reviews_for_me&approved_by_usernames[]=<me>`): если сервер проигнорирует `approved_by_usernames`, вкладка не расширится до всех видимых MR. `head_pipeline` есть только у одного MR (`/projects/:id/merge_requests/:iid`), поэтому наблюдение GitLab читает его по каждому открытому MR. `has_conflicts` в списке может быть устаревшим; перепроверку (`with_merge_status_recheck`) не запрашиваем. `x-total` может не прийти — тогда счётчика нет.
 - Gitea: у `/repos/issues/search` заголовок с общим числом не задокументирован — счётчик только если пришёл `x-total-count`; ветки, `mergeable` и голова читаются из `/repos/{o}/{r}/pulls/{n}`, CI — из `/commits/{sha}/status`, только для открытых вкладок.
 - Azure: эндпоинта уровня организации в документации нет — обход `/{org}/_apis/projects` и `/{org}/{project}/_apis/git/pullrequests`; id пользователя — `/{org}/_apis/connectionData` (`authenticatedUser.id`), в документации REST не найден, проверяется двойником.
 
@@ -60,7 +60,7 @@
 `forges/inbox/github.ts` (GraphQL вкладок и наблюдения), `gitlab.ts`, `gitea.ts`, `azure.ts`; тесты на HTTP-двойниках по таблицам выше.
 
 ### Task 3: Сервис, наблюдение, RPC
-`inbox-service.ts` (вкладка по всем аккаунтам, счётчики, ошибки по аккаунту), `inbox-watch.ts` (опрос, `diffWatch` по аккаунту, `plugin_kv`, realtime, push, настройки), RPC `inboxList`, `inboxAlerts`, `inboxSeen`, `inboxTest`. Тесты.
+`inbox-service.ts` (вкладка по всем аккаунтам, счётчики, ошибки по аккаунту), `inbox-watch.ts` (опрос, `diffWatch` по аккаунту, `plugin_kv`, realtime, push, настройки), RPC `inboxList`, `inboxAlerts`, `inboxSeen` (пробное оповещение не делаем: стенд проверяет настоящее). Тесты.
 
 ### Task 4: UI
 Кнопка «Мои PR» с бейджем; страница: вкладки со счётчиками, поиск, группы аккаунт → репозиторий (свернуть, скрыть), строка с блокерами и полосой худшего, j/k/Enter, «New since you last looked», тосты. Проба стенда.

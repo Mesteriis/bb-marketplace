@@ -71,3 +71,12 @@ test("a tab's total is shown only when every account that answered knows its cou
     inbox: found => inboxes[found.id]});
   assert.deepEqual((await service.list("open")).counts, {open: 3});
 });
+
+test("baselines of accounts that were removed are forgotten", async () => {
+  const {kv, data} = store();
+  data.set("inbox-watch/gone", {viewer: "me", state: {}});
+  const deps = {accounts: async () => [account("b")], credential: async (id: string) => ({account: account(id), token: "t"}), kv, now: () => "T",
+    keys: async () => [...data.keys()], inbox: (): PullInbox => ({list: async () => ({items: [], counts: {}, notice: null}), watch: async () => ({viewer: "me", prs: []})})};
+  await watchRound(deps, on);
+  assert.deepEqual([...data.keys()], ["inbox-watch/b"]);
+});

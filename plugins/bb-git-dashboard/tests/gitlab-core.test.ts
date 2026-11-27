@@ -55,6 +55,8 @@ test("a timestamped GitLab trace loses its stream prefixes, and an ERROR line wi
   assert.equal(errorLine(lines), 1);
   // Text that only looks like a prefix keeps it when the line has no timestamp.
   assert.equal(cleanLog("01O is a fine word"), "01O is a fine word");
+  // A timestamped line from another runner that only starts like a stream prefix keeps its text.
+  assert.equal(cleanLog("2026-11-27T12:00:01.100000Z 0aEnd of output"), "0aEnd of output");
   // ERROR as part of a longer word is no marker.
   assert.equal(errorLine(["ERRORS: 0", "done"]), null);
 });

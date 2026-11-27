@@ -56,3 +56,19 @@ test("the watcher reads the viewer and their open PRs", async () => {
   assert.deepEqual(result, {viewer: "me", prs: [{id: "PR_1", repo: "o/r", number: 7, title: "Fix it", url: "https://github.com/o/r/pull/7",
     failing: [], lastComment: {author: "sam", at: "2026-11-27T02:00:00Z", url: "https://github.com/o/r/pull/7#c1"}}]});
 });
+
+test("GitHub rows and alert links off the account's server are dropped; a null search is not a zero count", async () => {
+  const off = {...node, id: "PR_2", url: "javascript:alert(1)"};
+  const {send} = graphql(() => Response.json({data: {open: {issueCount: 2, nodes: [node, off]}, ...counts, merged: null}}));
+  const page = await githubInbox(account, token, send).list("open");
+  assert.deepEqual(page.items.map(item => item.id), ["PR_1"]);
+  assert.equal("merged" in page.counts, false);
+  const missing = graphql(() => Response.json({data: {open: null, ...counts}, errors: [{message: "timeout"}]}));
+  await assert.rejects(githubInbox(account, token, missing.send).list("open"), {message: "PROVIDER_UNAVAILABLE"});
+  const watched = {id: "PR_1", number: 7, title: "T", url: "https://github.com/o/r/pull/7", author: {login: "me"}, repository: {nameWithOwner: "o/r"},
+    comments: {nodes: [{author: {__typename: "User", login: "sam"}, createdAt: "2026-11-27T02:00:00Z", url: "https://evil.example/c"}]},
+    reviews: {nodes: []}, reviewThreads: {nodes: []}, commits: {nodes: []}};
+  const watch = graphql(() => Response.json({data: {viewer: {login: "me"}, open: {nodes: [watched, {...watched, id: "PR_3", url: "https://evil.example/p"}]}}}));
+  const result = await githubInbox(account, token, watch.send).watch(new Set());
+  assert.deepEqual(result?.prs.map(pr => [pr.id, pr.url, pr.lastComment?.url]), [["PR_1", "https://github.com/o/r/pull/7", "https://github.com/o/r/pull/7"]]);
+});

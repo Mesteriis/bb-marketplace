@@ -26,14 +26,18 @@ export function InboxPage({api, alerts, onSeen}: {api: InboxApi; alerts: AlertSu
   const search = useRef<HTMLInputElement>(null);
   const rows = useRef<(HTMLAnchorElement | null)[]>([]);
 
+  const latest = useRef(0);
   const load = useCallback(async (next: InboxTab) => {
+    // Only the latest request may fill the page: a slower answer for a tab left behind is dropped.
+    const request = ++latest.current;
     setPending(true); setError("");
     try {
       const result = await api.list(next);
+      if (request !== latest.current) return;
       setList(result);
       setCounts(previous => ({...previous, ...result.counts}));
-    } catch (failure) { setError(message(failure)); }
-    finally { setPending(false); }
+    } catch (failure) { if (request === latest.current) setError(message(failure)); }
+    finally { if (request === latest.current) setPending(false); }
   }, [api]);
   useEffect(() => { setList(null); setCursor(0); setHidden(remembered("makosh-git-inbox-hidden/" + tab)); void load(tab); }, [tab, load]);
 
@@ -47,7 +51,8 @@ export function InboxPage({api, alerts, onSeen}: {api: InboxApi; alerts: AlertSu
     remember(store, next); apply(next);
   }
   function keys(event: KeyboardEvent<HTMLElement>) {
-    if ((event.target as HTMLElement).tagName === "INPUT") return;
+    const target = event.target as HTMLElement;
+    if (event.metaKey || event.ctrlKey || event.altKey || target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
     if (event.key === "/") { event.preventDefault(); search.current?.focus(); return; }
     if (event.key !== "j" && event.key !== "k") return;
     event.preventDefault();
@@ -126,20 +131,27 @@ function Row({item, tab, current, bind, onFocus}: {item: InboxItem; tab: InboxTa
 export function InboxToasts({alerts}: {alerts: AlertSummary | null}) {
   const [shown, setShown] = useState<AlertSummary["alerts"]>([]);
   const known = useRef<Set<string> | null>(null);
+  // Each toast owns its timer, so a later update of the alert list cannot keep one on screen.
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const dismiss = useCallback((id: string) => {
+    clearTimeout(timers.current.get(id)); timers.current.delete(id);
+    setShown(previous => previous.filter(alert => alert.id !== id));
+  }, []);
+  useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer); }, []);
   useEffect(() => {
     if (!alerts) return;
     const ids = new Set(alerts.alerts.map(alert => alert.id));
     if (known.current === null) { known.current = ids; return; }
     const fresh = alerts.toasts ? alerts.alerts.filter(alert => !known.current!.has(alert.id) && !alert.seen) : [];
     known.current = ids;
-    if (!fresh.length) return;
-    setShown(previous => [...fresh, ...previous].slice(0, 3));
-    const timer = setTimeout(() => setShown(previous => previous.filter(alert => !fresh.includes(alert))), 8000);
-    return () => clearTimeout(timer);
-  }, [alerts]);
+    for (const alert of fresh) timers.current.set(alert.id, setTimeout(() => dismiss(alert.id), 8000));
+    if (fresh.length) setShown(previous => [...fresh, ...previous].slice(0, 3));
+  }, [alerts, dismiss]);
   if (!shown.length) return null;
   return <div className="git-inbox-toasts" role="status" aria-live="polite">
-    {shown.map(alert => <a key={alert.id} className="git-inbox-toast" href={alert.url} target="_blank" rel="noreferrer">
-      <strong>{alert.headline}</strong><span>{alert.detail}</span></a>)}
+    {shown.map(alert => <div key={alert.id} className="git-inbox-toast">
+      <a href={alert.url} target="_blank" rel="noreferrer"><strong>{alert.headline}</strong><span>{alert.detail}</span></a>
+      <button type="button" className="git-link" aria-label="Close" onClick={() => dismiss(alert.id)}>×</button>
+    </div>)}
   </div>;
 }

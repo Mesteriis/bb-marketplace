@@ -63,7 +63,17 @@ test("a draft is a draft by flag or by a WIP title", async () => {
 
 test("the watcher reports failing statuses of open PRs", async () => {
   const {send} = gitea({[search]: () => Response.json([issue()]), "/api/v1/repos/o/r/pulls/7": () => Response.json(pull()),
+    "/api/v1/user": () => Response.json({login: "me"}),
     ["/api/v1/repos/o/r/commits/" + "a".repeat(40) + "/status"]: () => Response.json({state: "error", statuses: [{context: "ci/build", status: "error"}]})});
   assert.deepEqual(await giteaInbox(account, token, send).watch(new Set()), {viewer: "me", prs: [{id: "gitea:70", repo: "o/r", number: 7,
     title: "Add retries", url: "https://git.example.org/o/r/pulls/7", failing: ["ci/build"], lastComment: null}]});
+});
+
+test("one pull request whose details fail keeps its row; the watcher reads who the token belongs to", async () => {
+  const {send} = gitea({[search]: call => Response.json(call.query.get("limit") === "1" ? [] : [issue(), issue({id: 80, number: 8})]),
+    "/api/v1/repos/o/r/pulls/7": () => Response.json(pull()), "/api/v1/user": () => Response.json({login: "token-owner"}),
+    ["/api/v1/repos/o/r/commits/" + "a".repeat(40) + "/status"]: () => Response.json({state: "success", statuses: []})});
+  const page = await giteaInbox(account, token, send).list("open");
+  assert.deepEqual(page.items.map(item => [item.number, item.ci, item.baseRefName]), [[7, "passing", "main"], [8, "none", ""]]);
+  assert.equal((await giteaInbox(account, token, send).watch(new Set()))?.viewer, "token-owner");
 });
