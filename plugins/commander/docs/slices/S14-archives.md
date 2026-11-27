@@ -1,6 +1,6 @@
 # S14. Архивы как источник и создание — спецификация helper-протокола
 
-Статус: **ревизия 7 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
+Статус: **ревизия 8 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
 Решения координатора A–H и правки ревью 1–7 внесены ниже (§3, §4, §5, §6, §7, §10, §11).
 Основание: ADR 0002 (accepted), [план 2a, задача 7](../plans/stage-2a.md),
 [приёмка S14](../../research/stage-2-libs.md#приёмка-s14), `docs/security.md`.
@@ -38,7 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
-| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`), `src/adapters/bb/job-store-sqlite.ts` и `migrations.ts` (колонка `commit_intent_json`, после решения координатора) | см. §10, §11 |
+| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`), `src/adapters/bb/job-store-sqlite.ts` и `migrations.ts` (колонка `commit_intent_json`, миграция № 8, индекс 7) | см. §10, §11 |
 | `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?` с проверкой пары code+reason (§10) — разрешено координатором |
 
 ## 3. Процесс helper
@@ -528,7 +528,7 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 `errors.test.ts` — во владении S14; класс RPC `invalid_archive` → `invalid`.
 
 Остаются:
-1. `Checkpoint.commitIntent`: поле разрешено, но хранение требует колонки `commit_intent_json` (миграция, §11) — **нужно решение координатора** (вместо «без миграции»).
+1. `Checkpoint.commitIntent`: колонка `commit_intent_json` разрешена координатором (§11); миграция append-only, **8-я, индекс 7** в `MIGRATIONS` (сейчас в ветке этапа `MIGRATIONS.length = 7`, 7-я — `scan_jobs` из S10). Если к началу кода в ветке этапа появятся другие миграции — **стоп и вопрос**, не перенумеровывать. S14 сливается после S13.
 2. Признак «host — машина сервера» (§3): флага нет, `primaryHostId` не доказан; до доказательства на стенде всегда приватная копия.
 3. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
 4. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
@@ -675,9 +675,9 @@ Fingerprint }` — **без других полей** (`targetPath`, `expectTarg
 (`job-store-sqlite.ts`: `writeCheckpoint` `:242`, `lastCheckpoint` `:399`;
 колонки `temp_fingerprint_json`, `cleanup_json` и т. д.); общей JSON-колонки
 «всего чекпоинта» **нет**. Поэтому «внутри существующего JSON» невозможно без
-новой колонки. **Запрос решения координатора:** миграция с **одной** новой
+новой колонки. **Решено координатором:** миграция с **одной** новой
 необязательной колонкой `commit_intent_json TEXT` (`ALTER TABLE checkpoints
-ADD COLUMN`, как `cleanup_json` в `migrations.ts:45`), без перезаписи старых
+ADD COLUMN`, **миграция № 8 (индекс 7 в `MIGRATIONS`, после `scan_jobs`)**, как `cleanup_json` в `migrations.ts:45`), без перезаписи старых
 строк. Формат: старые строки — `NULL` (поле отсутствует, читается как раньше);
 новые — `JSON.stringify({size, sha256, tempFingerprint})`, разбор схемой
 `CommitIntent` (zod, `strict`); повреждённый JSON → ошибка чтения чекпоинта как
