@@ -242,7 +242,9 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       awaits_owner = @awaits_owner
     WHERE id = @id AND state = @expected
   `);
-  const writeCheckpoint = db.prepare(`
+  // Prepared on first use: a store opened over a database that has not reached migration 8 yet must still work for jobs.
+  let writeCheckpointStatement: ReturnType<typeof db.prepare> | null = null;
+  const writeCheckpointSql = `
     INSERT INTO checkpoints (
       job_id, item_index, phase, bytes_done, temp_path_json, temp_fingerprint_json, via,
       target_path_json, expect_target_json, verified_json, committed_json,
@@ -261,7 +263,8 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       writing_json = excluded.writing_json, cleanup_json = excluded.cleanup_json,
       commit_intent_json = excluded.commit_intent_json,
       source_hash = excluded.source_hash, at = excluded.at
-  `);
+  `;
+  const writeCheckpoint = { run: (params: Record<string, unknown>) => (writeCheckpointStatement ??= db.prepare(writeCheckpointSql)).run(params) };
   const readCheckpoint = db.prepare<[string, number], CheckpointRow>(
     "SELECT * FROM checkpoints WHERE job_id = ? AND item_index = ?",
   );
