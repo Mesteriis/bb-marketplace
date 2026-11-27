@@ -293,6 +293,10 @@ export function createOperations(deps: {
       const page = await jobPage(input);
       return { ...page, jobs: page.jobs.map(jobView) };
     },
+    async job(id: string) {
+      const job = await store.get(id);
+      return job === null ? null : jobView(job);
+    },
     async agentJobs(input: RpcInput<"job_list">, threadId: string) {
       const page = await jobPage(input, threadId);
       const rows = await grants.forThread(threadId);
@@ -392,6 +396,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),
+    job_get: ({ jobId }) => ops.job(jobId),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
     plan_check: (input, ctx) => ops.checkPlan(input, ctx.experimental_signal),

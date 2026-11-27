@@ -677,6 +677,23 @@ describe("error mapping", () => {
   // outcome_unknown is a refusal only a changing operation can get (see the mutation test below).
   const MUTATION_ONLY = ["outcome_unknown"] as const;
 
+  it("a mutation refusal with an unknown outcome never exposes Remote Hub details", async () => {
+    const { provider } = setup({ failAll: "outcome_unknown", refusalDetail: LEAK });
+    const error = await expectCode(provider.mkdir(at("d"), signal()), "outcome_unknown");
+    expect(error.retryable).toBe(false);
+    for (const marker of ["identityFile", "~/.ssh/id_x", "Keychain:foo"]) {
+      expect(error.message).not.toContain(marker);
+      expect(error.toShape().message).not.toContain(marker);
+    }
+  });
+
+  it("treats an outcome_unknown refusal on a read as an internal error", async () => {
+    const { mock, provider } = setup({ failAll: "outcome_unknown", refusalDetail: LEAK });
+    const error = await expectCode(provider.list(at(), { cursor: null, limit: 10 }, signal()), "internal");
+    expect(error.retryable).toBe(false);
+    expect(mock.opCount("op:list")).toBe(1);
+  });
+
   it("the tables cover every refusal code of the contract", () => {
     expect([...TABLE.map(([code]) => code), ...MUTATION_ONLY].sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
     expect(TABLE).toHaveLength(23);
@@ -1000,14 +1017,46 @@ describe("an aborted session is finished (final review)", () => {
     expect(mock.opCount("op:remove")).toBe(1);
   });
 
+  it("abort during a write refuses unsent chunks and closes the session before cleanup", async () => {
+    let close: (() => void) | undefined;
+    let aborting: Promise<void> | undefined;
+    let lateWrite: Promise<CommanderError> | undefined;
+    const { mock, provider } = setup({
+      onOperation(op) {
+        if (op === "write") close?.();
+      },
+    });
+    const session = await openWrite(provider, at("a.txt"), signal());
+    close = () => {
+      close = undefined;
+      aborting = session.abort();
+      lateWrite = failureOf(session.write(0n, bytes("late"), signal()));
+    };
+
+    const error = await failureOf(session.write(0n, new Uint8Array(4_194_305), signal()));
+    expect(aborting).toBeDefined();
+    expect(lateWrite).toBeDefined();
+    const [, lateError] = await Promise.all([aborting, lateWrite]);
+    expect(error.code).toBe("internal");
+    expect(lateError?.code).toBe("internal");
+    expect(mock.opCount("op:write")).toBe(2);
+    expect(mock.appliedCount("write")).toBe(2);
+    expect(mock.appliedCount("remove")).toBe(1);
+    expect(mock.exists("/.commander-test.part")).toBe(false);
+  });
+
   it("after a no_such_file abort, the session is finished too", async () => {
     const { mock, provider } = setup();
     const a = await openWrite(provider, at("a.txt"), signal(), { t: ".gone.part" });
+    await provider.remove(a.tempPath, { kind: "file" }, signal());
     await a.abort();
+    expect(mock.opCount("op:remove")).toBe(2);
+    expect(mock.appliedCount("remove")).toBe(1);
     mock.seedFile("/.gone.part", "other");
-    await a.abort();
     const before = mock.calls.length;
+    await a.abort();
     await expectCode(a.write(0n, bytes("x"), signal()), "internal");
+    await expectCode(a.commit({ replace: false, expectTarget: null }, signal()), "internal");
     expect(mock.calls.length).toBe(before);
     expect(text(mock.bytesAt("/.gone.part"))).toBe("other");
   });

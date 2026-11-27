@@ -25,7 +25,10 @@ export interface RemoteHubMockOptions {
   consent?: MockConsent;
   level?: SftpLevel;
   hostKey?: "trusted" | "unknown" | "changed";
-  /** The helper restarts once, after this many applied operations; channels of the old generation die. */
+  /**
+   * After this many applied operations the helper restarts once. The triggering operation still answers.
+   * A later request on an old channel gets channel_closed before it is sent to the server.
+   */
   generationBumpAfter?: number;
   /** false: any rename with overwrite is refused as unsupported (no posix-rename). */
   posixRename?: boolean;
@@ -63,8 +66,8 @@ export interface RemoteHubMockOptions {
   /** Every write reply says this many bytes were written, whatever was sent. */
   writtenOverride?: number;
   /**
-   * The next operation of this kind is applied, then the channel dies before the answer: the caller gets
-   * outcome_unknown (Remote Hub's refusal for a changing operation that was sent and never answered).
+   * The next operation of this kind reaches the server, then the channel dies before the answer.
+   * The mock applies mutations before returning outcome_unknown. Reads return channel_closed and may be repeated.
    */
   dieAfterSend?: SftpOp;
   /** Runs when an operation reaches the helper, with its kind; the test may abort here. */
@@ -191,7 +194,7 @@ export class RemoteHubMock implements RemoteHubPort {
     this.consent = "revoked";
   }
 
-  /** The next operation of this kind is applied, then the channel dies before the answer (outcome_unknown). */
+  /** Arms dieAfterSend for the next operation of this kind. */
   dieNext(op: SftpOp): void {
     this.dieOn = op;
   }
@@ -316,8 +319,8 @@ export class RemoteHubMock implements RemoteHubPort {
     if (this.dieOn === input.op) {
       this.dieOn = undefined;
       for (const channel of this.channels.values()) channel.alive = false;
-      // A read that loses its channel is channel_closed (not sent, so repeatable); a changing operation that was sent
-      // and never answered is outcome_unknown.
+      // The read was sent and is safe to repeat via channel_closed. A mutation with a lost reply
+      // returns outcome_unknown and must not be repeated.
       this.refuse(reads ? "channel_closed" : "outcome_unknown");
     }
 

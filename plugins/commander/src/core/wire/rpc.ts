@@ -87,6 +87,7 @@ export const rpcSchemas = {
     }).refine(({ cursor, states }) => cursor === undefined || states?.includes("unknown") === true),
     output: z.strictObject({ jobs: z.array(JobView).max(200), nextCursor: z.string().optional() }),
   },
+  job_get: { input: jobId, output: JobView.nullable() },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
   // Read-only preflight for an owner client. Approval repeats validation against live metadata.

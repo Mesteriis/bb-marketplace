@@ -53,6 +53,7 @@ beforeEach(() => {
       case "job_decide": jobs = jobs.filter((job) => (job as OperationJob).id !== input.jobId); return {};
       case "endpoints_list": return { endpoints: [endpoint] };
       case "job_list": return { jobs };
+      case "job_get": return jobs.find((job) => (job as OperationJob).id === input.jobId) ?? null;
       case "dir_list": {
         const start = Number(input.cursor ?? 0);
         return { entries: files.slice(start, start + 1000), cursor: start + 1000 < files.length ? String(start + 1000) : null };
@@ -386,7 +387,7 @@ test.each([
   const call = host.call.getMockImplementation()!;
   let fail = true;
   host.call.mockImplementation(async (method, input) => {
-    if (fail && method === "job_list") throw Object.assign(new Error("fixture timeout"), { code: "timeout" });
+    if (fail && method === "job_get") throw Object.assign(new Error("fixture timeout"), { code: "timeout" });
     return call(method, input);
   });
   host.call.mockClear();
@@ -402,29 +403,21 @@ test.each([
   expect(within(restored).getByRole("checkbox").getAttribute("aria-checked")).toBe("true");
 });
 
-test("returning to a conflict checks its ID past 200 records and follows an empty page", async () => {
-  const original = firstConflict();
-  jobs = [original];
+test("returning to a conflict reads that job directly by ID", async () => {
+  jobs = [firstConflict()];
   mount();
   fireEvent.click(await screen.findByRole("button", { name: "Сравнить и решить" }));
   const conflict = await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" });
   fireEvent.click(within(conflict).getByRole("button", { name: "Сравнить содержимое" }));
   const content = await screen.findByRole("dialog", { name: "Сравнить содержимое" });
-  const call = host.call.getMockImplementation()!;
-  const other = nextConflict();
-  host.call.mockImplementation(async (method, input) => {
-    if (method !== "job_list" || input.states?.length === 1 && input.states[0] === "unknown" || !input.states) return call(method, input);
-    if (!input.states.includes("unknown")) return { jobs: [] };
-    if (input.cursor === undefined) return {
-      jobs: Array.from({ length: 200 }, (_, index) => ({ ...other, id: "other-" + index })), nextCursor: "401",
-    };
-    if (input.cursor === "401") return { jobs: [], nextCursor: "201" };
-    expect(input.cursor).toBe("201");
-    return { jobs: [original], nextCursor: "1" };
-  });
+  host.call.mockClear();
+
   fireEvent.keyDown(content, { key: "Escape" });
   expect(await screen.findByRole("dialog", { name: "пример.txt уже есть в назначении" })).toBeDefined();
-  expect(screen.queryByText("Конфликт больше не ожидает решения")).toBeNull();
+  // The queue refreshes separately after the direct lookup.
+  expect(host.call.mock.calls.filter(([method, input]) =>
+    method === "job_get" || (method === "job_list" && input.states?.length > 1)))
+    .toEqual([["job_get", { jobId: "a49575e8-a22b-4fa8-a4e3-cd96ab734325" }]]);
 });
 
 test("the next conflict scrolls into view before receiving focus after inline skip", async () => {

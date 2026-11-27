@@ -130,6 +130,23 @@ test("stages an agent plan without grants, prevents cross-thread cancel and reje
   } finally { await bb.dispose(); }
 });
 
+test("job_get returns an existing job only to an owner client and null for a missing job", async () => {
+  const bb = await backend();
+  try {
+    const { id, digest } = ticket.parse(await bb.tool("commander_plan", request));
+    const { jobId } = submission.parse(await bb.tool("commander_run", { planId: id, digest }));
+    const job = OperationJob.parse(await bb.rpc("job_get", { jobId }));
+    expect(job).toMatchObject({
+      id: jobId, state: "pending", awaitsOwner: true,
+      plan: { kind: "copy", initiator: { kind: "agent", threadId: "thread-a" } },
+    });
+    await expect(bb.rpc("job_get", { jobId }, { ...client, experimental_caller: { kind: "plugin", pluginId: "other" } }))
+      .rejects.toMatchObject({ code: "forbidden" });
+    await expect(bb.rpc("job_get", { jobId: "not-a-uuid" })).rejects.toMatchObject({ code: "invalid" });
+    await expect(bb.rpc("job_get", { jobId: "ab2e770c-44da-47b2-a117-7a41a17057cd" })).resolves.toBeNull();
+  } finally { await bb.dispose(); }
+});
+
 test("hides damaged plans in RPC, agent tools and CLI and refuses mutation", async () => {
   const bb = await backend();
   try {
@@ -138,6 +155,9 @@ test("hides damaged plans in RPC, agent tools and CLI and refuses mutation", asy
     bb.db.prepare("UPDATE jobs SET plan_json = ?, created_at = ? WHERE id = ?").run("{", "2026-11-27T10:00:00.000Z", jobId);
     const expected = { jobs: [{ id: jobId, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: "2026-11-27T10:00:00.000Z" }] };
     expect(await bb.rpc("job_list", {})).toEqual(expected);
+    expect(await bb.rpc("job_get", { jobId })).toEqual({
+      id: jobId, state: "unknown", damaged: true, message: "Stored job is damaged", createdAt: "2026-11-27T10:00:00.000Z",
+    });
     expect(await bb.tool("commander_jobs", {})).toEqual(expected);
     const cli = await bb.cli(["jobs"]);
     expect(cli.exitCode).toBe(0);
