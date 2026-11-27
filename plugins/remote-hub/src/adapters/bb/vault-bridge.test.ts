@@ -1,4 +1,5 @@
 import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { startVaultBridge, type VaultRequest } from "./vault-bridge.ts";
 
@@ -20,7 +21,7 @@ describe("native credential vault bridge", () => {
       if (op.op === "import" && values.has(op.ref)) return { stored: false };
       values.set(op.ref, op.value);
       return { stored: true };
-    });
+    }, tmpdir());
     try {
       const ref = "rh-cred:v1:local:00000000-0000-4000-8000-000000000001";
       const send = (op: object) => request(bridge.path, { token: bridge.token, ref, ...op });

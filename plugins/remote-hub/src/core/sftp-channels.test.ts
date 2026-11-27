@@ -38,12 +38,13 @@ function setup(behaviour: Behaviour = { kind: "sftp" }, agentPresent = true) {
   const wires: Wire[] = [];
   let n = 0;
   const profiles: Record<string, SftpProfileFacts> = {
-    [SSH]: { protocol: "ssh", agent: false, needsSecret: false },
-    [AGENT]: { protocol: "ssh", agent: true, needsSecret: false },
-    [RDP]: { protocol: "rdp", agent: false, needsSecret: false },
-    [NOPASS]: { protocol: "ssh", agent: false, needsSecret: true },
+    [SSH]: { protocol: "ssh", host: "box.test", agent: false, needsSecret: false },
+    [AGENT]: { protocol: "ssh", host: "agent.test", agent: true, needsSecret: false },
+    [RDP]: { protocol: "rdp", host: "desk.test", agent: false, needsSecret: false },
+    [NOPASS]: { protocol: "ssh", host: "nopass.test", agent: false, needsSecret: true },
   };
   const state = { behaviour };
+  const agentAsked: string[] = [];
   let channels!: SftpChannels;
   const grants = new PluginGrantBook({
     store: {
@@ -62,7 +63,7 @@ function setup(behaviour: Behaviour = { kind: "sftp" }, agentPresent = true) {
   channels = new SftpChannels({
     grants,
     profile: (id) => profiles[id] ?? null,
-    agentPresent: () => agentPresent,
+    agentPresent: (host) => (agentAsked.push(host), agentPresent),
     newId: () => `00000000-0000-4000-9000-${String(++n).padStart(12, "0")}`,
     now: () => new Date("2026-11-27T10:00:00Z"),
     startTimeoutMs: 200,
@@ -87,7 +88,7 @@ function setup(behaviour: Behaviour = { kind: "sftp" }, agentPresent = true) {
       },
     },
   });
-  return { channels, grants, events, wires, state };
+  return { channels, grants, events, wires, state, agentAsked };
 }
 
 const code = async (work: Promise<unknown>): Promise<string> => {
@@ -167,6 +168,18 @@ describe("SftpChannels", () => {
     expect(await code(channels.op(COMMANDER, realpath(a.channelId)))).toBe("consent_revoked");
     expect(await code(channels.open(COMMANDER, SSH))).toBe("consent_revoked");
     expect(channels.list().map((x) => x.channelId).sort()).toEqual([b.channelId, c.channelId].sort());
+  });
+
+  it("asks about the agent of the host of the connection that was refused, and only then", async () => {
+    const denied: Behaviour = { kind: "ends", end: { reason: "exited", exitCode: 255, refused: null, stderr: "u@h: Permission denied (publickey).\n" } };
+    const { channels, grants, agentAsked } = setup(denied, true);
+    grants.grant(COMMANDER, AGENT, "read");
+    await code(channels.open(COMMANDER, AGENT));
+    expect(agentAsked).toEqual(["agent.test"]);
+    const ok = setup({ kind: "sftp" }, true);
+    ok.grants.grant(COMMANDER, AGENT, "read");
+    await code(ok.channels.open(COMMANDER, AGENT));
+    expect(ok.agentAsked).toEqual([]);
   });
 
   it("holds at most four channels per plugin, counting the ones still connecting", async () => {

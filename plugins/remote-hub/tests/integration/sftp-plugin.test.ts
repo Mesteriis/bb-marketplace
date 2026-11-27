@@ -26,6 +26,7 @@ import { HelperProcess } from "../../src/adapters/bb/helper-process.ts";
 import { memoryImportBook } from "../../src/adapters/bb/import-test-support.ts";
 import { createRpcHandlers, type RpcCallContext, type RpcHandlers } from "../../src/adapters/bb/rpc-handlers.ts";
 import { createRemoteHubService, type RemoteHubService } from "../../src/adapters/bb/service.ts";
+import { NO_USER_SSH_CONFIG } from "../../src/adapters/bb/user-ssh-agent.ts";
 import { createHostKeyHint, createSftpTransport, sftpProfileFacts, sshAgentPresent } from "../../src/adapters/bb/sftp-transport.ts";
 import { profileToSshTarget } from "../../src/core/catalogue.ts";
 import { CredentialBook, type CredentialMeta, type CredentialMetaStore } from "../../src/core/credential.ts";
@@ -170,7 +171,7 @@ describe.skipIf(!dockerOk)("SFTP for other plugins: grants, three kinds of sign-
       grants,
       transport,
       profile: (id) => sftpProfileFacts(profiles.get(id)),
-      agentPresent: () => sshAgentPresent(env),
+      agentPresent: (host) => sshAgentPresent(env, host, () => NO_USER_SSH_CONFIG),
       newId: () => randomUUID(),
       now: () => new Date(),
       onEvent: (e) => void events.push(JSON.stringify({ channelId: e.channelId, state: e.state })),

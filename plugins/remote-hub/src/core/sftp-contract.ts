@@ -224,6 +224,8 @@ export const SFTP_REFUSALS = {
   /** An `agent` connection, and no SSH agent is running or it holds no key the server accepts. */
   agent_unavailable: "conflict",
   keychain_locked: "conflict",
+  /** The Keychain (or Credential Vault) could not be reached at all, so the saved credential could not be read. */
+  keychain_unavailable: "conflict",
   keychain_needs_approval: "conflict",
   credential_missing: "conflict",
   auth_failed: "conflict",

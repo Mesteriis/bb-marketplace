@@ -41,8 +41,10 @@ export function dispatchVault(plugins: BbPluginApi["sdk"]["plugins"]): Dispatch 
 }
 
 /** A private local socket for credential children. There is no web or agent route. */
-export async function startVaultBridge(dispatch: Dispatch) {
-  const directory = await mkdtemp(join("/tmp", "bb-rhv-"));
+export async function startVaultBridge(dispatch: Dispatch, baseDir = "/tmp") {
+  // "/tmp" by default on purpose: a unix socket path is limited to about 104 bytes and macOS's per-user temp directory is long.
+  // A test (or a sandbox that only allows its own temp directory) names a short one.
+  const directory = await mkdtemp(join(baseDir, "bb-rhv-"));
   const path = join(directory, "store.sock");
   const secret = randomBytes(32);
   const nonce = secret.toString("hex");

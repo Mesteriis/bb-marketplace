@@ -3,12 +3,14 @@
 // it by reference and the helper answers ssh's one prompt itself; a connection without one is left to the SSH agent or a
 // plain key, with the user's own configuration.
 import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { profileToSshTarget } from "../../core/catalogue.ts";
 import { CredentialError } from "../../core/credential.ts";
 import { knownHostsName, parseKnownHosts } from "../../core/known-hosts.ts";
 import type { Profile } from "../../core/profile.ts";
 import type { SftpProfileFacts, SftpTransport } from "../../core/sftp-channels.ts";
 import type { RemoteHubService } from "./service.ts";
+import { agentSocketFor, localUser, readUserSshConfig, type UserSshConfig } from "./user-ssh-agent.ts";
 import { knownHostsTextHolds, readUserKnownHosts } from "./user-known-hosts.ts";
 
 export interface SftpTransportDeps {
@@ -24,6 +26,7 @@ export function sftpProfileFacts(profile: Profile | null): SftpProfileFacts | nu
   if (profile === null) return null;
   return {
     protocol: profile.protocol,
+    host: profile.host,
     agent: profile.authType === "agent",
     needsSecret: profile.authType === "password" && profile.credentialRef === null,
     needsConfig: profile.needsConfig === true,
@@ -49,10 +52,17 @@ export function createSftpTransport({ service, profiles, credentials }: SftpTran
   };
 }
 
-/** Whether an SSH agent socket is there at all. */
-export function sshAgentPresent(env: Record<string, string | undefined>): boolean {
-  const path = env.SSH_AUTH_SOCK;
-  if (path === undefined || path === "") return false;
+/**
+ * Whether the SSH agent ssh would use for `host` is there: the owner's IdentityAgent, else SSH_AUTH_SOCK. When the
+ * configuration cannot settle which agent that is, it is NOT reported missing (a refusal is then `auth_failed`).
+ */
+export function sshAgentPresent(env: Record<string, string | undefined>, host: string, config: () => UserSshConfig | null = () => readUserSshConfig(env.HOME)): boolean {
+  const loaded = config();
+  if (loaded === null) return true;
+  const found = agentSocketFor({ env, home: env.HOME ?? homedir(), host, ...localUser(), config: loaded });
+  if (found.kind === "unknown") return true;
+  if (found.kind === "none") return false;
+  const path = found.path;
   try {
     return statSync(path).isSocket();
   } catch {
