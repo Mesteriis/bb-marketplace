@@ -467,8 +467,7 @@ function refusalFor(problem: RenameProblem): CommanderError {
     case "empty": return new CommanderError("invalid_name", "A new name would be empty");
     case "invalid_name": return new CommanderError("invalid_name", "A new name is not valid");
     case "invalid_regex": return new CommanderError("invalid_name", "The regular expression is not valid");
-    case "unsafe_regex": return new CommanderError("invalid_name", "The regular expression is refused: it can backtrack too long");
-    case "regex_timeout": return new CommanderError("invalid_name", "The regular expression ran too long on one name");
+    case "unsafe_regex": return new CommanderError("invalid_name", "The regular expression is refused: only a flat expression with one repetition is allowed");
   }
 }
 

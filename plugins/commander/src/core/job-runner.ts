@@ -122,6 +122,8 @@ export class JobRunner {
   private readonly rules = new Map<string, Map<Conflict["reason"], ConflictAction>>();
   private readonly restored = new Map<string, Checkpoint>();
   private readonly directories = new Map<string, Map<number, PreparedDirectory>>();
+  /** Batch renames whose second phase runs: a cancel is refused until it ends (S12). */
+  private readonly phaseTwo = new Set<string>();
 
   constructor(private readonly deps: RunnerDeps) {
     this.store = deps.store;
@@ -262,6 +264,9 @@ export class JobRunner {
   }
 
   async cancel(id: string): Promise<void> {
+    if (this.phaseTwo.has(id)) {
+      throw new CommanderError("unsupported", "Batch rename cancel is unavailable: the second phase is running");
+    }
     for (;;) {
       const job = await this.requireJob(id);
       if (job.state === "cancel_requested") break;
@@ -296,7 +301,7 @@ export class JobRunner {
     }
     // S12 (stage 2a): a batch rename is not retried; its staged names need a dedicated reconciliation.
     if (isBatchRename(job.plan)) {
-      throw new CommanderError("unsupported", "Повтор пакетного переименования недоступен: сверьте задание");
+      throw new CommanderError("unsupported", "Batch rename retry is not available: check the job");
     }
     const verdicts = new Map<number, Verdict>();
     const verdictOf = async (index: number) => {
@@ -710,6 +715,11 @@ export class JobRunner {
   }
 
   // ---- S12 batch rename ---------------------------------------------------------------
+  //
+  // A batch is decided from two durable facts per item: whether its temporary name exists
+  // (the first phase moved it there) and whether a phase-2 intent was written for it (the
+  // checkpoint is saved before the item's second move). The source and target names are
+  // never used to prove the state of an item: in a cycle they hold other items' results.
 
   private async executeBatchRename(id: string, signal: AbortSignal, snapshot?: OperationPlan): Promise<void> {
     try {
@@ -732,14 +742,13 @@ export class JobRunner {
   private async runBatchRename(id: string, signal: AbortSignal, snapshot?: OperationPlan): Promise<void> {
     const stored = await this.requireJob(id);
     const plan = snapshot ?? stored.plan;
-    const moved: number[] = [];   // sources now at their temporary names and not yet finished
+    const moved: number[] = [];   // items whose source is at its temporary name and not yet finished
     const finished = new Set<number>();
     let current: number | null = null;
     try {
       const pending = stored.items.flatMap((item, index) => (item.outcome === "pending" ? [index] : []));
       const states = new Map<number, BatchState>();
       for (const index of pending) states.set(index, await this.batchState(plan, id, index, signal));
-      // Staged names from an earlier run count as moved, so a stop below undoes them too.
       for (const index of pending) if (states.get(index) === "staged") moved.push(index);
       for (const [index, state] of states) {
         if (state === "changed") throw new BatchStop(index, new CommanderError("changed_since_plan", "The entry changed since the plan"));
@@ -759,43 +768,62 @@ export class JobRunner {
         await this.stageBatchItem(plan, id, index, signal);
         moved.push(index);
       }
-      // A cancel that arrived during phase 1 undoes the staged moves before any target is written.
       signal.throwIfAborted();
-      // Phase 2: each temporary name goes to its target. A started phase 2 is not cancelled.
-      for (const index of [...moved]) {
-        current = index;
-        await this.finishBatchItem(plan, id, index, this.stopping.signal);
-        finished.add(index);
-        await this.record(await this.requireJob(id), index, "done");
+      // Phase 2: the batch is committed from its first move on. A cancel is refused while
+      // this phase runs, so every item ends done, failed or unknown, never cancelled half-way.
+      this.phaseTwo.add(id);
+      try {
+        for (const index of [...moved]) {
+          current = index;
+          await this.finishBatchItem(plan, id, index, this.stopping.signal);
+          finished.add(index);
+          await this.record(await this.requireJob(id), index, "done");
+        }
+      } finally {
+        this.phaseTwo.delete(id);
       }
       const latest = await this.requireJob(id);
       if (latest.state === "running") await this.change(latest, "all_done", { currentItem: null, error: null });
     } catch (caught) {
-      // Shutdown: keep the staged moves; the next runner reads them back.
+      // Shutdown: keep the staged names; the next runner reads them back.
       if (this.stopping.signal.aborted) return;
       const stop = caught instanceof BatchStop ? caught : null;
-      const failure = stop?.failure ?? safeError(caught);
-      const index = stop?.index ?? current;
-      // The item that cannot be confirmed stays where it is; every other staged item goes back.
-      const undo = moved.filter((item) => !finished.has(item) && (failure.code !== "outcome_unknown" || item !== index));
-      let restoreFailure: CommanderError | null = null;
-      try {
-        await this.restoreBatch(plan, id, undo);
-      } catch (restoreError) {
-        restoreFailure = safeError(restoreError);
-      }
-      if (stop === null && signal.aborted && restoreFailure === null) return;   // cancel: undone, the run finishes as cancelled
-      if (index === null) {
-        await this.change(await this.requireJob(id), restoreFailure ? "outcome_unknown" : "fail", { currentItem: null, error: (restoreFailure ?? failure).toShape() });
-        return;
-      }
-      if (failure.code === "outcome_unknown" || restoreFailure) {
-        await this.record(await this.requireJob(id), index, "unknown", restoreFailure ?? failure);
-        return;
-      }
-      await this.record(await this.requireJob(id), index, "failed", failure);
-      const latest = await this.requireJob(id);
-      if (latest.state === "running") await this.change(latest, "fail", { currentItem: null });
+      await this.settleBatch(id, plan, moved, finished, stop?.failure ?? safeError(caught), stop?.index ?? current, signal.aborted && stop === null);
+    }
+  }
+
+  /**
+   * Ends a batch that stopped before all its items finished. An item whose outcome cannot
+   * be confirmed stays where it is and is recorded unknown. Every other staged item goes
+   * back to its source; each return is independent, and one that fails is recorded unknown
+   * on its own item. The job ends failed, or unknown when any item is unknown.
+   */
+  private async settleBatch(
+    id: string, plan: OperationPlan, moved: number[], finished: Set<number>,
+    failure: CommanderError, index: number | null, cancelled: boolean,
+  ): Promise<void> {
+    const unknownAt = failure.code === "outcome_unknown" ? index : null;
+    const undo = moved.filter((item) => !finished.has(item) && item !== unknownAt);
+    const outcomes = new Map<number, { outcome: ItemOutcome; error: CommanderError }>();
+    if (unknownAt !== null) outcomes.set(unknownAt, { outcome: "unknown", error: failure });
+    else if (index !== null && !cancelled) outcomes.set(index, { outcome: "failed", error: failure });
+    for (const [item, error] of await this.restoreBatch(plan, id, undo)) {
+      outcomes.set(item, { outcome: "unknown", error });
+    }
+    if (outcomes.size === 0) return;   // a cancel with nothing to report: the run finishes as cancelled
+    const latest = await this.requireJob(id);
+    if (latest.state !== "running" && latest.state !== "cancel_requested") return;
+    const items = latest.items.slice();
+    for (const [item, { outcome, error }] of outcomes) items[item] = { outcome, error: error.message };
+    const values = [...outcomes.values()];
+    const unknown = values.some(({ outcome }) => outcome === "unknown");
+    const first = values.find(({ outcome }) => outcome === "unknown") ?? values[0];
+    await this.patch(latest, { items, currentItem: null }, "progress");
+    const current = await this.requireJob(id);
+    if (current.state === "running") {
+      await this.change(current, unknown ? "outcome_unknown" : "fail", { currentItem: null, error: first.error.toShape() });
+    } else if (current.state === "cancel_requested" && unknown) {
+      await this.change(current, "outcome_unknown", { currentItem: null, error: first.error.toShape() });
     }
   }
 
@@ -806,7 +834,7 @@ export class JobRunner {
     return this.location({ endpoint: source.endpoint, path: join(dir, tempNameFor(jobId, index)) });
   }
 
-  /** Reads an item's state from the endpoint. Nothing is written here. */
+  /** Reads an item's state from the endpoint and its checkpoint. Nothing is written here. */
   private async batchState(plan: OperationPlan, jobId: string, index: number, signal: AbortSignal): Promise<BatchState> {
     const item = plan.items[index];
     const source = this.location(item.source!);
@@ -816,23 +844,18 @@ export class JobRunner {
     const from = await observe(source, context);
     const staged = await observe(temp, context);
     const to = await observe(target, context);
+    const intent = (await this.store.lastCheckpoint(jobId, index))?.via === "rename";
     const sized = (entry: Awaited<ReturnType<typeof observe>>) =>
       entry !== null && entry.kind === item.kind && matches(fingerprint(entry), item.fingerprint);
+    if (staged !== null) return sized(staged) ? "staged" : "unknown";
+    if (intent) return sized(to) ? "done" : "unknown";
     if (isCaseOnlyPair(source, target)) {
-      // The source and the target are one entry here: only the spelling tells the states apart.
-      if (staged !== null) return sized(staged) ? "staged" : "unknown";
+      // Without a temporary name or an intent, the source and the target are one entry: only the spelling tells.
       const spelled = await nameSpelling(source, target, context);
       if (spelled === "source" && sized(from)) return "original";
-      if (spelled === "target" && sized(to)) return "done";
       return "unknown";
     }
-    // The temporary name decides first: in a cycle the source name may already hold another item's result.
-    if (staged !== null) return sized(staged) ? "staged" : "unknown";
-    // The source name still holding this item's version means it has not moved yet. Identical
-    // metadata on both sides is ambiguous; treating it as not moved is safe, because the second
-    // phase then refuses an occupied target and the item returns to its source.
     if (sized(from)) return "original";
-    if (sized(to)) return "done";
     return from === null ? "unknown" : "changed";
   }
 
@@ -853,6 +876,11 @@ export class JobRunner {
     const target = this.location(item.target!);
     const temp = this.batchTemp(plan, jobId, index);
     const context = this.context(jobId, index, signal);
+    // The intent is durable before the move: a restart that finds the temporary name gone knows the move happened.
+    await this.store.checkpoint({
+      jobId, itemIndex: index, phase: "prepared", bytesDone: "0", via: "rename",
+      tempPath: temp.path, targetPath: target.path, expectTarget: "absent", verified: null,
+    });
     await context.mutate(
       () => temp.provider.rename(temp.path, target.path, { replace: false, expectTarget: "absent" }, signal),
       async (proof) => (await observe(temp, proof)) !== null && (await observe(target, proof)) === null,
@@ -863,38 +891,60 @@ export class JobRunner {
     }
   }
 
-  /** Moves staged temporary names back to their sources, last first. Items not staged are skipped. */
-  private async restoreBatch(plan: OperationPlan, jobId: string, indices: number[]): Promise<void> {
+  /**
+   * Returns the staged temporary names of the given items to their sources, last first.
+   * An item goes back only when its temporary name still holds the planned version and its
+   * source name is free. Returns the items that could not go back, each with its error.
+   */
+  private async restoreBatch(plan: OperationPlan, jobId: string, indices: number[]): Promise<Map<number, CommanderError>> {
+    const failures = new Map<number, CommanderError>();
     for (const index of [...indices].reverse()) {
-      const source = this.location(plan.items[index].source!);
-      const temp = this.batchTemp(plan, jobId, index);
-      const context = this.context(jobId, index, this.stopping.signal);
-      if (await observe(temp, context) === null) continue;
-      await context.mutate(
-        () => temp.provider.rename(temp.path, source.path, { replace: false, expectTarget: "absent" }, this.stopping.signal),
-        async (proof) => (await observe(source, proof)) === null && (await observe(temp, proof)) !== null,
-      );
+      try {
+        await this.restoreBatchItem(plan, jobId, index);
+      } catch (error) {
+        failures.set(index, safeError(error));
+      }
     }
+    return failures;
+  }
+
+  private async restoreBatchItem(plan: OperationPlan, jobId: string, index: number): Promise<void> {
+    const item = plan.items[index];
+    const source = this.location(item.source!);
+    const temp = this.batchTemp(plan, jobId, index);
+    const context = this.context(jobId, index, this.stopping.signal);
+    const staged = await observe(temp, context);
+    if (staged === null) return;   // never staged, or already back
+    if (!matches(fingerprint(staged), item.fingerprint)) {
+      throw new CommanderError("outcome_unknown", "The staged file no longer matches the plan");
+    }
+    if (await observe(source, context) !== null) {
+      throw new CommanderError("outcome_unknown", "The original name is taken");
+    }
+    await context.mutate(
+      () => temp.provider.rename(temp.path, source.path, { replace: false, expectTarget: "absent" }, this.stopping.signal),
+      async (proof) => (await observe(source, proof)) === null && (await observe(temp, proof)) !== null,
+    );
   }
 
   private async recoverBatchRename(job: OperationJob, cancelling: boolean): Promise<"resumed" | undefined> {
     const pending = job.items.flatMap((item, index) => (item.outcome === "pending" ? [index] : []));
-    // Once a move to a target has landed, the batch is committed: a cancel then completes it,
-    // because the staged names of a cycle cannot all return to their sources.
+    // Once a move to a target has landed, the batch is committed: a cancel then completes it.
     const committed = job.items.some((item) => item.outcome === "done");
     if (cancelling && !committed) {
-      try {
-        await this.restoreBatch(job.plan, job.id, pending);
-      } catch (error) {
-        this.stopping.signal.throwIfAborted();
-        const latest = await this.store.get(job.id);
-        if (latest?.state === "interrupted") {
-          await this.change(latest, "reconciled_unknown", { error: safeError(error).toShape(), currentItem: null });
-        }
+      const failures = await this.restoreBatch(job.plan, job.id, pending);
+      const latest = await this.store.get(job.id);
+      if (latest?.state !== "interrupted") return;
+      const [first] = failures.values();
+      if (first) {
+        const items = latest.items.slice();
+        for (const [item, error] of failures) items[item] = { outcome: "unknown", error: error.message };
+        await this.patch(latest, { items, currentItem: null }, "progress");
+        const current = await this.requireJob(job.id);
+        await this.change(current, "reconciled_unknown", { error: first.toShape(), currentItem: null });
         return;
       }
-      const latest = await this.store.get(job.id);
-      if (latest?.state === "interrupted") await this.change(latest, "cancel_done", { currentItem: null, error: null });
+      if (await this.change(latest, "cancel_done", { currentItem: null, error: null })) return;
       return;
     }
     const latest = await this.store.get(job.id);

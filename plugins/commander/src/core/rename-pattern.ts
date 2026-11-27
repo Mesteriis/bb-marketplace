@@ -1,9 +1,8 @@
 import { z } from "zod";
 import type { Entry } from "./model.ts";
+import { compileName } from "./glob.ts";
+import { CommanderError } from "./errors.ts";
 import { NameSegment } from "./path.ts";
-
-/** A regex may run at most this long on one name (artboard rename.html: «лимит 50 мс на имя»). */
-export const REGEX_TIME_LIMIT_MS = 50;
 
 const Counter = z.object({
   start: z.number().int().min(0).max(1_000_000_000),
@@ -25,7 +24,7 @@ export type RenamePattern = z.infer<typeof RenamePattern>;
 
 export type RenameProblem =
   | "empty" | "invalid_name" | "duplicate" | "exists"
-  | "invalid_regex" | "unsafe_regex" | "regex_timeout";
+  | "invalid_regex" | "unsafe_regex";
 
 export interface RenamePreview {
   from: NameSegment;
@@ -55,43 +54,29 @@ class RenameRefusal extends Error {
   }
 }
 
-/** A group followed by a quantifier, with its body. */
-const QUANTIFIED_GROUP = /\(((?:[^()\\]|\\.)*)\)(?:[+*]|\{\d*,?\d*\})/g;
-
 /**
- * A quantified group whose body alternates or quantifies again, such as (a+)+,
- * (.*)* or (?:a|aa)+, can backtrack exponentially on a failing name. JavaScript
- * cannot interrupt a running RegExp, so these patterns are refused before they run.
- * This is a conservative heuristic, not a complete analysis.
+ * The find regex is accepted only in the flat subset that S11 search uses (glob.ts):
+ * no groups, no alternation, at most one repetition, at most 256 characters. Such an
+ * expression cannot backtrack exponentially, so it runs without a time limit.
  */
-function hasRiskyQuantifiedGroup(source: string): boolean {
-  for (const match of source.matchAll(QUANTIFIED_GROUP)) {
-    if (/[|+*{]/.test(match[1])) return true;
-  }
-  return false;
-}
-
 function compileFind(find: NonNullable<RenamePattern["find"]>): RegExp | null {
   if (!("regex" in find)) return null;
-  if (hasRiskyQuantifiedGroup(find.regex)) throw new RenameRefusal("unsafe_regex");
   try {
-    return new RegExp(find.regex, "g");
-  } catch {
-    throw new RenameRefusal("invalid_regex");
+    compileName({ regex: find.regex }, true);
+  } catch (error) {
+    if (error instanceof CommanderError && error.code === "invalid_name") throw new RenameRefusal("invalid_regex");
+    if (error instanceof CommanderError) throw new RenameRefusal("unsafe_regex");
+    throw error;
   }
+  return new RegExp(find.regex, "gu");
 }
 
+/** The replacement is literal: no $1 or other substitution patterns. */
 function applyFind(base: string, pattern: RenamePattern, regex: RegExp | null): string {
   const find = pattern.find;
   if (!find) return base;
   const replacement = pattern.replace ?? "";
-  if (regex) {
-    const started = globalThis.performance.now();
-    const out = base.replace(regex, replacement);
-    // Measured after the run: a slow match cannot be interrupted, so the result is refused.
-    if (globalThis.performance.now() - started > REGEX_TIME_LIMIT_MS) throw new RenameRefusal("regex_timeout");
-    return out;
-  }
+  if (regex) return base.replace(regex, () => replacement);
   return base.split((find as { text: string }).text).join(replacement);
 }
 

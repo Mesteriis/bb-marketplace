@@ -57,6 +57,13 @@ test("a regex that can backtrack too long is shown as refused and blocks the pla
   fireEvent.click(screen.getByRole("checkbox", { name: /регулярное выражение/ }));
   setField("Найти", "(a+)+$");
   setField("Заменить на", "x");
-  expect(screen.getAllByText("Регулярное выражение отклонено: возможен долгий перебор").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Регулярное выражение отклонено: допустим плоский вид с одним повтором без групп и альтернатив").length).toBeGreaterThan(0);
   expect(screen.getByRole("button", { name: "Создать план" }).hasAttribute("disabled")).toBe(true);
+});
+
+test("the second-phase cancel refusal reaches the owner in Russian; the core message stays English", async () => {
+  const { CommanderError } = await import("../core/errors.ts");
+  const { problemOf } = await import("./model.ts");
+  const problem = problemOf(new CommanderError("unsupported", "Batch rename cancel is unavailable: the second phase is running"));
+  expect(problem).toEqual({ code: "unsupported", message: "Отмена недоступна: идёт вторая фаза переименования" });
 });

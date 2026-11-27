@@ -119,13 +119,19 @@ export const batchRenameText = {
   makePlan: "Создать план", pendingPlan: "План создаётся",
   summary: (changed: number, conflicts: number) =>
     changed + " к переименованию · " + conflicts + (conflicts === 1 ? " конфликт" : " конфликтов") + " · расширения сохраняются",
+  // Core messages (English, shown to the agent too) mapped to the owner text by exact match.
+  coreMessages: {
+    "Batch rename retry is not available: check the job": "Повтор пакетного переименования недоступен: сверьте задание",
+    "Batch rename cancel is unavailable: the second phase is running": "Отмена недоступна: идёт вторая фаза переименования",
+  } as Record<string, string>,
+  tempNames: (paths: string[]) => "Файлы могли остаться под временными именами: " + paths.join(", ")
+    + ". Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
   problems: {
     empty: "Имя станет пустым",
     invalid_name: "Недопустимое имя",
     duplicate: "Совпадает с именем другого файла пачки",
     exists: "Имя уже есть в каталоге и не входит в пачку",
     invalid_regex: "Регулярное выражение не разобрано",
-    unsafe_regex: "Регулярное выражение отклонено: возможен долгий перебор",
-    regex_timeout: "Регулярное выражение работает дольше 50 мс на имя",
+    unsafe_regex: "Регулярное выражение отклонено: допустим плоский вид с одним повтором без групп и альтернатив",
   } as Record<string, string>,
 };

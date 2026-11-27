@@ -239,6 +239,90 @@ test("retry of a finished batch rename is refused with the 2a text and plans not
   const { id } = await runner.submit(plan);
   await at(id, "failed");
   await expect(runner.retryJob(id, { kind: "owner" })).rejects.toThrow(
-    "Повтор пакетного переименования недоступен: сверьте задание",
+    "Batch rename retry is not available: check the job",
   );
+});
+
+test("restart after the last phase-2 move, with identical size and mtime, records done without moving anything", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([["/a.txt", "AA", "1000"], ["/b.txt", "BB", "1000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/b.txt", fingerprint: fp("2", "1000"), expect: fp("2", "1000") },
+    { from: "/b.txt", to: "/a.txt", fingerprint: fp("2", "1000"), expect: fp("2", "1000") },
+  ]);
+  const lastTemp = tempNameFor(JOB_ID, 1);
+  const lastTempName = "t" in lastTemp ? lastTemp.t : "";
+  // The last move has landed (its temporary name is gone and /a.txt holds the content) but its
+  // record was not written: stop at the confirmation read of /a.txt.
+  let crashing: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "stat" || leaf(path) !== "a.txt" || crashing) return;
+    // The stat must directly follow the move into /a.txt (the call log records this stat last).
+    const previous = provider.calls.at(-2);
+    if (!(previous?.op === "rename" && leaf(previous.path) === "a.txt")) return;
+    crashing = runner.shutdown();
+    if (!signal.aborted) {
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    }
+    signal.throwIfAborted();
+  };
+  const { id } = await runner.submit(plan);
+  await vi.waitFor(() => expect(crashing).not.toBeNull());
+  await crashing;
+  expect((await store.get(id))?.state).toBe("running");
+  provider.delay = undefined;
+  const renamesBefore = provider.calls.filter(({ op }) => op === "rename").length;
+  await newRunner().recover();
+  await at(id, "completed");
+  expect(provider.calls.filter(({ op }) => op === "rename").length).toBe(renamesBefore);
+  expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AA");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
+});
+
+test("a cancel during the second phase is refused, and the batch completes", async () => {
+  const { provider, runner, store, at } = await setup([["/a.txt", "AAA", "1000"], ["/b.txt", "BB", "2000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/b.txt", fingerprint: fp("3", "1000"), expect: fp("2", "2000") },
+    { from: "/b.txt", to: "/a.txt", fingerprint: fp("2", "2000"), expect: fp("3", "1000") },
+  ]);
+  let refused: unknown = null;
+  provider.delay = async (op, path) => {
+    // Inside the second phase, before its first target move: the cancel is refused.
+    if (op !== "rename" || isTemp(path) || leaf(path) !== "b.txt" || refused !== null) return;
+    refused = await runner.cancel(JOB_ID).catch((error: unknown) => error);
+  };
+  await runner.submit(plan);
+  const job = await at(JOB_ID, "completed");
+  expect(refused).toBeInstanceOf(CommanderError);
+  expect((refused as CommanderError).message).toBe("Batch rename cancel is unavailable: the second phase is running");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["done", "done"]);
+  expect(text(provider.contents(parsePosix("/b.txt")))).toBe("AAA");
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("BB");
+  expect((await store.get(JOB_ID))?.error).toBeNull();
+});
+
+test("a staged item that cannot go back is unknown on its own index; the other items still return", async () => {
+  const { provider, runner, at } = await setup([["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"], ["/e.txt", "E", "3000"]]);
+  const plan = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+    { from: "/e.txt", to: "/z.txt", fingerprint: fp("1", "3000"), expect: "absent" },
+  ]);
+  // The first target is taken by a foreign file, so the first item fails its second phase.
+  provider.delay = async (op, path) => {
+    if (op !== "rename") return;
+    if (!isTemp(path) && leaf(path) === "x.txt") {
+      provider.put(parsePosix("/x.txt"), new TextEncoder().encode("F"), "4000");
+    }
+    // The second item cannot return to its source name.
+    if (!isTemp(path) && leaf(path) === "c.txt") throw new CommanderError("permission_denied", "denied");
+  };
+  const { id } = await runner.submit(plan);
+  const job = await at(id, "unknown");
+  expect(job.items.map(({ outcome }) => outcome)).toEqual(["failed", "unknown", "pending"]);
+  expect(text(provider.contents(parsePosix("/a.txt")))).toBe("A");
+  expect(text(provider.contents(parsePosix("/e.txt")))).toBe("E");
+  expect(text(provider.contents(parsePosix("/x.txt")))).toBe("F");
+  expect(provider.contents(parsePosix("/c.txt"))).toBeNull();
+  const kept = tempNameFor(id, 1);
+  expect(provider.contents(parsePosix("/" + ("t" in kept ? kept.t : "")))).not.toBeNull();
 });

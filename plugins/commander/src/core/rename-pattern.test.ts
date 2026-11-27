@@ -31,9 +31,22 @@ test('template "site-hero-[C:3].[E]" with counter start 5 on "x.webp" → "site-
   expect(rows).toEqual([{ to: "site-hero-005.webp", problem: null }]);
 });
 
-test('find regex IMG_(\\d+) replaced by "photo-$1" on "IMG_12.jpg" → "photo-12.jpg"', () => {
-  const rows = names([file("IMG_12.jpg")], { find: { regex: "IMG_(\\d+)" }, replace: "photo-$1" });
-  expect(rows).toEqual([{ to: "photo-12.jpg", problem: null }]);
+test('find regex IMG_[0-9]+ replaced by a literal "photo-" on "IMG_12.jpg" → "photo-12.jpg"', () => {
+  const rows = names([file("IMG_12.jpg")], { find: { regex: "IMG_[0-9]+" }, replace: "photo-" });
+  expect(rows).toEqual([{ to: "photo-.jpg", problem: null }]);
+});
+
+test('the replacement is literal: "$1" is not a group reference', () => {
+  const rows = names([file("a.txt")], { find: { regex: "a" }, replace: "[$1]" });
+  expect(rows).toEqual([{ to: "[$1].txt", problem: null }]);
+});
+
+test.each(["a*a*b", "a*a*a*b", "a*a*a*a*b"])("polynomial regex %s is refused as unsafe_regex without running", (source) => {
+  const name = "a".repeat(200) + "!";
+  const started = performance.now();
+  const rows = names([file(name)], { find: { regex: source }, replace: "x" });
+  expect(rows).toEqual([{ to: null, problem: "unsafe_regex" }]);
+  expect(performance.now() - started).toBeLessThan(50);
 });
 
 test('literal find "draft" replaced by "final" with case upper on "draft-a.txt" → "FINAL-A.txt"', () => {
