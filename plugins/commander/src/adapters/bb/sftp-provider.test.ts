@@ -862,3 +862,22 @@ describe("shared open, reopen after abort, race with a held rename (third review
     expect(mock.opCount("op:rename")).toBe(0);
   });
 });
+
+describe("shared open failure with an already aborted caller (final review)", () => {
+  it("a caller aborted during hub_sftp_open gets cancelled, and the shared failure is not an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const controller = new AbortController();
+      const { provider } = setup({ onOpen: () => controller.abort(), openTransportFault: true });
+      await expectCode(provider.stat(at("x.txt"), controller.signal), "cancelled");
+      await new Promise((done) => setTimeout(done, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});

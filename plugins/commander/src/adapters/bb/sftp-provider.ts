@@ -307,6 +307,9 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
           throw commanderError("connection_failed");
         },
       );
+      // Every caller may have left (aborted) before the open failed; the shared failure is still handled here,
+      // so it never surfaces as an unhandled rejection. Each caller still sees it through its own wait.
+      opening.catch(() => undefined);
     }
     return waitForOpen(opening, signal);
   }
