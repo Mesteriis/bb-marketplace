@@ -172,10 +172,8 @@ export class FakeProvider implements FileProvider {
     await this.before("rename", to, signal);
     this.forbidRoot(from, to);
     const entry = this.require(from);
-    // A case-only change on a case-insensitive endpoint renames the entry onto itself.
-    const caseOnly = this.same(from, to) && !samePath(from, to, true);
-    if (!caseOnly) this.checkTarget(to, opts.replace, opts.expectTarget);
-    if (this.same(from, to) && !caseOnly) return;
+    this.checkTarget(to, opts.replace, opts.expectTarget);
+    if (samePath(from, to, true)) return;
     const tree = entry.kind === "dir"
       ? [...this.entries].filter((child) => isAncestorOrSelf(from, child.path, this.endpoint.caseSensitive))
       : [entry];

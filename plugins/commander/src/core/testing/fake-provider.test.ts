@@ -78,3 +78,20 @@ test("shows the root to every existence check and refuses to change it", async (
   expect((await provider.list(root, { cursor: null, limit: 10 }, signal)).entries.map(({ name }) => name)).toEqual([{ t: "a" }]);
   expect(provider.contents(parsePosix("/a"))).toEqual(Uint8Array.of(1));
 });
+
+test("a case-only rename follows the contract: the entry at the target path is the source itself", async () => {
+  const provider = new FakeProvider("host:ci", false);
+  const upper = parsePosix("/A");
+  const lower = parsePosix("/a");
+  provider.put(upper, Uint8Array.of(1), "7");
+  const version = { size: "1", mtimeNs: "7" };
+  await expect(provider.rename(upper, lower, { replace: false, expectTarget: "absent" }, signal))
+    .rejects.toMatchObject({ code: "changed_since_plan" });
+  await expect(provider.rename(upper, lower, { replace: false }, signal)).rejects.toMatchObject({ code: "already_exists" });
+  await expect(provider.rename(upper, lower, { replace: true, expectTarget: { size: "1", mtimeNs: "8" } }, signal))
+    .rejects.toMatchObject({ code: "changed_since_plan" });
+  expect((await provider.list(parsePosix("/"), { cursor: null, limit: 10 }, signal)).entries.map(({ name }) => name)).toEqual([{ t: "A" }]);
+  await provider.rename(upper, lower, { replace: true, expectTarget: version }, signal);
+  expect((await provider.list(parsePosix("/"), { cursor: null, limit: 10 }, signal)).entries.map(({ name }) => name)).toEqual([{ t: "a" }]);
+  expect(provider.contents(upper)).toEqual(Uint8Array.of(1));
+});

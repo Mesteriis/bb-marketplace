@@ -484,7 +484,7 @@ export class JobRunner {
       throw new CommanderError("invalid_path", "Destination overlaps source");
     }
     const sourceChanged = source && (!oldSource || oldSource.kind !== item.kind || !matches(sourceFingerprint, item.fingerprint));
-    const targetChanged = target && expectedTarget !== null && !matchesTarget(oldTarget, expectedTarget);
+    const targetChanged = target && !caseOnlyRename && expectedTarget !== null && !matchesTarget(oldTarget, expectedTarget);
     const reason = sourceChanged ? "source_changed" : targetChanged ? "target_changed"
       : oldTarget ? (oldTarget.kind === item.kind ? "exists" : "type_mismatch") : null;
     let replace = false;
@@ -519,6 +519,11 @@ export class JobRunner {
       replace = action === "overwrite" && targetFingerprint !== null;
     }
 
+    if (caseOnlyRename && sourceFingerprint) {
+      // The entry at the target path is the source itself; the provider checks that version.
+      replace = true;
+      expectTarget = sourceFingerprint;
+    }
     if (source && !oldSource) throw new CommanderError("not_found", "Source is missing");
     if (oldSource && oldSource.kind !== item.kind) throw new CommanderError("changed_since_plan", "Source type changed");
     const destination = target;
