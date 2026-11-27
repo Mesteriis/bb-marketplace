@@ -100,6 +100,7 @@ export function HubSidebarConnected({ profiles: api, pve, allow, bus = defaultBu
       onAdd={(what) => bus.send(what === "profile" ? { type: "edit", profileId: null } : what === "pve" ? { type: "add-pve" } : { type: "import" })}
       onCredentials={() => bus.send({ type: "credentials" })}
       onAgents={() => bus.send({ type: "agents" })}
+      onPlugins={() => bus.send({ type: "plugins" })}
       onAllow={(profileId) => {
         const ref = views[profileId]?.credentialRef ?? null;
         if (ref === null || allow === undefined) {

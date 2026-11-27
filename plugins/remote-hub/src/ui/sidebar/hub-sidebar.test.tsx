@@ -20,7 +20,7 @@ function props(over: Partial<HubSidebarProps> = {}): HubSidebarProps {
     connections: { pve1: { outcome: "ok", nodes: ["pve"], guests: [{ vmid: 165, name: "rdp-ssh-test", kind: "lxc", node: "pve", status: "running", template: false, available: true }, { vmid: 152, name: "astra-linux", kind: "qemu", node: "pve", status: "stopped", template: false, available: false }] } },
     sessions: [],
     shown: [],
-    onFocusSession: vi.fn(), onCloseSession: vi.fn(), onExpand: vi.fn(), onConnect: vi.fn(), onConsole: vi.fn(), onEdit: vi.fn(), onAdd: vi.fn(), onCredentials: vi.fn(), onAgents: vi.fn(), onAllow: vi.fn(), onGuests: vi.fn(), onRetry: vi.fn(),
+    onFocusSession: vi.fn(), onCloseSession: vi.fn(), onExpand: vi.fn(), onConnect: vi.fn(), onConsole: vi.fn(), onEdit: vi.fn(), onAdd: vi.fn(), onCredentials: vi.fn(), onAgents: vi.fn(), onPlugins: vi.fn(), onAllow: vi.fn(), onGuests: vi.fn(), onRetry: vi.fn(),
     ...over,
   };
 }

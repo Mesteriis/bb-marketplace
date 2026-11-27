@@ -8,6 +8,7 @@ import type { DeskSession, DeskSessionState } from "../core/desk.ts";
 import { profileFieldsOf, type Profile, type ProfileFields } from "../core/profile.ts";
 import { errorCodeText, errorTextFromMessage } from "../core/rdp-texts.ts";
 import { AgentPanel } from "./agent-panel.tsx";
+import { PluginAccessPanel, type PluginAccessApi } from "./plugin-access-panel.tsx";
 import { CredentialsPanel } from "./credentials-panel.tsx";
 import { useDesk } from "./desk-store.ts";
 import { Desk } from "./desk/desk.tsx";
@@ -42,6 +43,9 @@ export interface HubPageProps {
   imports?: ImportApi;
   /** Agent access and activity (stage 4a); without it there is no such section or screen. */
   agents?: AgentApi;
+  /** What other plugins may do over SFTP, and (optionally) a signal that it changed. */
+  plugins?: PluginAccessApi;
+  pluginsChanged?: (cb: () => void) => () => void;
   /** Proxmox VE: adding a connection and listing its guests; without it there is no Proxmox screen. */
   pve?: PveApi;
   /** Proxmox consoles (a node shell, a container terminal, a VM's graphics); without it the console buttons stay off. */
@@ -51,7 +55,7 @@ export interface HubPageProps {
   bus?: HubBus;
 }
 
-type Screen = { type: "edit"; profile: Profile | null; key: number } | { type: "credentials" } | { type: "import" } | { type: "agents" } | { type: "add-pve" } | { type: "guests"; profileId: string; key: number };
+type Screen = { type: "edit"; profile: Profile | null; key: number } | { type: "credentials" } | { type: "import" } | { type: "agents" } | { type: "plugins" } | { type: "add-pve" } | { type: "guests"; profileId: string; key: number };
 
 const SSH_ID = "ssh";
 const RDP_ID = "rdp";
@@ -310,6 +314,9 @@ export function HubPage(props: HubPageProps) {
             )}
             {screen.type === "import" && props.imports !== undefined && <ImportPanel api={props.imports} onImported={() => void changed()} onClose={() => setScreen(null)} />}
             {screen.type === "agents" && props.agents !== undefined && <AgentPanel api={props.agents} profileNames={new Map((data.profiles ?? []).map((p) => [p.id, p.name]))} onClose={() => setScreen(null)} />}
+            {screen.type === "plugins" && props.plugins !== undefined && (
+              <PluginAccessPanel api={props.plugins} profileNames={new Map((data.profiles ?? []).map((p) => [p.id, p.name]))} onClose={() => setScreen(null)} {...(props.pluginsChanged !== undefined ? { subscribe: props.pluginsChanged } : {})} />
+            )}
             {screen.type === "guests" && props.pve !== undefined && (
               <PveTargets
                 key={screen.key}

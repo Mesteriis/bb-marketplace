@@ -37,6 +37,7 @@ export interface HubSidebarProps {
   onAdd: (what: "profile" | "pve" | "import") => void;
   onCredentials: () => void;
   onAgents: () => void;
+  onPlugins: () => void;
   onAllow: (profileId: string) => void;
   /** The connection's full guest list on the page (certificate confirmation, linked connections). */
   onGuests: (profileId: string) => void;
@@ -170,6 +171,7 @@ export function HubSidebar(props: HubSidebarProps) {
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={props.onCredentials}>{tx("sidebar.credentials")}</DropdownMenuItem>
             <DropdownMenuItem onSelect={props.onAgents}>{tx("sidebar.agents")}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={props.onPlugins}>{tx("sidebar.plugins")}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

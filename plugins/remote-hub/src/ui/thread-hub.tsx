@@ -5,7 +5,7 @@ import { createHubBus } from "./hub-bus.ts";
 import { HubPage, type HubPageProps } from "./hub-page.tsx";
 import { HubSidebarConnected } from "./sidebar/hub-sidebar-connected.tsx";
 
-type ThreadHubBridge = Required<Omit<HubPageProps, "adoptConsole" | "bus">>;
+type ThreadHubBridge = Required<Omit<HubPageProps, "adoptConsole" | "bus" | "pluginsChanged">>;
 
 export function ThreadHub({ bridge }: { bridge: ThreadHubBridge }) {
   // A thread tab can coexist with the full page and with tabs in other threads.

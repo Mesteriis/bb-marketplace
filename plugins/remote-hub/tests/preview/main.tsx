@@ -12,6 +12,9 @@ import { DeskPane } from "../../src/ui/desk/desk-pane.tsx";
 import { AgentStage } from "../../src/ui/agent-overlay.tsx";
 import { HUMAN_CONTROL } from "../../src/ui/control-banner.tsx";
 import { HubPage } from "../../src/ui/hub-page.tsx";
+import { hubBus } from "../../src/ui/hub-bus.ts";
+import { PluginRequestBanner } from "../../src/ui/plugin-request-banner.tsx";
+import type { PluginAccessApi } from "../../src/ui/plugin-access-panel.tsx";
 import { HubSidebarConnected } from "../../src/ui/sidebar/hub-sidebar-connected.tsx";
 
 const scene = new URLSearchParams(location.search).get("scene") ?? "desk";
@@ -41,6 +44,19 @@ if (scene === "desk") {
   deskStore.focus("f2");
 }
 
+// "plugins": the owner's screen for what other plugins may do over SFTP, with a request waiting.
+const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+const pluginView = {
+  requests: [{ requestId: "r1", pluginId: "makosh-commander", profileId: "s1", level: "write" as const, reason: "скопировать сборку на стенд", requestedAt: ago(4) }],
+  grants: [
+    { pluginId: "makosh-commander", profileId: "s3", level: "read" as const, grantedAt: ago(60 * 26) },
+    { pluginId: "backup-sync", profileId: "s3", level: "write" as const, grantedAt: ago(190) },
+  ],
+  channels: [{ channelId: "c1", pluginId: "backup-sync", profileId: "s3", openedAt: ago(2) }],
+};
+const plugins: PluginAccessApi = { list: async () => pluginView, grant: async () => ({}), decline: async () => ({}), revoke: async () => ({ revoked: true, channelsClosed: 1 }), revokeAll: async () => ({ revoked: 2 }) };
+if (scene === "plugins") hubBus.send({ type: "plugins" });
+
 const shell = "root@rdp-ssh-test:~# systemctl status ssh\n● ssh.service - OpenBSD Secure Shell server\n     Active: active (running)\nroot@rdp-ssh-test:~# ▮";
 
 createRoot(document.getElementById("root")!).render(
@@ -50,8 +66,9 @@ createRoot(document.getElementById("root")!).render(
       <HubSidebarConnected profiles={api as never} pve={pve} />
     </div>
     <div className="pv-main">
-      {scene === "page" ? (
-        <HubPage ssh={{ onSshOpen: never, onAttach: never, onClose: async () => undefined } as never} rdp={{ onRdpOpen: never, onAttach: never, onClose: async () => undefined, onDecision: never, onScreenshot: never } as never} profiles={api as never} />
+      {scene === "plugins" && <PluginRequestBanner api={{ ...plugins, names: async () => new Map(profiles.map((p) => [p.id, p.name])), open: () => undefined, subscribe: () => () => undefined }} />}
+      {scene === "page" || scene === "plugins" ? (
+        <HubPage plugins={plugins} ssh={{ onSshOpen: never, onAttach: never, onClose: async () => undefined } as never} rdp={{ onRdpOpen: never, onAttach: never, onClose: async () => undefined, onDecision: never, onScreenshot: never } as never} profiles={api as never} />
       ) : (
         <Desk>
           {(scene === "desk" ? fake : []).map((s) => (

@@ -106,6 +106,26 @@
 - **Limits.** A command runs as the saved user with that user's rights: exec is the power to act as that user. The
   helper's own bounds do not limit what the remote command does on the server.
 
+## SFTP for other plugins
+
+- **Who.** Six RPCs (`hub_sftp_*`) answer only a caller the host reports as a plugin and act for that plugin id; the input
+  cannot name one. They are the only RPCs outside `ownerOnly`. Granting, declining and revoking (`sftp_access_*`) are inside
+  it: a plugin can ask, never grant.
+- **What a plugin never gets.** A secret, a key path, a credential reference, a Keychain item name. The schemas have no
+  field for one, a refusal is a stable code with a fixed sentence, and ssh's stderr stays in this plugin's backend (it is
+  only classified). Checked against a real sshd in `tests/integration/sftp-plugin.test.ts`.
+- **How it connects.** The helper starts `/usr/bin/ssh -T ... -s -- host sftp` with no pty and relays bytes; the argv is
+  the session shape with no command word, validated by the same allowlist, and the helper adds the subsystem itself, so a
+  channel cannot run a command. The SFTP protocol is spoken in the plugin (`src/core/sftp-client.ts`).
+- **Host keys.** With a saved secret: `-F none`, Remote Hub's confirmed keys, an unknown endpoint refused before ssh
+  starts. Without one (agent, plain key): the user's configuration and known_hosts with `BatchMode=yes`,
+  `StrictHostKeyChecking=yes`, `UpdateHostKeys=no`, `ControlPath=none` and no forwarding added by the helper. No path
+  accepts a key on its own.
+- **Grants.** (plugin, connection, `read` | `write`), stored, no expiry. Every open and operation checks again; a revoke
+  ends the channels opened under it before anyone is told. Channels are memory only and end with the helper.
+- **Limits.** `write` is the power to change and delete files as the saved user. A connection without a saved secret
+  follows the user's ssh configuration, including a proxy it names. Full contract: [sftp-for-plugins.md](sftp-for-plugins.md).
+
 ## Saved passwords and migration
 
 On macOS, install Credential Vault before replacing Remote Hub. Start with an

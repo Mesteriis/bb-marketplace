@@ -23,6 +23,7 @@ guest discovery. SSH runs in xterm, RDP on a canvas, through a Rust helper.
   nothing. Private keys are never opened. An alias behind a proxy or Match rule
   keeps using your ssh config.
 - Agent access: per connection, default none, set by you in the editor. Observe: agents list connections and Proxmox guests, read terminals, take screenshots, and see all the terminal or screen shows, secrets too. Input: they may open a connection that has a SAVED password (never shown or typed by them), hold a lease (2 min; Take control ends it), send typed keys, text and pointer actions, and (Exec) run commands on sessions they opened, only while that session's live view is on screen in a focused window ("Watch in split"). While an agent drives, an overlay of light dots and a Take control button show it.
+- SFTP for other plugins: a plugin asks, you allow read or write per connection (Plugin access) and revoke at any time; it never gets a secret or a key path.
 - The helper owns every session; detaching never ends it.
 
 ## Honest limits

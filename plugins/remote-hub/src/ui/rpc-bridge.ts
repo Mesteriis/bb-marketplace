@@ -3,6 +3,7 @@
 // ("not a JSON value") before the handler runs, so every payload is stripped of
 // undefined-valued keys here; tests drive this bridge through a double that
 // applies the strict check. Host-free: the caller is injected.
+import type { PluginAccessApi } from "./plugin-access-panel.tsx";
 import { omitUndefined } from "../core/json-wire.ts";
 import type { Profile, ProfileInput } from "../core/profile.ts";
 import type { PveConsoleTabRow, RdpDecision, SessionHandle, SessionInfo, SshTarget } from "../core/rpc.ts";
@@ -24,6 +25,7 @@ export interface ConnectBridge {
   credentials: CredentialsApi;
   imports: ImportApi;
   agents: AgentApi;
+  plugins: PluginAccessApi;
   pve: PveApi;
   pveConsoles: { attach: PveConsolesApi["attach"]; close: PveConsolesApi["close"]; takeover: NonNullable<PveConsolesApi["takeover"]>; preload: NonNullable<PveConsolesApi["preload"]>; tabs: NonNullable<PveConsolesApi["tabs"]> };
   ssh: Pick<SshPageProps, "onSshOpen" | "onAttach" | "onClose" | "onTakeover">;
@@ -88,6 +90,13 @@ export function createConnectBridge(call: RpcCall, wsUrl: string): ConnectBridge
       disconnect: async (handle) => {
         await close(handle);
       },
+    },
+    plugins: {
+      list: () => send("sftp_access_list", {}),
+      grant: (pluginId, profileId, level) => send("sftp_access_grant", { pluginId, profileId, level }),
+      decline: (requestId) => send("sftp_access_decline", { requestId }),
+      revoke: (pluginId, profileId) => send("sftp_access_revoke", { pluginId, profileId }),
+      revokeAll: () => send("sftp_access_revoke_all", {}),
     },
     pve: {
       targets: (input) => send("pve_targets", input),

@@ -392,10 +392,13 @@ describe.skipIf(!dockerOk)("SFTP for other plugins: grants, three kinds of sign-
   }, 240_000);
 
   it("a revoke ends the channel at once and the next call is consent_revoked", async () => {
+    // The server's own process table says whether a connection is there (this sshd serves sftp inside its session process).
+    const sshdNow = () => Number(spawnSync("docker", ["exec", cid, "sh", "-c", "ps | grep -c '[s]shd' || true"], { encoding: "utf8" }).stdout.trim());
+    await sleep(3000);
+    const idle = sshdNow();
     const { channelId } = await call(rpc, "hub_sftp_open", { profileId: pw.id }, COMMANDER);
     expect((await call(rpc, "sftp_access_list", {}, PAGE)).channels.map((c) => c.channelId)).toEqual([channelId]);
-    const serversNow = () => spawnSync("docker", ["exec", cid, "sh", "-c", "ps | grep -c '[s]ftp-server' || true"], { encoding: "utf8" }).stdout.trim();
-    expect(serversNow(), "the open channel has a server process").toBe("1");
+    expect(sshdNow(), "the open channel has a session on the server").toBeGreaterThan(idle);
     expect(await call(rpc, "sftp_access_revoke", { pluginId: "makosh-commander", profileId: pw.id }, PAGE)).toEqual({ revoked: true, channelsClosed: 1 });
     expect((await call(rpc, "sftp_access_list", {}, PAGE)).channels).toEqual([]);
     expect(await refusal(call(rpc, "hub_sftp_op", { channelId, op: "realpath", path: text(".") }, COMMANDER))).toBe("consent_revoked");
@@ -407,7 +410,7 @@ describe.skipIf(!dockerOk)("SFTP for other plugins: grants, three kinds of sign-
     await call(rpc, "hub_sftp_close", { channelId: other.channelId }, STRANGER);
     // ssh of the revoked channel is gone too.
     await sleep(3000);
-    expect(serversNow()).toBe("0");
+    expect(sshdNow(), "the revoked channel's session is gone from the server").toBe(idle);
   }, 120_000);
 
   it("no answer, refusal, event or helper log holds a secret, a key path, a credential reference or a temp path", () => {

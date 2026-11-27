@@ -18,6 +18,7 @@ const ru = {
   "sidebar.edit": "Изменить",
   "sidebar.credentials": "Учётные данные",
   "sidebar.agents": "Активность агентов",
+  "sidebar.plugins": "Доступ плагинов",
 
   "kind.terminal": "терминал",
   "kind.desktop": "рабочий стол",

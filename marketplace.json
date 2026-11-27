@@ -828,7 +828,7 @@
     {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
-      "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
+      "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, saved credentials in Credential Vault, SFTP for other plugins by your grant.",
       "icon": {
         "url": "./plugins/remote-hub/assets/icon.svg"
       },

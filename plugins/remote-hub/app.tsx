@@ -6,7 +6,7 @@
 import "./app.css";
 import { RemoteEmbedOverlay } from "./src/adapters/bb/embed-overlay.tsx";
 import { DocumentRefs, type RemoteEmbedApi } from "./src/adapters/bb/embed-owner.ts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThreadTitle, definePluginApp, experimental_useAppPanel, useBbContext, useBbNavigate, useRealtime, useRpc, useSidebarSplitLayout } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
 import { ThreadHub } from "./src/ui/thread-hub.tsx";
@@ -15,6 +15,8 @@ import { HubSidebarConnected } from "./src/ui/sidebar/hub-sidebar-connected.tsx"
 import type { PveConsoleLaunch } from "./src/ui/pve-consoles.tsx";
 import { createConnectBridge } from "./src/ui/rpc-bridge.ts";
 import { AgentBanner, type AgentBannerApi } from "./src/ui/agent-banner.tsx";
+import { PluginRequestBanner, type PluginRequestBannerApi } from "./src/ui/plugin-request-banner.tsx";
+import { hubBus } from "./src/ui/hub-bus.ts";
 import { LiveSession, parseSessionKey, type LiveSessionApi } from "./src/ui/live-session.tsx";
 import { SessionCard, type SessionCardApi } from "./src/ui/session-card.tsx";
 import { AgentContextProvider, type AgentContextValue } from "./src/ui/agent-context.tsx";
@@ -28,6 +30,8 @@ import { tx } from "./src/ui/i18n.ts";
 
 /** The plugin's realtime channel: "an agent did something" (identifiers only). Same string as AGENT_SIGNAL_CHANNEL on the server. */
 const AGENT_CHANNEL = "remote-hub.agents";
+/** "A plugin asked for SFTP access, or a channel changed" (identifiers only). Same string as SFTP_EVENTS_CHANNEL on the server. */
+const SFTP_CHANNEL = "remote-hub.sftp";
 const attachUrl = (): string => (typeof window !== "undefined" ? (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host : "") + "/api/v1/plugins/makosh-remote-hub/http/attach";
 
 /** What a live view needs from the server, as the owner's RPC calls. */
@@ -205,6 +209,40 @@ function AgentBannerOverlay() {
 }
 
 
+/** Tells whoever listens that the plugin signalled a change in what other plugins asked for or hold. */
+function useSftpSignal(): (cb: () => void) => () => void {
+  const listeners = useRef(new Set<() => void>());
+  useRealtime(SFTP_CHANNEL, () => {
+    for (const l of listeners.current) l();
+  });
+  return useCallback((cb: () => void) => {
+    listeners.current.add(cb);
+    return () => void listeners.current.delete(cb);
+  }, []);
+}
+
+/** App-wide: a standing notice while another plugin waits for the owner's answer about access to files. */
+function PluginRequestOverlay() {
+  const bridge = useBridge();
+  const navigate = useBbNavigate();
+  const subscribe = useSftpSignal();
+  const api = useMemo<PluginRequestBannerApi>(
+    () => ({
+      list: bridge.plugins.list,
+      grant: bridge.plugins.grant,
+      decline: bridge.plugins.decline,
+      names: async () => new Map((await bridge.profiles.list()).map((p) => [p.id, p.name])),
+      open: () => {
+        navigate.toPluginPanel(SESSION_PAGE);
+        hubBus.send({ type: "plugins" });
+      },
+      subscribe,
+    }),
+    [bridge, navigate, subscribe],
+  );
+  return <PluginRequestBanner api={api} />;
+}
+
 /** The page's and the sidebar's RPC calls. The bridge strips undefined-valued keys (BB's RPC carries JSON values only). */
 function useBridge() {
   const rpc = useRpc<typeof rpcContract>();
@@ -247,6 +285,7 @@ function ConnectTab({ subPath }: { subPath: string }) {
     };
   }, [watchedKey]);
   const bridge = useBridge();
+  const sftpChanged = useSftpSignal();
   const navigate = useBbNavigate();
   // A session an agent works on fills the page (its thread sits in the split beside it); a graphics console goes to the desk.
   const focused = watchedKey !== null && adopt === undefined;
@@ -254,7 +293,7 @@ function ConnectTab({ subPath }: { subPath: string }) {
     <WithAgentContext>
       {focused && <WatchedView sessionKey={watchedKey} api={liveApi} onBack={() => navigate.toPluginPanel(SESSION_PAGE)} />}
       <div className={focused ? "hidden" : "h-full"}>
-      <HubPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} ssh={bridge.ssh} rdp={bridge.rdp} />
+      <HubPage profiles={bridge.profiles} credentials={bridge.credentials} imports={bridge.imports} agents={bridge.agents} plugins={bridge.plugins} pluginsChanged={sftpChanged} pve={bridge.pve} pveConsoles={bridge.pveConsoles} {...(adopt !== undefined ? { adoptConsole: adopt } : {})} ssh={bridge.ssh} rdp={bridge.rdp} />
       </div>
     </WithAgentContext>
   );
@@ -305,6 +344,7 @@ export default definePluginApp((app) => {
   });
   app.slots.messageDirective({ id: "remote-session", component: RemoteSessionDirective });
   app.slots.experimental_appOverlay({ id: "remote-hub-agent-banner", component: AgentBannerOverlay });
+  app.slots.experimental_appOverlay({ id: "remote-hub-plugin-requests", component: PluginRequestOverlay });
   app.slots.experimental_appOverlay({ id: "remote-hub-embed", component: RemoteEmbedSlot });
   app.slots.experimental_tab({
     id: LIVE_TAB_ID,

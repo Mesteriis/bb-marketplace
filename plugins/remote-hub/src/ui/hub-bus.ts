@@ -13,6 +13,7 @@ export type HubCommand =
   | { type: "credentials" }
   | { type: "import" }
   | { type: "agents" }
+  | { type: "plugins" }
   | { type: "desk" };
 
 export interface HubBus {

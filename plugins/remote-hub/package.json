@@ -1,7 +1,7 @@
 {
   "name": "bb-plugin-makosh-remote-hub",
-  "version": "0.1.0",
-  "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
+  "version": "0.2.0",
+  "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, saved credentials in Credential Vault, SFTP for other plugins by your grant.",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -28,7 +28,7 @@
   },
   "bb": {
     "name": "Remote Hub [Experimental]",
-    "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, with saved credentials in Credential Vault.",
+    "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, saved credentials in Credential Vault, SFTP for other plugins by your grant.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
