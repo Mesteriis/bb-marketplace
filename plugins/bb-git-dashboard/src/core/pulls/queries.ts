@@ -1,5 +1,5 @@
 // Ported from plugins/bb-github-pr-dashboard/queries.ts (MIT, © 2026 Muhammad Ahsan, revision 898660bc).
-// GitHub GraphQL text of the inbox tabs and the watcher; the pull request detail query arrives with 0.7.0.
+// GitHub GraphQL text of the inbox tabs, the watcher, the pull request detail and the writes REST cannot do.
 
 const CHECK_RUN = `name status conclusion detailsUrl startedAt
   checkSuite { app { name } workflowRun { workflow { name } } }`;
@@ -84,3 +84,62 @@ export const WATCH_QUERY = `query {
     } }
   }
 }`;
+
+const COMMENT = "id viewerCanDelete author { login avatarUrl(size: 64) } body createdAt url";
+
+// shortcut: first 100 threads, 50 comments per thread, last 100 comments and
+// 50 reviews; paginate if a PR ever outgrows that.
+export const PR_DETAIL_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    id number title url isDraft state createdAt body changedFiles additions deletions viewerCanUpdate
+    author { login avatarUrl(size: 64) } headRefName headRefOid baseRefName reviewDecision mergeable
+    repository { nameWithOwner defaultBranchRef { name } } ${STACK}
+    reviewThreads(first: 100) { nodes {
+      id isResolved isOutdated viewerCanResolve viewerCanUnresolve path line originalLine startLine diffSide resolvedBy { login }
+      comments(first: 50) { nodes { ${COMMENT} diffHunk state } }
+    } }
+    pendingReview: reviews(states: PENDING, first: 1) { nodes { id } }
+    viewerLatestReview { commit { oid } }
+    labels(first: 20) { nodes { name color } }
+    latestReviews(first: 30) { nodes { author { login avatarUrl(size: 64) } state } }
+    reviewRequests(first: 20) { nodes { requestedReviewer {
+      __typename ... on User { login avatarUrl(size: 64) } ... on Bot { login avatarUrl(size: 64) }
+      ... on Team { name avatarUrl(size: 64) } ... on Mannequin { login avatarUrl(size: 64) }
+    } } }
+    history: commits(last: 100) { totalCount nodes { commit {
+      oid abbreviatedOid messageHeadline committedDate statusCheckRollup { state }
+      author { name avatarUrl(size: 64) user { login } }
+    } } }
+    comments(last: 100) { nodes { ${COMMENT} } }
+    reviews(last: 50) { nodes { author { login avatarUrl(size: 64) } state body submittedAt url } }
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      __typename
+      ... on CheckRun { ${CHECK_RUN} title summary
+        annotations(first: 20) { nodes { message path annotationLevel location { start { line } } } } }
+      ... on StatusContext { context state description targetUrl createdAt }
+    } } } } } }
+  } }
+}`;
+
+// ---- Writes GitHub's REST API lacks: thread replies and resolution, draft state ----
+
+export const REPLY_MUTATION = `mutation($threadId: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) {
+    comment { url state }
+  }
+}`;
+
+export const resolveThreadMutation = (resolve: boolean) => `mutation($threadId: ID!) {
+  ${resolve ? "resolveReviewThread" : "unresolveReviewThread"}(input: { threadId: $threadId }) { thread { isResolved } }
+}`;
+
+export const READY_PR_MUTATION = `mutation($prId: ID!) {
+  markPullRequestReadyForReview(input: { pullRequestId: $prId }) { pullRequest { state } }
+}`;
+
+export const DRAFT_PR_MUTATION = `mutation($prId: ID!) {
+  convertPullRequestToDraft(input: { pullRequestId: $prId }) { pullRequest { state } }
+}`;
+
+// Only the field being edited is sent, so saving one never overwrites the other.
