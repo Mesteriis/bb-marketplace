@@ -14,6 +14,9 @@ let core: Promise<HighlighterCore> | null = null;
 const themes = new Map<CodeTheme, string>();
 let themeCount = 0;
 const grammarLoads = new Map<LanguageId, Promise<void>>();
+const warmed = new Set<LanguageId>();
+/** A short line every grammar starts on: tokenizing it compiles a grammar's root patterns, with no time limit. */
+const WARM_UP = "x = 1";
 
 /** The highlighter, created on first use: Shiki and its JavaScript regex engine load only when a diff is shown. */
 function highlighter(): Promise<HighlighterCore> {
@@ -47,6 +50,12 @@ export async function tokenize(code: string, language: LanguageId, theme: CodeTh
     name = "bb-" + theme.type + "-" + theme.name + "-" + ++themeCount;
     await shiki.loadTheme({...theme, name, tokenColors: [...theme.tokenColors]} as Parameters<HighlighterCore["loadTheme"]>[0]);
     themes.set(theme, name);
+  }
+  // A grammar compiles its patterns on its first line, which can take longer than the limit of a line: the first line of
+  // the first diff would come plain. A short fixed line, tokenized once per language without a limit, takes that cost.
+  if (!warmed.has(language)) {
+    shiki.codeToTokensBase(WARM_UP, {lang: language, theme: name, tokenizeTimeLimit: 0});
+    warmed.add(language);
   }
   const lines: ThemedToken[][] = shiki.codeToTokensBase(code, {lang: language, theme: name, tokenizeMaxLineLength: MAX_LINE, tokenizeTimeLimit: timeLimit});
   return lines.map(line => line.map(token => ({content: token.content, color: token.color, fontStyle: token.fontStyle})));

@@ -38,7 +38,16 @@ test("a grammar that cannot be fetched rejects, and is asked for again next time
 
 test("a line cut by the time limit keeps all of its text; the app's limit is half a second", async () => {
   assert.equal(TIME_LIMIT, 500);
-  // 1 ms is shorter than compiling a fresh grammar's patterns: Shiki stops early, and the rest of the line comes plain.
-  const lines = await tokenize("let first = 1;\nlet second = 2;", "rust", theme("#ff0000"), grammar, {timeLimit: 1});
-  assert.deepEqual(lines.map(line => line.map(token => token.content).join("")), ["let first = 1;", "let second = 2;"]);
+  // A long line in 1 ms: Shiki stops where the time runs out and the rest of the line comes plain, but nothing is lost.
+  const long = "let first = 1; ".repeat(60);
+  const lines = await tokenize(long + "\nlet second = 2;", "rust", theme("#ff0000"), grammar, {timeLimit: 1});
+  assert.deepEqual(lines.map(line => line.map(token => token.content).join("")), [long, "let second = 2;"]);
+});
+
+test("the first line of a language's first diff is painted even when compiling the grammar takes longer than a line's limit", async () => {
+  // Swift's first line takes over 100 ms on an idle machine without the grammar compiled ahead (measured; no grammar
+  // loaded before it here shares its patterns), so 20 ms cuts it; compiled, the line takes well under a millisecond.
+  const [line] = await tokenize("let a = 1", "swift", theme("#ff0000"), grammar, {timeLimit: 20});
+  assert.equal(line.map(token => token.content).join(""), "let a = 1");
+  assert.equal(line.find(token => token.content === "let")?.color?.toLowerCase(), "#ff0000");
 });
