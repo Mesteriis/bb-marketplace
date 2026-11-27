@@ -102,6 +102,32 @@ describe("consent, host key, access", () => {
     expect(mock.opCount("op:stat")).toBe(0);
   });
 
+  it.each([
+    ["list", "host_key_changed", "op"],
+    ["stat", "host_key_unknown", "open"],
+    ["write", "host_key_changed", "op"],
+    ["write", "host_key_unknown", "open"],
+  ] as const)("rejects %s on a cached provider after %s from %s", async (operation, code, via) => {
+    const { mock, provider } = setup();
+    const opts = { cursor: null, limit: 10 };
+    await expect(provider.list(at(), opts, signal())).resolves.toMatchObject({ cursor: null });
+
+    const call = mock.call.bind(mock);
+    vi.spyOn(mock, "call").mockImplementation((method, input, sig) => {
+      if (method === (via === "open" ? "hub_sftp_open" : "hub_sftp_op")) {
+        return Promise.reject(new SftpRefusal(code));
+      }
+      return call(method, input, sig);
+    });
+    if (via === "open") mock.expireChannels();
+
+    const result = operation === "write" ? openWrite(provider, at("f.txt"), signal())
+      : operation === "stat" ? provider.stat(at(), signal()) : provider.list(at(), opts, signal());
+    const error = await expectCode(result, "host_key_rejected");
+    expect(error.retryable).toBe(false);
+    expect(mock.appliedCount("write")).toBe(0);
+  });
+
   it("access refused by the server is permission_denied", async () => {
     const { provider } = setup({ failNext: "permission_denied" });
     await expectCode(provider.list(at("root"), { cursor: null, limit: 10 }, signal()), "permission_denied");

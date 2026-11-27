@@ -407,13 +407,13 @@ export class JobRunner {
 
   private async recordConfirmed(job: OperationJob, indices: number[]): Promise<void> {
     const items = job.items.slice();
-    let bytes = toBig(job.progress.bytesDone);
     for (const index of indices) {
       items[index] = { outcome: "done", error: null };
-      bytes += this.itemBytes(job, index, "done");
     }
-    // An unknown item already counts in itemsDone; confirming it adds only its bytes.
-    const progress = this.progress(job, bytes);
+    // An unknown item already counts in itemsDone and may have reported its bytes.
+    const completedBytes = items.reduce((bytes, item, index) => bytes + this.itemBytes(job, index, item.outcome), 0n);
+    const reportedBytes = toBig(job.progress.bytesDone);
+    const progress = this.progress(job, completedBytes > reportedBytes ? completedBytes : reportedBytes);
     if (!await this.patch(job, { items, progress }, "progress")) {
       throw new CommanderError("changed_since_plan", "Job changed while it was checked for retry");
     }
@@ -658,7 +658,10 @@ export class JobRunner {
           const error = safeError(caught);
           const cancelled = signal.aborted || current.state === "cancel_requested";
           if (error.code === "outcome_unknown") {
-            await this.record(current, index, "unknown", error, job.progress.bytesDone);
+            // The checkpoint advances after stat confirms the acknowledged write.
+            const checkpoint = await this.store.lastCheckpoint(id, index);
+            const confirmedBytes = toBig(job.progress.bytesDone) + toBig(checkpoint?.bytesDone ?? "0");
+            await this.record(current, index, "unknown", error, fromBig(confirmedBytes));
             return;
           }
           if (!cancelled) {

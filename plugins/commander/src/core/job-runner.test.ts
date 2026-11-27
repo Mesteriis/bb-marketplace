@@ -393,6 +393,23 @@ test("does not retry a mutation whose outcome is unknown or run later items", as
   expect(to.calls.filter(({ op }) => op === "commit")).toHaveLength(1);
 });
 
+test("keeps the last confirmed 108 MiB after a write reply is lost", async () => {
+  const { runner, plan, store, at, to } = await setup({ size: 109 * mib });
+  const openWrite = to.openWrite.bind(to);
+  vi.spyOn(to, "openWrite").mockImplementation(async (...args) => {
+    const session = await openWrite(...args);
+    return { ...session, write: async (offset, bytes, signal) => {
+      await session.write(offset, bytes, signal);
+      if (offset === 113246208n) throw new CommanderError("outcome_unknown", "Write reply lost");
+    } };
+  });
+  const { id } = await runner.submit(plan);
+  const job = await at(id, "unknown");
+  expect(job.error?.code).toBe("outcome_unknown");
+  expect((await store.lastCheckpoint(id, 0))?.bytesDone).toBe("113246208");
+  expect(job.progress.bytesDone).toBe("113246208");
+});
+
 test("reconciles an untouched overwrite target after a restart", async () => {
   const { runner, plan, store, to, at } = await setup({ policy: "overwrite" });
   const { id } = await runner.submit(plan, { awaitsOwner: true });
@@ -1623,6 +1640,7 @@ test("retry plans only the failed item and keeps a confirmed unknown item done",
   expect(failed.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "unknown"]);
 
   const retry = (await runner.retryJob(id, { kind: "owner" })).plan;
+  expect((await store.get(id))!.progress.bytesDone).toBe("6");
   expect(retry!.items.map(({ source }) => source?.path.segments)).toEqual([[{ t: "a1" }]]);
   expect(retry!.totalBytes).toBe("3");
   expect((await store.get(id))!.items.map(({ outcome }) => outcome)).toEqual(["done", "failed", "done"]);
