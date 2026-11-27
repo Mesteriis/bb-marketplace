@@ -69,7 +69,15 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   const path = url.pathname;
   if (path === "/api/v1/version") return json(res, 200, {version: "1.25.3"});
   const smart = /^\/stand\/([a-z0-9._-]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(path);
-  if (smart && made.has(smart[1])) return smartHttp(req, res, path);
+  if (smart && made.has(smart[1])) {
+    // A repository made through the API asks Git for the account's credential, as a real forge does: the first push
+    // only goes through when the credential helper has the token for this exact repository.
+    if (req.headers.authorization !== "Basic " + Buffer.from("stand:stand-token").toString("base64")) {
+      res.writeHead(401, {"www-authenticate": 'Basic realm="stand"'});
+      return res.end();
+    }
+    return smartHttp(req, res, path);
+  }
   if (req.headers.authorization !== "token stand-token") return json(res, 401, {message: "token required"});
   let body = "";
   req.on("data", chunk => { body += chunk; });

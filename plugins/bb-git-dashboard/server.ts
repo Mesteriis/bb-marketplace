@@ -143,7 +143,7 @@ export default function plugin(bb: BbPluginApi) {
     accounts: remote.accountList,
     async api(accountId) {
       const {account, token} = await remote.credential(accountId);
-      return {account, api: provider(account, token)};
+      return {account, api: provider(account, token), token};
     },
     async link(copy, accountId, path) {
       const {target} = await remote.lookup(accountId, path);

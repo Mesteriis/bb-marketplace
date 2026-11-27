@@ -17,8 +17,8 @@ type Deps = {
   rules(): Promise<{root: string}>;
   saveCopy(hostId: string, root: string, identity: string, metadata: Pick<Copy, "repository" | "repositoryName">): Promise<Copy>;
   accounts(): Promise<Account[]>;
-  /** The provider API of an account. */
-  api(accountId: string): Promise<{account: Account; api: Provider}>;
+  /** The provider API of an account, and its token for the one Keychain entry of a repository the plugin has just made. */
+  api(accountId: string): Promise<{account: Account; api: Provider; token: string}>;
   /** Remembers a provider repository by path and links the copy to it, as a connected copy is. */
   link(copy: Copy, accountId: string, path: string): Promise<void>;
   /** Writes an entry of the remote activity log, as publications do, before and after an outside write. */
@@ -88,8 +88,8 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
         }
         const choice = {...input.repository, owner};
         repository = {...choice, stamp: JSON.stringify(account)};
-        repositoryText = repositoryLine(account, choice, name) + " · main pushed over HTTPS with the Keychain entry of " + account.username +
-          " for the new repository's path; without one the repository stays empty";
+        repositoryText = repositoryLine(account, choice, name) + " · the token of " + account.username + " is saved in the Keychain" +
+          " for the new repository's address only, then main is pushed over HTTPS with it";
       }
       const now = Date.now();
       // A new preview of the same place replaces the earlier one; expired ones go.
@@ -141,10 +141,12 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
       await deps.record(entry).catch(() => {});
       let created: Awaited<ReturnType<Provider["createRepository"]>>;
       let account: Account;
+      let token: string;
       try {
         const found = await deps.api(choice.accountId);
         if (JSON.stringify(found.account) !== choice.stamp) throw new Error("PREVIEW_EXPIRED");
         account = found.account;
+        token = found.token;
         created = await found.api.createRepository({owner: choice.owner, name: record.name, description: record.description, visibility: choice.visibility});
       } catch (error) {
         const failed = code(error);
@@ -154,15 +156,24 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
           : "The project was made, but the repository was not created (" + failed + "). Create it on the forge, then push main from Git."]};
       }
       const notes: string[] = [];
-      const pushed = await host.call("scaffoldPublish", {root: made.root, identity: made.identity, clone: created.clone, username: account.username},
+      const addByHand = "Add the HTTPS credential of " + account.username + " for " + created.clone + " to the Keychain, then push main from Git.";
+      // Only now, with the repository made by this account, its token goes into the Keychain for this repository's exact
+      // address, through the host's Git on stdin; the first push then takes it as any HTTPS push of the plugin does.
+      const saved = await host.call("scaffoldCredential", {root: made.root, identity: made.identity, clone: created.clone, username: account.username, secret: token},
+        {hostId: record.hostId, timeoutMs: 60_000}).catch(() => failureFor(undefined, "GIT_RESULT_UNKNOWN"));
+      const pushed = !saved.ok ? saved : await host.call("scaffoldPublish", {root: made.root, identity: made.identity, clone: created.clone, username: account.username},
         {hostId: record.hostId, timeoutMs: 120_000}).catch(() => failureFor(undefined, "GIT_RESULT_UNKNOWN"));
-      if (!pushed.ok) notes.push(pushed.code === "GIT_RESULT_UNKNOWN"
+      if (!saved.ok) notes.push("Repository " + created.path + " was created empty: the token of " + account.username + " was not saved in the Keychain (" +
+        (saved.code === "GIT_RESULT_UNKNOWN" ? "the machine did not answer, so it may be there" : saved.code) + "), so main was not pushed. " + addByHand);
+      else if (!pushed.ok) notes.push(pushed.code === "GIT_RESULT_UNKNOWN"
         ? "Repository " + created.path + " was created; the push of main did not answer and may have gone through. Fetch in Git to see, then push main if it is missing."
-        : "Repository " + created.path + " was created empty: main was not pushed (" + pushed.code + "). Add the HTTPS credential of " + account.username +
-          " for " + created.clone + " to the Keychain, then push main from Git.");
-      await finish({status: pushed.ok ? "completed" : pushed.code === "GIT_RESULT_UNKNOWN" ? "unknown" : "failed",
+        : "Repository " + created.path + " was created empty: main was not pushed (" + pushed.code + "). " + addByHand);
+      await finish({status: pushed.ok ? "completed" : saved.ok && pushed.code === "GIT_RESULT_UNKNOWN" ? "unknown" : "failed",
         target: {accountId: choice.accountId, repoId: created.id}, ...(pushed.ok ? {} : {code: pushed.code}),
-        summary: ["New " + choice.visibility + " repository " + created.path, pushed.ok ? "main pushed from " + made.root : "main not pushed from " + made.root]});
+        summary: ["New " + choice.visibility + " repository " + created.path,
+          saved.ok ? "Token of " + account.username + " saved in the Keychain for " + created.clone
+            : "Token of " + account.username + " not saved in the Keychain (" + saved.code + ")",
+          pushed.ok ? "main pushed from " + made.root : "main not pushed from " + made.root]});
       // Linking checks the copy's origin, which the push step set.
       await deps.link(copy, choice.accountId, created.path).catch((error: unknown) => {
         notes.push("Repository " + created.path + " was created but not linked to the copy (" + code(error) + "); link it in the repository panel.");
