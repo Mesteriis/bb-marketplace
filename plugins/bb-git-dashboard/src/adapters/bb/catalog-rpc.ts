@@ -72,8 +72,15 @@ export function catalogHandlers(bb: BbPluginApi, deps: Deps) {
     }),
     catalogPulls: handle(async ({repos}: {repos: {accountId: string; repoId: string}[]}) => ({
       results: await Promise.all(repos.map(async target => {
-        const answer = await deps.pulls({...target, page: 1});
-        return answer.ok ? {...target, ok: true, code: null, pulls: answer.items as never[]} : {...target, ok: false, code: answer.code, pulls: []};
+        // The forges list pull requests of every state: the open ones are kept (Azure calls them active), from three pages at most.
+        const open: {state: string}[] = [];
+        for (let page = 1; page <= 3; page++) {
+          const answer = await deps.pulls({...target, page});
+          if (!answer.ok) return {...target, ok: false, code: answer.code, pulls: []};
+          open.push(...(answer.items as {state: string}[]).filter(item => item.state === "open" || item.state === "active"));
+          if (!answer.more) break;
+        }
+        return {...target, ok: true, code: null, pulls: open as never[]};
       })),
     })),
   };

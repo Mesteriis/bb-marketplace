@@ -50,7 +50,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     }
     const r = "/api/v1/repos/stand/beta";
     if (path === "/api/v1/user") return json(res, 200, {login: "stand"});
-    if (path === "/api/v1/user/repos") return json(res, 200, [repo]);
+    // A second repository no working copy has, for the catalog's clone (catalog.mjs).
+    if (path === "/api/v1/user/repos") return json(res, 200, [repo, {...repo, id: 6, name: "delta", full_name: "stand/delta", clone_url: origin + "/stand/delta.git"}]);
     if (path === r) return json(res, 200, repo);
     if (path === "/api/v1/repos/issues/search") {
       const flag = ["created", "review_requested", "reviewed", "assigned"].find(name => url.searchParams.get(name) === "true");
@@ -65,6 +66,12 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
         user: {login: found?.user.login ?? "stand"}, html_url: found?.html_url, changed_files: 1, labels: [], requested_reviewers: [], created_at: found?.created_at,
         ...pulls[pull[1]], base: {ref: "main", repo: {default_branch: "main"}}});
     }
+    // The repository's pull requests of every state, as the catalog's "Open pull requests" reads them.
+    if (path === r + "/pulls") return json(res, 200, [
+      {number: 3, title: "[ABC-12] Add greeting check", body: "", state: "open", head: {ref: "greeting", sha: "e".repeat(40), repo: {full_name: "stand/beta"}},
+        base: {ref: "main", sha: "a".repeat(40), repo: {full_name: "stand/beta"}}, updated_at: "2026-11-27T11:03:00Z", merged: false},
+      {number: 1, title: "Initial import", body: "", state: "closed", head: {ref: "init", sha: "c".repeat(40), repo: {full_name: "stand/beta"}},
+        base: {ref: "main", sha: "a".repeat(40), repo: {full_name: "stand/beta"}}, updated_at: "2026-11-27T10:00:00Z", merged: true}]);
     if (path === r + "/pulls/3/files") return json(res, 200, [{filename: "src/greeting.txt", status: "changed", additions: 1, deletions: 1},
       {filename: "src/greeting.ts", status: "changed", additions: 1, deletions: 1}]);
     if (path === r + "/pulls/3.diff") { res.writeHead(200, {"content-type": "text/plain"});
