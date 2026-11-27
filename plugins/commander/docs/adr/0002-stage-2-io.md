@@ -1,6 +1,6 @@
 # ADR 0002 — Ввод-вывод Commander на этапе 2a
 
-Статус: **proposed**. Решение принимает координатор этапа.
+Статус: **accepted**, 2026-11-27 — принят координатором thr_mn6uyba78h по ревью astra+opus.
 
 Основание — [дизайн этапа 2](../stage-2-design.md), [ADR 0001](0001-foundation.md) и [аудит S9](../../research/stage-2-libs.md).
 
