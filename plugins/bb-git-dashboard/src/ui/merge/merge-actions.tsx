@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { GitAction, GitResult } from "../../core/git.ts";
 import { branchRows, previewLines, type BranchRow, type MergePreview } from "../../core/merge/branches.ts";
+import { mergeRef } from "../../core/merge/conflicts.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
 import "./merge.css";
 
@@ -44,6 +45,8 @@ export function BranchList({text, state, sequence, run, onChanged, onError}: {te
     <ul className="git-merge-branches" aria-label="Branches">
       {rows.map(row => {
         const here = !row.remote && row.name === state.branch;
+        // Git allows names Makosh Git does not take as a ref to merge (`#`, `+`, non-ASCII letters).
+        const named = mergeRef.test(row.ref) ? null : "Makosh Git merges branches named with letters, digits and . _ / - only.";
         return <li key={row.ref} className="git-row" data-current={here || undefined}>
           <span className="git-path">{row.name}</span>
           <code className="git-muted">{row.target.slice(0, 12)}</code>
@@ -51,8 +54,8 @@ export function BranchList({text, state, sequence, run, onChanged, onError}: {te
           {here ? <span className="git-review-tag">current</span> : row.worktree && <span className="git-muted git-path" title={row.worktree}>in another worktree</span>}
           <span className="git-ci-spacer"/>
           {!here && <>
-            <button type="button" disabled={!!blocked} title={blocked ?? undefined} onClick={() => ask("merge", row)}>Merge into {current}</button>
-            {state.branch && <button type="button" disabled={!!blocked} title={blocked ?? undefined} onClick={() => ask("rebase", row)}>Rebase onto</button>}
+            <button type="button" disabled={!!(blocked ?? named)} title={blocked ?? named ?? undefined} onClick={() => ask("merge", row)}>Merge into {current}</button>
+            {state.branch && <button type="button" disabled={!!(blocked ?? named)} title={blocked ?? named ?? undefined} onClick={() => ask("rebase", row)}>Rebase onto</button>}
           </>}
         </li>;
       })}
@@ -71,6 +74,10 @@ export function BranchList({text, state, sequence, run, onChanged, onError}: {te
     </ConfirmDialog>}
   </div>;
 }
+
+/** Git's "us" and "them" in a conflict's state, named as the editor names the sides: in a rebase, "us" is the upstream. */
+const stateText = (kind: Sequence["kind"], state: string) => kind === "rebase"
+  ? state.replace("by us", "by the upstream").replace("by them", "by your commit").replace("both", "both sides") : state;
 
 const kindLabel: Record<Sequence["kind"], string> = {merge: "Merge", rebase: "Rebase", "cherry-pick": "Cherry-pick", revert: "Revert"};
 type Step = "continue" | "skip" | "abort";
@@ -99,7 +106,7 @@ export function SequenceBar({sequence, state, run, onChanged, onError, onResolve
       <button type="button" onClick={() => setAsked("abort")}>Abort</button>
     </div>
     {left > 0 && <ul className="git-merge-conflicts">{sequence.conflicts.map(conflict => <li key={conflict.path} className="git-row">
-      <span className="git-path">{conflict.path}</span><span className="git-muted">{conflict.state}</span>
+      <span className="git-path">{conflict.path}</span><span className="git-muted">{stateText(sequence.kind, conflict.state)}</span>
       <span className="git-ci-spacer"/><button type="button" onClick={() => onResolve(conflict.path)}>Resolve…</button>
     </li>)}</ul>}
     {asked && <ConfirmDialog title={asked === "continue" ? "Continue the " + sequence.kind : asked === "skip" ? "Skip this commit" : "Abort the " + sequence.kind}

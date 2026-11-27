@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { conflictCount, hasMarkers, mergeMessage, parseConflicts, resolveConflicts } from "../src/core/merge/conflicts.ts";
+import { conflictCount, hasMarkers, lineEnds, mergeMessage, parseConflicts, resolveConflicts } from "../src/core/merge/conflicts.ts";
 
 const zdiff3 = [
   "head",
@@ -68,4 +68,16 @@ test("a merge commit is named after what it brings in, and into which branch unl
   assert.equal(mergeMessage("refs/remotes/origin/feature", "master"), "Merge remote-tracking branch 'origin/feature'");
   assert.equal(mergeMessage("refs/heads/main", "feature"), "Merge branch 'main' into feature");
   assert.equal(mergeMessage("refs/heads/main", null), "Merge branch 'main'");
+});
+
+test("a heading underlined with seven = signs is text, not a leftover conflict", () => {
+  assert.equal(hasMarkers("Title\n=======\n\nBody\n"), false);
+  assert.equal(hasMarkers("a\n>>>>>>> theirs\n"), true);
+});
+
+test("a result edited by hand in a CRLF file goes back with CRLF line ends", () => {
+  assert.equal(lineEnds("a\nb\n", "x\r\ny\r\n"), "a\r\nb\r\n");
+  assert.equal(lineEnds("a\r\nb\n", "x\r\ny\r\n"), "a\r\nb\r\n");
+  assert.equal(lineEnds("a\nb\n", "x\ny\n"), "a\nb\n");
+  assert.equal(lineEnds("a\nb\n", null), "a\nb\n");
 });

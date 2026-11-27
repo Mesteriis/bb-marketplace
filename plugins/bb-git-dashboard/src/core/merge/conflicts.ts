@@ -55,9 +55,17 @@ function readBlock(lines: string[], from: number, ours: string): {segment: Segme
 
 export const conflictCount = (parsed: Parsed) => parsed.segments.filter(segment => segment.kind === "conflict").length;
 
-/** Whether any line is a conflict marker: such text is never saved as resolved. */
+/**
+ * Whether a conflict's opening or closing marker is left: such text is never saved as resolved. A line of seven `=`
+ * or `|` alone is ordinary text (a heading's underline), so only the markers that name a side count.
+ */
 export function hasMarkers(text: string): boolean {
-  return text.split("\n").map(bare).some(line => start.test(line) || separator.test(line) || end.test(line) || base.test(line));
+  return text.split("\n").map(bare).some(line => start.test(line) || end.test(line));
+}
+
+/** Text typed in the browser (where line ends are LF) given the line ends of the file it replaces: CRLF when the file used them. */
+export function lineEnds(text: string, original: string | null): string {
+  return original?.includes("\r\n") ? text.replace(/\r?\n/g, "\r\n") : text;
 }
 
 function answer(segment: Extract<Segment, {kind: "conflict"}>, choice: Choice): string[] | null {

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -97,7 +97,7 @@ test("a rebase stops at the conflicting commit, keeps its author, and continues 
   const read = await localGit(root, {kind: "conflict", path: "a.txt"});
   // In a rebase, ours is the branch being rebased onto and theirs the commit being replayed.
   assert.deepEqual([read.conflict?.ours, read.conflict?.theirs], ["one\nmain\nthree\n", "one\nfeature\nthree\n"]);
-  await localGit(root, {kind: "take", path: "a.txt", side: "theirs"});
+  await localGit(root, {kind: "take", path: "a.txt", side: "theirs", expected: sha(readFileSync(join(root, "a.txt"), "utf8"))});
   const done = await localGit(root, {kind: "continue"});
   assert.equal(done.sequence, null);
   assert.equal(done.branch, "feature");
@@ -118,7 +118,38 @@ test("Skip drops the conflicting commit of a rebase; a delete against a change i
   git("reset", "-q", "--hard", "ORIG_HEAD");
   const started = await localGit(root, {kind: "merge", ref: "refs/heads/gone", target: rev("gone"), expected: rev("HEAD"), fastForward: true});
   assert.deepEqual(started.sequence?.conflicts, [{path: "a.txt", state: "deleted by them"}]);
-  const taken = await localGit(root, {kind: "take", path: "a.txt", side: "theirs"});
+  const taken = await localGit(root, {kind: "take", path: "a.txt", side: "theirs", expected: sha(readFileSync(join(root, "a.txt"), "utf8"))});
   assert.deepEqual(taken.sequence?.conflicts, []);
   assert.equal(existsSync(join(root, "a.txt")), false);
+});
+
+test("Take checks the file is as it was read, and takes only a conflicted file, never a folder", async () => {
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/x.txt"), "x\n"); git("add", "."); git("commit", "-qm", "src on main");
+  git("switch", "-q", "feature"); mkdirSync(join(root, "src"), {recursive: true}); writeFileSync(join(root, "src/x.txt"), "feature x\n"); git("add", "."); git("commit", "-qm", "src on feature");
+  git("switch", "-q", "main"); writeFileSync(join(root, "src/x.txt"), "main x\n"); git("commit", "-qam", "src again");
+  await localGit(root, {kind: "merge", ref: "refs/heads/feature", target: rev("feature"), expected: rev("HEAD"), fastForward: true});
+  await assert.rejects(localGit(root, {kind: "take", path: "src", side: "ours", expected: null}), {message: "NOT_FOUND"});
+  const current = readFileSync(join(root, "a.txt"), "utf8");
+  await assert.rejects(localGit(root, {kind: "take", path: "a.txt", side: "theirs", expected: sha("edited by hand\n")}), {message: "CHANGED"});
+  assert.equal(readFileSync(join(root, "a.txt"), "utf8"), current);
+  const taken = await localGit(root, {kind: "take", path: "a.txt", side: "theirs", expected: sha(current)});
+  assert.deepEqual(taken.sequence?.conflicts.map(conflict => conflict.path), ["src/x.txt"]);
+});
+
+test("an ignored file the merge would overwrite stops it before anything changes", async () => {
+  writeFileSync(join(root, ".gitignore"), "local.cfg\n"); git("add", ".gitignore"); git("commit", "-qm", "ignore local.cfg");
+  git("switch", "-q", "side"); writeFileSync(join(root, "local.cfg"), "tracked\n"); git("add", "-f", "local.cfg"); git("commit", "-qm", "track local.cfg");
+  git("switch", "-q", "main"); writeFileSync(join(root, "local.cfg"), "my secret\n");
+  await assert.rejects(localGit(root, {kind: "merge", ref: "refs/heads/side", target: rev("side"), expected: rev("HEAD"), fastForward: true}), {message: "IGNORED_IN_THE_WAY"});
+  assert.equal(readFileSync(join(root, "local.cfg"), "utf8"), "my secret\n");
+});
+
+test("Continue that Git refuses with nothing left in conflict says so", async () => {
+  git("switch", "-q", "feature");
+  try { git("cherry-pick", rev("main")); } catch { /* stops on its conflict */ }
+  writeFileSync(join(root, "a.txt"), "one\nfeature\nthree\n");
+  git("add", "a.txt");
+  await assert.rejects(localGit(root, {kind: "continue"}), {message: "SEQUENCE_STOPPED"});
+  assert.equal((await localGit(root, {kind: "sequence"})).sequence?.kind, "cherry-pick");
 });

@@ -21,7 +21,12 @@ export function previewLines(kind: "merge" | "rebase", other: string, current: s
   const head = kind === "merge"
     ? "Merge " + other + " (" + commits(preview.incoming) + ") into " + current + (preview.fastForward ? " with a merge commit" : "")
     : "Rebase " + current + " (" + commits(preview.outgoing) + ") onto " + other + " (" + preview.incoming + " new " + (preview.incoming === 1 ? "commit" : "commits") + ")";
+  // A rebase replays commit by commit; the preview merges the end results only, so for a rebase it is a likely outcome.
   const stops = kind === "merge" ? "The merge stops for you to resolve them." : "The rebase stops at each conflicting commit for you to resolve it.";
+  if (kind === "rebase") return [head, preview.conflicts.length
+    ? "Likely conflicts in " + preview.conflicts.length + (preview.conflicts.length === 1 ? " file: " : " files: ") + preview.conflicts.slice(0, 20).join(", ") +
+      (preview.conflicts.length > 20 ? " and " + (preview.conflicts.length - 20) + " more" : "") + ". " + stops
+    : "The branches merge without conflicts; a commit on the way may still stop the rebase."];
   return [head, preview.conflicts.length
     ? "Expected conflicts in " + preview.conflicts.length + (preview.conflicts.length === 1 ? " file: " : " files: ") + preview.conflicts.slice(0, 20).join(", ") +
       (preview.conflicts.length > 20 ? " and " + (preview.conflicts.length - 20) + " more" : "") + ". " + stops

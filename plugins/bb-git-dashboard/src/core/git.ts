@@ -48,7 +48,8 @@ export const gitAction = z.discriminatedUnion("kind", [
   z.object({kind: z.literal("continue"), author: author.optional()}),
   z.object({kind: z.literal("skip")}),
   z.object({kind: z.literal("resolve"), path, expected: token, text: z.string().max(4 * 1024 * 1024)}),
-  z.object({kind: z.literal("take"), path, side: z.enum(["ours", "theirs", "delete"])}),
+  /** `expected` is the hash of the file's bytes as it was read, null when it was missing: hand edits since then are not overwritten. */
+  z.object({kind: z.literal("take"), path, side: z.enum(["ours", "theirs", "delete"]), expected: token.nullable()}),
 ]);
 export type GitAction = z.infer<typeof gitAction>;
 export const gitResult = z.object({

@@ -6,7 +6,9 @@ export type GitRun = (args: string[], options?: {input?: string; index?: string;
   /** Output cap in bytes; 512 KiB unless a read needs more (refs and status of large repositories). */
   limit?: number;
   /** Past the cap, keep the output up to its last whole line and mark it truncated instead of failing. */
-  truncate?: boolean}) => Promise<{text: string; code: number; truncated?: boolean}>;
+  truncate?: boolean;
+  /** How long the command may run, 25 s unless it replays commits (a merge or rebase of a large branch). */
+  timeout?: number}) => Promise<{text: string; code: number; truncated?: boolean}>;
 
 export function gitRunner(root: string, signal?: AbortSignal, transport?: {username: string; helper: string}): GitRun {
   return (args, options = {}) => new Promise((resolve, reject) => {
@@ -34,7 +36,7 @@ export function gitRunner(root: string, signal?: AbortSignal, transport?: {usern
       ] : ["-c", "protocol.file.allow=always"]),
       "-c", "submodule.recurse=false", "--no-pager", ...args,
     ], {
-      cwd: root, env, signal: AbortSignal.any([AbortSignal.timeout(25_000), ...(signal ? [signal] : [])]),
+      cwd: root, env, signal: AbortSignal.any([AbortSignal.timeout(options.timeout ?? 25_000), ...(signal ? [signal] : [])]),
       stdio: ["pipe", "pipe", "ignore"],
     });
     const chunks: Buffer[] = [];

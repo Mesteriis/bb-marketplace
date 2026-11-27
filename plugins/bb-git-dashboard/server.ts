@@ -96,7 +96,8 @@ export default function plugin(bb: BbPluginApi) {
       const conflict = result.ok && result.value.text === "BRANCH_OCCUPIED";
       const unknown = !result.ok && ["OUTCOME_UNKNOWN", "GIT_RESULT_UNKNOWN", "GIT_PROCESS_UNAVAILABLE"].includes(result.code);
       const state = conflict ? "failed" : result.ok ? "succeeded" : unknown ? "unknown" : "failed";
-      const code = conflict ? "BRANCH_OCCUPIED" : result.ok ? undefined : result.code;
+      // A merge or rebase that stopped on its conflicts did start, and is not finished: the activity says so.
+      const code = conflict ? "BRANCH_OCCUPIED" : result.ok ? (result.value.sequence?.conflicts.length ? "STOPPED_ON_CONFLICTS" : undefined) : result.code;
       await kv.set(key, {...pending, state, ...(code ? {code} : {}), ...(result.ok ? {after: result.value.head} : {})});
       broadcast(copy.id);
       return {...result, operationId: id};
@@ -355,13 +356,18 @@ export default function plugin(bb: BbPluginApi) {
         }
         const result = await execute({...input, copyId:context.copy.id}, threadId, signal);
         if (!result.ok) return JSON.stringify(result);
-        const {text,hunks,files,...metadata} = result.value;
+        const {text,hunks,files,conflict,preview,...metadata} = result.value;
+        // A conflicted file's versions can each be megabytes: the agent gets the first 16 000 characters of each.
+        const cut = (value: string | null) => value === null ? null : value.slice(0, 16_000);
         const offset = input.offset ?? 0;
         const limit = 16_000;
         return JSON.stringify({ok:true,value:{...metadata,
           ...(text === undefined ? {} : {text:text.slice(offset,offset+limit), nextTextOffset:offset+limit < text.length ? offset+limit : null}),
           ...(hunks === undefined ? {} : {hunks:hunks.slice(0,100).map(hunk => ({token:hunk.token,header:hunk.text.split("\n")[0]}))}),
           ...(files === undefined ? {} : {files:files.slice(offset,offset+100),nextFileOffset:offset+100 < files.length ? offset+100 : null}),
+          ...(conflict === undefined ? {} : {conflict:{...conflict,ours:cut(conflict.ours),base:cut(conflict.base),theirs:cut(conflict.theirs),merged:cut(conflict.merged),
+            current:cut(conflict.current),truncated:[conflict.ours,conflict.base,conflict.theirs,conflict.merged,conflict.current].some(value => (value?.length ?? 0) > 16_000)}}),
+          ...(preview === undefined ? {} : {preview:{...preview,conflicts:preview.conflicts.slice(0,100)}}),
         },operationId:result.operationId});
       } catch (error) { return JSON.stringify(failureFor(error, "HOST_UNAVAILABLE")); }
     },

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { GitResult } from "../../core/git.ts";
-import { conflictCount, hasMarkers, parseConflicts, resolveConflicts, type Choice, type Segment } from "../../core/merge/conflicts.ts";
+import { conflictCount, hasMarkers, lineEnds, parseConflicts, resolveConflicts, type Choice, type Segment } from "../../core/merge/conflicts.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
 import type { RunGit, Sequence } from "./merge-actions.tsx";
 
@@ -63,9 +63,10 @@ function ConflictBlock({block, index, total, choice, labels, onChoose}: {block: 
 }
 
 /**
- * Resolves one conflicted file. The conflicts come from Git's own merge of the file's three versions; each gets an
- * answer, the result can be edited as a whole, and Save writes it over the file as it was read and marks it resolved.
- * A file one side deleted, or that is not text, is taken whole from a side or deleted.
+ * Resolves one conflicted file. The conflicts are the ones left in the file as it is, so conflicts already answered
+ * by hand in another editor stay answered; each gets an answer, the result can be edited as a whole, and Save writes
+ * it over the file as it was read and marks it resolved. A file one side deleted, or that is not text, is taken whole
+ * from a side or deleted; every write refuses a file changed since it was read.
  */
 export function ConflictEditor({path, kind, run, onChanged, onClose, onError}: {path: string; kind: Sequence["kind"]; run: RunGit;
   onChanged(result: GitResult): void; onClose(): void; onError(error: unknown): void}) {
@@ -78,16 +79,17 @@ export function ConflictEditor({path, kind, run, onChanged, onClose, onError}: {
     run({kind: "conflict", path}).then(result => {
       if (!live || !result.conflict) return;
       setConflict(result.conflict);
-      setChoices(Array(conflictCount(parseConflicts(result.conflict.merged ?? ""))).fill(null));
+      setChoices(Array(conflictCount(parseConflicts(result.conflict.current ?? ""))).fill(null));
       setEdited(null);
     }, onError);
     return () => { live = false; };
   }, [path, run, onError]);
-  const parsed = useMemo(() => parseConflicts(conflict?.merged ?? ""), [conflict]);
+  const parsed = useMemo(() => parseConflicts(conflict?.current ?? ""), [conflict]);
   const labels = sides[kind];
   if (!conflict) return <section className="git-merge-editor" aria-label={"Resolve " + path}><p className="git-muted" role="status">Reading the conflict…</p></section>;
-  const textual = !conflict.binary && conflict.merged !== null && conflict.sha256 !== null;
-  const resolved = edited ?? resolveConflicts(parsed, choices);
+  const textual = !conflict.binary && conflict.current !== null && conflict.ours !== null && conflict.theirs !== null;
+  // A hand edit of the result is typed with LF line ends; it goes back with the file's own.
+  const resolved = edited !== null ? lineEnds(edited, conflict.current) : resolveConflicts(parsed, choices);
   const left = choices.filter(choice => !choice).length;
   const blocks = parsed.segments.filter((segment): segment is Block => segment.kind === "conflict");
   const whole = (side: "ours" | "theirs" | "delete") => ({
@@ -95,7 +97,7 @@ export function ConflictEditor({path, kind, run, onChanged, onClose, onError}: {
     lines: [side === "delete" ? "Remove the file and mark the conflict resolved." :
       (side === "ours" ? conflict.ours : conflict.theirs) === null ? labels[side] + " has no " + path + ": it is removed and the conflict marked resolved."
         : "Replace the file with " + labels[side] + "'s version and mark the conflict resolved."],
-    action: {kind: "take" as const, path, side},
+    action: {kind: "take" as const, path, side, expected: conflict.sha256},
   });
   return <section className="git-merge-editor" aria-label={"Resolve " + path}>
     <header className="git-row">
@@ -110,6 +112,7 @@ export function ConflictEditor({path, kind, run, onChanged, onClose, onError}: {
     {!textual ? <p className="git-muted">{conflict.binary ? "This file is not text: take one side whole, or delete it."
       : conflict.ours === null || conflict.theirs === null ? (conflict.ours === null ? labels.ours : labels.theirs) + " deleted this file and the other side changed it: take one side, or delete it."
       : "The file is missing from the working copy: take one side, or delete it."}</p> : <>
+      {blocks.length === 0 && <p className="git-muted">No conflict markers are left in the file: it can be marked resolved as it is.</p>}
       {blocks.map((block, index) => <ConflictBlock key={index} block={block} index={index} total={blocks.length} choice={choices[index] ?? null} labels={labels}
         onChoose={choice => { setEdited(null); setChoices(previous => previous.map((value, at) => at === index ? choice : value)); }}/>)}
       <div className="git-stack git-merge-result">
@@ -122,7 +125,7 @@ export function ConflictEditor({path, kind, run, onChanged, onClose, onError}: {
         <div className="git-row">
           <button type="button" className="git-primary" disabled={resolved === null || hasMarkers(resolved)}
             onClick={() => resolved !== null && setAsked({title: "Save " + path, lines: ["Write the result over " + path + " and mark the conflict resolved.",
-              resolved.split("\n").length + " lines."], action: {kind: "resolve", path, expected: conflict.sha256!, text: resolved}})}>Save and mark resolved</button>
+              resolved.split("\n").length + " lines."], action: {kind: "resolve", path, expected: conflict.sha256!, text: lineEnds(resolved, conflict.current)}})}>Save and mark resolved</button>
         </div>
       </div>
     </>}

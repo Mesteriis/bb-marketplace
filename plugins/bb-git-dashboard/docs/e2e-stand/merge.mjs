@@ -92,7 +92,7 @@ try {
   await open();
   await branch("main").getByRole("button", { name: "Rebase onto" }).click();
   check("the rebase is previewed", await visible(dialog.getByText(/^Rebase rebase-me \(1 commit\) onto main \(\d+ new commits\)$/))
-    && await visible(dialog.getByText(/Expected conflicts in 1 file: merge\.txt\. The rebase stops/)), await dialog.innerText().catch(() => ""));
+    && await visible(dialog.getByText(/Likely conflicts in 1 file: merge\.txt\. The rebase stops/)), await dialog.innerText().catch(() => ""));
   await confirm();
   const rebase = page.getByRole("region", { name: "Rebase in progress" });
   check("the rebase stops at the commit, one of one", await visible(rebase.getByText("Rebase in progress · commit 1 of 1")));

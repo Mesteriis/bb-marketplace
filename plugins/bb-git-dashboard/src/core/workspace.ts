@@ -54,6 +54,8 @@ const next: Record<string, string> = {
   CONFLICT_MARKERS: "Answer every conflict: the text still has conflict markers.",
   NO_SEQUENCE: "No merge, rebase or cherry-pick is in progress. Refresh the working copy.",
   UNMERGED_PATH: "Resolve every conflicted file before continuing.",
+  IGNORED_IN_THE_WAY: "Move the ignored files the other side tracks out of the way, then try again: Git would overwrite them.",
+  SEQUENCE_STOPPED: "Git did not go on: the commit may be empty after the resolution. Skip it, or Abort.",
   CANCELLED: "The operation was cancelled before execution.",
   AUTHOR_REQUIRED: "Enter the Git author name and email, or set them in this repository’s local Git config.",
   WORKTREE_REPLACED: "The registered worktree changed on disk. Verify the target and attach it again.",

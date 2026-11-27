@@ -20,7 +20,11 @@ test("the preview says what a merge or rebase will do, and which files will conf
   ]);
   assert.deepEqual(previewLines("rebase", "main", "feature", preview, true), [
     "Rebase feature (2 commits) onto main (3 new commits)",
-    "Expected conflicts in 2 files: a.txt, b.txt. The rebase stops at each conflicting commit for you to resolve it.",
+    "Likely conflicts in 2 files: a.txt, b.txt. The rebase stops at each conflicting commit for you to resolve it.",
+  ]);
+  assert.deepEqual(previewLines("rebase", "main", "feature", {...preview, conflicts: []}, true), [
+    "Rebase feature (2 commits) onto main (3 new commits)",
+    "The branches merge without conflicts; a commit on the way may still stop the rebase.",
   ]);
   assert.deepEqual(previewLines("merge", "feature", "main", {...preview, conflicts: [], fastForward: true}, true), ["Fast-forward main to feature (3 commits)"]);
   assert.deepEqual(previewLines("merge", "feature", "main", {...preview, conflicts: [], fastForward: true}, false),
