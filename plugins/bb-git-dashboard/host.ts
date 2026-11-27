@@ -1,7 +1,8 @@
 import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { failureFor } from "./src/core/workspace.ts";
-import { assertWorktree, checkOrigin, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
+import { sshHostname } from "./src/adapters/bb/ssh-config.ts";
+import { assertWorktree, checkOrigin, originUrl, cloneHttps, cloneLocal, exchangeHttps, localGit, worktreeIdentity } from "./src/adapters/bb/local-git.ts";
 
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
@@ -55,6 +56,17 @@ export default experimental_defineHostEntry({
         return {ok:true as const, value:await exchangeHttps(root, clone, username, action, signal)};
       }
       catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async originUrl({root, identity}, {signal}) {
+      try {
+        await assertWorktree(root,identity,signal);
+        return {ok:true as const, url:await originUrl(root,signal)};
+      }
+      catch (error) { return failureFor(error,"NO_ORIGIN"); }
+    },
+    async sshHostname({alias}) {
+      try { return {ok:true as const, hostname:await sshHostname(alias)}; }
+      catch (error) { return failureFor(error,"SSH_CONFIG_UNAVAILABLE"); }
     },
     async cloneLocal({source, destination}, {signal}) {
       try {

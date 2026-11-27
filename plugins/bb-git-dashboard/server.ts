@@ -7,6 +7,7 @@ import { gitAction, reads } from "./src/core/git.ts";
 import { failureFor, id as validId, request, type Copy, type Operation } from "./src/core/workspace.ts";
 import { hostContract } from "./src/adapters/bb/host-contract.ts";
 import { remoteService } from "./src/adapters/bb/remote-service.ts";
+import { forgeLinking } from "./src/adapters/bb/forge-rpc.ts";
 import { pullMutation } from "./src/core/providers.ts";
 import { remoteTarget } from "./src/core/publication.ts";
 import { registerAgentWork } from "./src/adapters/bb/agent-work.ts";
@@ -91,10 +92,11 @@ export default function plugin(bb: BbPluginApi) {
     } finally { committing.delete(key); }
   }
 
-  const remote = remoteService(bb,loadCopy,saveCopy);
   const clientOnly = (context: {experimental_caller:{kind:string}}) => context.experimental_caller.kind === "client";
   const denied = () => failureFor(undefined,"ACCESS_DENIED");
   const linkKey = (copy:Copy) => "repository-link/" + repositoryKey(copy);
+  const forge = forgeLinking(bb,linkKey,() => remote);
+  const remote = remoteService(bb,loadCopy,saveCopy,forge.originMatches);
   type Target = z.infer<typeof remoteTarget>;
   const validatedProject = async (projectId:string | undefined) =>
     !projectId || (await bb.sdk.projects.list()).some(project => project.id === projectId);
@@ -160,6 +162,22 @@ export default function plugin(bb: BbPluginApi) {
         broadcast(copyId);
         return {ok:true as const};
       } catch (error) { return failureFor(error,"PROVIDER_UNAVAILABLE"); }
+    },
+    forgeStatus: async ({copyId,recheck},context) => {
+      if (!clientOnly(context)) return denied();
+      const copy = await linkedCopy(copyId);
+      if (!copy) return failureFor(undefined,"NOT_FOUND");
+      const result = await forge.status(copy,recheck);
+      if (result.ok && result.value.reason !== "linked" && result.value.linked) broadcast(copyId);
+      return result;
+    },
+    forgeConnect: async ({copyId,accountId},context) => {
+      if (!clientOnly(context)) return denied();
+      const copy = await linkedCopy(copyId);
+      if (!copy) return failureFor(undefined,"NOT_FOUND");
+      const result = await forge.connect(copy,accountId);
+      if (result.ok) broadcast(copyId);
+      return result;
     },
     repositoryFeatures: async ({copyId,section},context) => {
       if (!clientOnly(context)) return denied();

@@ -54,6 +54,7 @@ const next: Record<string, string> = {
   CREDENTIAL_VAULT_MISSING: "The saved Vault credential is missing. Restore it before using this connection.",
   CREDENTIAL_BINDING_CHANGED: "The credential is bound to its original provider account and server.",
   NOT_FOUND: "Refresh the catalog and choose an existing entry.",
+  SSH_CONFIG_UNAVAILABLE: "Check the SSH host alias in ~/.ssh/config on the working copy’s host.",
   OPERATION_EXISTS: "Look up the previous operation before starting a new one.",
 };
 const known = new Set([...Object.keys(next), "INVALID_REMOTE", "GIT_PROCESS_UNAVAILABLE", "GIT_REJECTED",

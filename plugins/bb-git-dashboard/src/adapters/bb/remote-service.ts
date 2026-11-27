@@ -20,7 +20,8 @@ const ttl = 5 * 60_000;
 type Target = {accountId:string; repoId:string};
 
 export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<Copy | undefined>,
-  saveCopy: (hostId:string,root:string,identity:string, metadata?: Pick<Copy,"repository"|"repositoryName">) => Promise<Copy>) {
+  saveCopy: (hostId:string,root:string,identity:string, metadata?: Pick<Copy,"repository"|"repositoryName">) => Promise<Copy>,
+  originMatches: (copy:Copy, clone:string) => Promise<boolean>) {
   const settings = bb.settings.define({
     accounts: {type:"string",label:"Provider account declarations (JSON)",default:"[]"},
     tokens: {type:"string",label:"Provider API tokens by account ID (JSON)",secret:true},
@@ -90,10 +91,9 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
     catch (error) { return failureFor(error,fallback); }
   }
 
+  // SSH and HTTPS remotes of one repository match; HTTPS exchange still requires the exact origin on the host.
   async function assertOrigin(repo:Preview["repo"], copy:Copy) {
-    const result = await host.call("checkOrigin",{root:copy.root,identity:copy.identity,clone:repo.clone},{hostId:copy.hostId})
-      .catch(() => { throw new Error("HOST_UNAVAILABLE"); });
-    if (!result.ok) throw new Error(result.code);
+    if (!await originMatches(copy,repo.clone)) throw new Error("REMOTE_MISMATCH");
   }
 
   async function saveConnection(input:ConnectionInput) {
@@ -118,6 +118,18 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
   }
 
   return {
+    accountList: async () => accounts((await settings.get()).accounts),
+    credential: async (id:string) => {
+      const {selected,token} = await context(id);
+      return {account:selected,token};
+    },
+    /** Finds one provider repository by path and remembers it like a catalog entry. */
+    lookup: async (accountId:string, path:string) => {
+      const {selected,api} = await context(accountId);
+      const item = await api.repository(path);
+      await kv.set("repository/" + accountId + "/" + encodeURIComponent(item.id),{account:JSON.stringify(selected),item});
+      return {target:{accountId,repoId:item.id},clone:item.clone};
+    },
     checkConnection: (input:ConnectionInput) => run(async () => {
       const {username,repositories,hasMore} = await checkConnection(input,"connection-check");
       return {username,repositories,hasMore};

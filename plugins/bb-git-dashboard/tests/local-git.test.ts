@@ -135,3 +135,10 @@ test("BB repository metadata permits catalog reads while other Git commands keep
   git("config","--worktree","include.path","absent");
   await assert.rejects(worktreeIdentity(root,undefined,true),/UNSUPPORTED_REPOSITORY_CONFIG/);
 });
+
+test("reads the origin URL as configured and reports a missing origin", async () => {
+  const { originUrl } = await service();
+  await assert.rejects(originUrl(root), {message: "NO_ORIGIN"});
+  git("remote", "add", "origin", "git@github-office:Mesteriis/makosh-git-sandbox.git");
+  assert.equal(await originUrl(root), "git@github-office:Mesteriis/makosh-git-sandbox.git");
+});

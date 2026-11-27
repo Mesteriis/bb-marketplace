@@ -19,4 +19,6 @@ export const hostContract = defineRpcContract({
   cloneHttps: {input:z.object({clone, username, destination:path}),output:rootResponse},
   exchangeHttps: {input:z.object({clone, username, root:path, identity, action:exchangeAction}),output:gitResponse},
   cloneLocal: {input: z.object({source: path, destination: path}), output: rootResponse},
+  originUrl: {input:z.object({root:path,identity}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),url:z.string().max(1000)})])},
+  sshHostname: {input:z.object({alias:z.string().max(253)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),hostname:z.string().max(253)})])},
 });

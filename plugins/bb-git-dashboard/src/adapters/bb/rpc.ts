@@ -6,6 +6,7 @@ import { connectionInput, connectionCheck } from "../../core/connection.ts";
 import { path } from "../../core/git.ts";
 import { copy, failure, gitResponse, id, operation, request } from "../../core/workspace.ts";
 
+import { forgeStatus, linkTarget } from "../../core/forge/contract.ts";
 import { account, catalogPage, page, pull, pullDetails, repo } from "../../core/providers.ts";
 import { preview, remoteOutcome, remoteRequest, remoteTarget } from "../../core/publication.ts";
 
@@ -23,6 +24,8 @@ export const rpc = defineRpcContract({
   remoteActivity: {input:z.null(),output:z.array(remoteOutcome)},
   repositoryLink: {input:z.object({copyId:id}),output:z.discriminatedUnion("ok",[failure,success.extend({target:remoteTarget.nullable()})])},
   linkRepository: {input:z.object({copyId:id,target:remoteTarget.nullable()}),output:z.discriminatedUnion("ok",[failure,success])},
+  forgeStatus: {input:z.object({copyId:id,recheck:z.boolean()}),output:z.discriminatedUnion("ok",[failure,success.extend({value:forgeStatus})])},
+  forgeConnect: {input:z.object({copyId:id,accountId:id}),output:z.discriminatedUnion("ok",[failure,success.extend({target:linkTarget})])},
   repositoryFeatures: {input:z.object({copyId:id,section:repositorySection}),
     output:z.discriminatedUnion("ok",[failure,success.extend({repo,features:featureList})])},
   repositoryVisibility:{input:z.object({projectId:z.string().max(128),copyId:id,hidden:z.boolean()}),output:z.discriminatedUnion("ok",[failure,success])},

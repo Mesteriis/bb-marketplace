@@ -384,3 +384,9 @@ export async function checkOrigin(path: string, clone: string, signal?: AbortSig
   if (origin !== clone) return gitError("REMOTE_MISMATCH");
   return root;
 }
+
+export async function originUrl(path: string, signal?: AbortSignal) {
+  const root = await validateWorktree(path,signal);
+  if (root !== path) return gitError("INVALID_WORKTREE");
+  return (await gitRunner(root,signal)(["remote", "get-url", "origin"]).catch(() => gitError("NO_ORIGIN"))).text.replace(/\n$/, "");
+}
