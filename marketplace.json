@@ -254,7 +254,7 @@
     {
       "id": "bb-git-dashboard",
       "displayName": "Makosh Git",
-      "description": "Git workspace for worktrees, CI/CD, issues, variables and pull requests, with forge and account detected from each copy's remote.",
+      "description": "Git workspace for worktrees, line review, CI/CD, issues, variables and pull requests, with forge and account taken from each copy's remote.",
       "icon": {
         "url": "./plugins/bb-git-dashboard/assets/icon.svg"
       },

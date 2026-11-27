@@ -14,6 +14,10 @@ The **Projects folder** setting (default `~/projects` on the scanned host) and i
 
 The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph over all branches, tags and remotes grouped by day, lists uncommitted changes on top, and opens a commit's files and patches. Find in loaded commits by subject, hash, author or ref. It reads Git on the copy's own host without changing anything.
 
+## Line review
+
+**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest changes and apply them, and send the threads to the copy's agent, which answers each with `bb git-dashboard review`.
+
 ## My PRs
 
 **Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab (Open, Review requested, Reviewed, Assigned, Merged, Closed), each led by what blocks it. Search, fold or hide repositories, move with j/k. A background check alerts you when CI starts failing or someone comments, as a toast, a count on the button and through Push notifications.

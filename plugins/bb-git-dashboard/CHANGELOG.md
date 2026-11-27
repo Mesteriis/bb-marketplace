@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 — 2026-11-27
+
+Line review, the first part of taking over diff-review (0.9.1 brings its AI runs, 0.9.2 the rest).
+
+- **Review** in Git for each working copy, and a **Review** tab in threads: uncommitted, staged or unstaged changes, a branch's commits or all changes since a base (the copy's default branch when left empty), one commit, or a range `a..b` / `a...b`. Hide whitespace, only files with comments, wrap lines.
+- Comment on a line (Shift+click for a range on one side), a file or the whole diff, with a severity (must fix, suggestion, nit, question). Threads follow their code as it moves and are listed apart when it is gone. Reply, resolve, dismiss and reopen; edit and delete your own comments.
+- **Suggest a change** adds a suggestion block seeded with the commented lines; **Apply suggestion** writes it over those lines of the working file, only while the file is as the view read it, and resolves the thread.
+- **Send to agent** puts the chosen open threads, with the commented code and a review summary, in a thread working on the copy (the current one in a thread's tab). Each thread then shows Sent, Answered or No reply.
+- The agent answers each thread from that thread: `bb git-dashboard review list|reply|resolve|dismiss` (text as base64 through stdin) or the `git_review_*` tools; answers from any other thread are refused. The git-dashboard skill describes it.
+- The whole `bb git-dashboard` CLI is declared with BB's command parser: `--help` at every level, usage errors with codes, and `--json` error envelopes.
+- Ported from diff-review (MIT) with diffity's parts (MIT): anchors, patch lines, suggestions, ranges, the host's diffs, the store, the send prompt and the review CLI, with their tests.
+
 ## 0.8.0 — 2026-11-27
 
 Parity with git-history and github-actions, so both can be removed.
