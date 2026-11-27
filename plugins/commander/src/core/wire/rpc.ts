@@ -83,9 +83,35 @@ export const CompareScan = z.discriminatedUnion("kind", [
   }),
   DirectoryScanRequest.extend(scanControl),
 ]);
+// S11: wire sizes are decimal strings; search uses bigint internally.
+export const SearchScan = z.strictObject({
+  kind: z.literal("search"),
+  root: ResourceRef,
+  name: z.union([z.strictObject({ glob: z.string().min(1).max(256) }),
+    z.strictObject({ regex: z.string().min(1).max(256) })]).optional(),
+  minSize: Size.optional(), maxSize: Size.optional(),
+  modifiedAfter: z.iso.datetime().optional(), modifiedBefore: z.iso.datetime().optional(),
+  content: z.strictObject({ text: z.string().min(1).max(1024).regex(/^[^\r\n]+$/), caseSensitive: z.boolean() }).optional(),
+  limits: z.strictObject({
+    maxDepth: z.int().min(1).max(32).default(32),
+    maxEntries: z.int().min(1).max(100_000).default(100_000),
+    maxBytesRead: Size.optional(),
+  }).prefault({}),
+  ...scanControl,
+});
+const searchResult = z.strictObject({
+  hits: z.array(z.strictObject({
+    ref: ResourceRef, entry: Entry,
+    line: z.strictObject({ number: z.int().min(1), text: z.string().max(400) }).optional(),
+  })).max(100_000),
+  partial: z.boolean(),
+});
 const savedChecksum = scanId.extend({ request: ChecksumRequest });
 const savedComparison = scanId.extend({ request: DirectoryScanRequest });
 export type SavedUiScan = { scanId: string; request: z.output<typeof ChecksumRequest> | z.output<typeof DirectoryScanRequest> };
+// S11: saved panels hold a scan reference; rows remain in the bounded ScanRunner cache.
+const savedSearch = scanId.extend({ root: ResourceRef });
+export type SavedSearch = z.output<typeof savedSearch>;
 export const UiState = z.strictObject({
   left: pane,
   right: pane,
@@ -94,6 +120,7 @@ export const UiState = z.strictObject({
   split: z.number().min(0.1).max(0.9),
   lastChecksum: savedChecksum.optional(),
   lastComparison: savedComparison.optional(),
+  searchPanels: z.strictObject({ left: savedSearch.optional(), right: savedSearch.optional() }).optional(),
   inspectorCollapsed: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof UiState>;
@@ -111,6 +138,7 @@ export const ScanJobView = z.strictObject({
   error: CommanderErrorShape.nullable(),
 });
 const scanResult = z.union([
+  searchResult,
   z.strictObject({ sha256: digest }),
   z.strictObject({ comparison: z.enum(["same", "different"]) }),
   z.strictObject({
@@ -218,7 +246,7 @@ export const rpcSchemas = {
   ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
   // Estimate with metadata only, then pass the issued estimate ID after confirmation.
   scan_start: {
-    input: z.union([ChecksumScan, CompareScan]),
+    input: z.union([ChecksumScan, CompareScan, SearchScan]),
     output: z.union([ScanEstimateView, ScanJobView]),
   },
   scan_get: { input: scanId, output: ScanGetView.nullable() },

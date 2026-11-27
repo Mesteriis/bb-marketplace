@@ -1,3 +1,5 @@
+import { search, searchCandidates, SearchConsentError, type SearchContext, type SearchHit, type SearchQuery } from "../../core/search.ts";
+import { MAX_RESPONSE_BYTES } from "../../core/preview.ts";
 import { createHash } from "node:crypto";
 import { experimental_PluginRpcRefusal, type ExperimentalPluginRpcHandlersWithContext, type PluginKvStorage } from "@get-bb/plugin-sdk";
 import { checksum, compareDirs, compareFiles, estimateRead, scanDir, scanFile } from "../../core/compare.ts";
@@ -34,6 +36,9 @@ export function refusal(code: experimental_PluginRpcRefusal["code"], message: st
 }
 
 export function publicError(error: unknown) {
+  if (error instanceof SearchConsentError) return refusal("forbidden", JSON.stringify({
+    code: error.code, message: error.message,
+  }));
   if (error instanceof experimental_PluginRpcRefusal) return error;
   if (error instanceof SftpRefusal) return refusal(SFTP_REFUSALS[error.code], error.code);
   if (!isCommanderError(error)) return refusal("invalid", "Commander operation failed");
@@ -250,9 +255,85 @@ export function createOperations(deps: {
     return { jobs: await store.list({ states, limit, threadId }) };
   }
 
+  // S11: use the same metadata digest and single-use estimate as S10.
+  async function prepareSearch(input: RpcInput<"scan_start"> & { kind: "search" }, signal: AbortSignal) {
+    const provider = endpoints.provider(input.root.endpoint);
+    const remote = input.root.endpoint.startsWith("sftp:");
+    const query: SearchQuery = {
+      ...input,
+      minSize: input.minSize === undefined ? undefined : toBig(input.minSize),
+      maxSize: input.maxSize === undefined ? undefined : toBig(input.maxSize),
+      limits: { ...input.limits, maxBytesRead: toBig(input.limits.maxBytesRead ?? (remote ? "0" : "1073741824")) },
+    };
+    let partial = false, visited = 0, planned = 0n;
+    const candidates: SearchHit[] = [];
+    const digest = createHash("sha256");
+    if (remote && query.content) {
+      let snapshotBytes = 0;
+      const ctx: ScanContext = {
+        signal, progress: ({ items = 0 }) => { visited += items; }, markPartial: () => { partial = true; },
+      };
+      for await (const hit of searchCandidates(query, provider, ctx)) {
+        const size = estimateRead([hit.entry]);
+        if (planned + size > query.limits.maxBytesRead) {
+          partial = true;
+          continue;
+        }
+        const serialized = JSON.stringify(hit);
+        snapshotBytes += Buffer.byteLength(serialized);
+        if (snapshotBytes > 8 * 1024 * 1024) {
+          partial = true;
+          break;
+        }
+        digest.update(serialized);
+        planned += size;
+        candidates.push(hit);
+      }
+    }
+    return {
+      planned: [planned],
+      snapshot: [digest.digest("hex"), visited, partial],
+      async work(ctx: ScanContext, initiator: Initiator): Promise<ScanResult> {
+        let incomplete = partial, pending = 0;
+        const remoteContent = remote && !!query.content;
+        if (visited) ctx.progress({ items: visited });
+        const searchCtx: SearchContext = {
+          signal: ctx.signal, remoteConsent: remoteContent && !!input.estimateId,
+          matchContent: matchSearchContent,
+          progress({ items = 0, bytes }) {
+            pending += items;
+            if (pending >= 128 || bytes !== undefined) {
+              ctx.progress({ items: pending, bytes });
+              pending = 0;
+            }
+          },
+          markPartial() { incomplete = true; },
+        };
+        const hits: SearchHit[] = [];
+        const agent = initiator.kind === "agent";
+        const limit = agent ? MAX_RESPONSE_BYTES : 4 * MAX_RESPONSE_BYTES;
+        let used = 256; // Fixed JSON envelope, status and separators.
+        for await (const hit of search(query, () => provider, searchCtx, remoteContent ? candidates : undefined)) {
+          hit.entry = { ...hit.entry, linkTarget: null };
+          const json = JSON.stringify(hit);
+          used += (agent ? Buffer.byteLength(JSON.stringify(json)) - 2 : Buffer.byteLength(json)) + 1;
+          if (used > limit) {
+            incomplete = true;
+            break;
+          }
+          hits.push(hit);
+        }
+        if (pending) ctx.progress({ items: pending });
+        if (incomplete) ctx.markPartial("Search limit reached");
+        return { hits, partial: incomplete };
+      },
+    };
+  }
+
   // Scan preflight uses metadata only. Work uses the same snapshots so a fresh
   // listing or stat cannot silently raise a remote read budget after approval.
   async function prepareScan(input: RpcInput<"scan_start">, signal: AbortSignal) {
+    if (input.kind === "search") return prepareSearch(input, signal);
     const location = (ref: ResourceRef) => ({ provider: endpoints.provider(ref.endpoint), path: ref.path });
     if (input.kind === "checksum") {
       const { provider, path } = location(input.ref);
@@ -495,14 +576,18 @@ export function createOperations(deps: {
       }
     },
     async scanStart(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
-      const paths = input.kind === "checksum" ? [input.ref] : [input.left, input.right];
+      const paths = input.kind === "search" ? [input.root]
+        : input.kind === "checksum" ? [input.ref] : [input.left, input.right];
       const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
       await checkScanRead(initiator, paths);
       await deps.ready();
       const remote = ids.some((id) => id.startsWith("sftp:"));
       const { estimateId, estimateOnly, ...scan } = input;
       const request = JSON.stringify(scan);
-      if (!estimateOnly && remote && !estimateId) {
+      if (!estimateOnly && remote && !estimateId && input.kind === "search" && input.content) {
+        throw new SearchConsentError();
+      }
+      if (!estimateOnly && remote && !estimateId && input.kind !== "search") {
         throw refusal("forbidden", "A remote scan requires a confirmed estimate");
       }
       if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
@@ -541,8 +626,9 @@ export function createOperations(deps: {
           if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
         }
         const job = deps.scans.start({
-          kind: input.kind === "checksum" ? "checksum" : "compare", initiator, endpoints: ids, bytesPlanned: bytes,
-        }, work);
+          kind: input.kind === "search" ? "search" : input.kind === "checksum" ? "checksum" : "compare",
+          initiator, endpoints: ids, bytesPlanned: input.kind === "search" && !(remote && input.content) ? null : bytes,
+        }, (ctx) => work(ctx, initiator));
         return scanJobView(job);
       });
     },
@@ -570,6 +656,8 @@ export function createOperations(deps: {
         if (job?.error) throw job.error;
         if (job?.state !== "done") throw refusal("conflict", "Commander scan did not complete");
         const result = deps.scans.result<ScanResult>(started.id);
+        if (input.kind === "search") await checkScanRead(initiator, [input.root]);
+        signal.throwIfAborted();
         if (result && "onlyLeft" in result) {
           const safe = (entry: (typeof result.onlyLeft)[number]) => ({ ...entry, linkTarget: null });
           const { equal: _equal, ...diff } = result;
@@ -600,6 +688,51 @@ function agentJobView(job: OperationJob, grants: AgentGrant[]) {
     : target !== null && canObserve(grants, target));
   return damaged(job) ?? (visible ? { ...summary, progress: job.progress, initiator: job.plan.initiator } : summary);
 }
+
+// S11: decode incrementally, keep only a short prefix and a query-sized overlap.
+const matchSearchContent: NonNullable<SearchContext["matchContent"]> = async (provider, hit, content, ctx) => {
+  const { signal } = ctx;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const fold = (value: string) => content.caseSensitive ? value : value.toLowerCase();
+  const needle = fold(content.text);
+  const size = toBig(hit.entry.size);
+  const version = { size: hit.entry.size, mtimeNs: hit.entry.mtimeNs };
+  let number = 1, prefix = "", tail = "", matched = false;
+  let first: SearchHit["line"];
+  const finishLine = () => {
+    if (!first && matched) first = { number, text: [...prefix.replace(/\r$/, "")].slice(0, 200).join("") };
+    number++;
+    prefix = tail = "";
+    matched = false;
+  };
+  for (let offset = 0n; offset < size;) {
+    signal.throwIfAborted();
+    const length = Number(size - offset < 65_536n ? size - offset : 65_536n);
+    const chunk = await provider.read(hit.ref.path, offset, length, version, signal);
+    signal.throwIfAborted();
+    if (chunk.byteLength !== length) {
+      throw new CommanderError("changed_since_plan", "Search file changed during reading");
+    }
+    offset += BigInt(chunk.byteLength);
+    ctx.progress({ bytes: BigInt(chunk.byteLength) });
+    let text: string;
+    try { text = decoder.decode(chunk, { stream: offset < size }); }
+    catch { return undefined; }
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) return undefined;
+    if (first) continue;
+    const lines = text.split("\n");
+    for (let index = 0; index < lines.length && !first; index++) {
+      const part = lines[index];
+      if (prefix.length < 400) prefix = (prefix + part).slice(0, 400);
+      const window = tail + fold(part);
+      matched ||= window.includes(needle);
+      tail = needle.length > 1 ? window.slice(1 - needle.length) : "";
+      if (index < lines.length - 1) finishLine();
+    }
+  }
+  finishLine();
+  return first;
+};
 
 function scanHash(ctx: ScanContext) {
   return {

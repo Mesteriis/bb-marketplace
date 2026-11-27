@@ -1,4 +1,20 @@
 export const ru = {
+  // S11
+  search: {
+    title: "Поиск", virtual: "Результаты поиска", close: "Закрыть поиск",
+    name: "Имя или маска", content: "Содержимое", filters: "Фильтры", regex: "Регулярное выражение",
+    caseSensitive: "Учитывать регистр содержимого", min: "Размер от, байт", max: "Размер до, байт",
+    after: "Изменён с", before: "Изменён по", depth: "Глубина", entries: "Лимит записей",
+    budget: "Лимит чтения, байт", estimate: "Оценить чтение", start: "Найти",
+    remoteRead: "Чтение по сети до", perRun: "подтверждается для каждого запуска",
+    confirm: "Подтвердить и искать", results: "Найденные файлы", directory: "Каталог",
+    found: "найдено", visited: "записей просмотрено", partial: "Неполный результат",
+    cancel: "Отменить поиск", cancelled: "Поиск отменён", interrupted: "Поиск прерван",
+    unsafeRegex: "Используйте выражение без групп и альтернатив, с одним квантификатором.",
+    preparing: "Подготовка поиска", progress: "Идёт поиск", expired: "Результаты устарели. Запустите поиск снова.",
+    openFolder: "Открыть каталог", preview: "Просмотр F3", copy: "Копировать найденное", save: "Сохранить как панель",
+  },
+
   left: "Левая панель", right: "Правая панель", path: "Путь", filter: "Фильтр", up: "Вверх",
   loading: "Загрузка каталога", empty: "Каталог пуст", noResults: "Нет совпадений",
   noEndpoint: "Нет доступного источника", readOnly: "Только чтение", writable: "Чтение и запись",
@@ -77,6 +93,8 @@ export const reasonText = {
 };
 export const approvalState = "Ждёт разрешения";
 export const errorText: Record<string, string> = {
+  // S11
+  content_search_needs_consent: "Подтвердите оценку чтения по сети.",
   invalid: "Запрос отклонён", forbidden: "Доступ запрещён", conflict: "Данные изменились или действие недоступно",
   invalid_path: "Недопустимый путь", invalid_name: ru.invalidName, not_found: "Объект не найден",
   already_exists: reasonText.exists, not_a_directory: "Путь ведёт не к каталогу",

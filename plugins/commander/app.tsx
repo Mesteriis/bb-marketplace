@@ -1,3 +1,4 @@
+import type { SearchActions } from "./src/ui/search-panel.tsx";
 import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
@@ -231,6 +232,12 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     get: (scanId) => rpc.call("scan_get", { scanId }),
     cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
   }), [rpc, update]);
+  // S11: search has pane-scoped state; use the shared scan transport.
+  const search = useMemo<SearchActions>(() => ({
+    start: (input) => rpc.call("scan_start", input),
+    get: scans.get,
+    cancel: scans.cancel,
+  }), [rpc, scans]);
   const [bindings, setBindings] = useState(loadBindings);
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
@@ -352,7 +359,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (!plan) return null;
     return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
   };
-  return <Workspace scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  return <Workspace search={search} scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);
