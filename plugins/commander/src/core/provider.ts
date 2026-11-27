@@ -7,6 +7,12 @@ export interface ListPage {
 }
 
 export interface WriteSession {
+  /**
+   * Temporary path on this endpoint, stable until commit or abort.
+   * After a lost session the provider leaves it for reconciliation.
+   */
+  readonly tempPath: ResourcePath;
+
   write(offset: bigint, bytes: Uint8Array, signal: AbortSignal): Promise<void>;
 
   /**

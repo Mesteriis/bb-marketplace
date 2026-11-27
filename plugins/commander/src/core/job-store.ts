@@ -17,7 +17,7 @@ export interface JobStore {
   /** Apply the patch atomically if the job still has the expected state. */
   update(
     id: string,
-    patch: Partial<Pick<OperationJob, "state" | "progress" | "currentItem" | "pendingConflict" | "items" | "error" | "updatedAt">>,
+    patch: Partial<Pick<OperationJob, "state" | "progress" | "currentItem" | "pendingConflict" | "items" | "error" | "updatedAt" | "awaitsOwner">>,
     expectState: JobState,
   ): Promise<boolean>;
 
