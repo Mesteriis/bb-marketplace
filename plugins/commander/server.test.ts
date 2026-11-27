@@ -858,3 +858,29 @@ test("cancels a recovering move before source removal and records the verified c
     else await bb.dispose();
   }
 });
+
+test("keeps the Commander page and two thread layouts separate and reads the old page state", async () => {
+  const bb = await backend();
+  try {
+    const emptyPane = { tabs: [], activeTab: null };
+    const page = { left: emptyPane, right: emptyPane, activePane: "left", layout: "horizontal", split: 0.5 };
+    bb.kv.set("ui-state", page);
+    const first = { ...page, activePane: "right", inspectorCollapsed: true };
+    const second = { ...page, split: 0.7, inspectorCollapsed: false };
+    await expect(bb.rpc("ui_state_set", { threadId: "thread-a", state: first })).resolves.toEqual({});
+    await expect(bb.rpc("ui_state_set", { threadId: "thread-b", state: second })).resolves.toEqual({});
+    await expect(bb.rpc("ui_state_get", {})).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "left", layout: "horizontal", split: 0.5,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-a" })).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "right", layout: "horizontal", split: 0.5, inspectorCollapsed: true,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-b" })).resolves.toEqual({ state: {
+      left: { tabs: [], activeTab: null }, right: { tabs: [], activeTab: null },
+      activePane: "left", layout: "horizontal", split: 0.7, inspectorCollapsed: false,
+    } });
+    await expect(bb.rpc("ui_state_get", { threadId: "thread-c" })).resolves.toEqual({ state: null });
+  } finally { await bb.dispose(); }
+});

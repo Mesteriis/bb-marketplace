@@ -60,8 +60,11 @@ export const UiState = z.strictObject({
   activePane: z.enum(["left", "right"]),
   layout: z.enum(["horizontal", "vertical"]),
   split: z.number().min(0.1).max(0.9),
+  inspectorCollapsed: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof UiState>;
+
+const uiScope = z.strictObject({ threadId: threadId.optional() });
 
 export const rpcSchemas = {
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
@@ -109,8 +112,8 @@ export const rpcSchemas = {
     input: sftpMethods.hub_sftp_request_access.input.omit({ reason: true }),
     output: sftpMethods.hub_sftp_request_access.output,
   },
-  ui_state_get: { input: empty, output: z.strictObject({ state: UiState.nullable() }) },
-  ui_state_set: { input: z.strictObject({ state: UiState }), output: empty },
+  ui_state_get: { input: uiScope, output: z.strictObject({ state: UiState.nullable() }) },
+  ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
 };
 
 export type RpcInput<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["input"]>;

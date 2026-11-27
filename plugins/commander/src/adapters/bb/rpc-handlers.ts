@@ -12,7 +12,7 @@ import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
 
 const owner = { kind: "owner" } as const;
-const stateKey = "ui-state";
+const stateKey = (threadId?: string) => threadId === undefined ? "ui-state" : "ui-state:thread:" + threadId;
 const maxPlanBytes = 16 * 1024 * 1024;
 const maxPlans = 128;
 const maxAgentPlanBytes = 4 * 1024 * 1024;
@@ -344,12 +344,12 @@ export function createOperations(deps: {
       publish("endpoints", "sftp:" + input.profileId);
       return result;
     },
-    async getState() {
-      return { state: UiState.safeParse(await kv.get(stateKey)).data ?? null };
+    async getState(threadId?: string) {
+      return { state: UiState.safeParse(await kv.get(stateKey(threadId))).data ?? null };
     },
-    async setState(state: UiState) {
+    async setState(state: UiState, threadId?: string) {
       if (Buffer.byteLength(JSON.stringify(state)) > 256 * 1024) throw refusal("invalid", "UI state exceeds 256 KB");
-      await kv.set(stateKey, state);
+      await kv.set(stateKey(threadId), state);
       return {};
     },
     async prepareRecovery(signal: AbortSignal) {
@@ -401,8 +401,8 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     agent_grants_set: ({ grant }) => ops.setGrant(grant),
     agent_grants_revoke: (input) => ops.revokeGrant(input),
     sftp_request_access: (input, ctx) => ops.requestAccess(input, ctx.experimental_signal),
-    ui_state_get: () => ops.getState(),
-    ui_state_set: ({ state }) => ops.setState(state),
+    ui_state_get: ({ threadId }) => ops.getState(threadId),
+    ui_state_set: ({ state, threadId }) => ops.setState(state, threadId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;
