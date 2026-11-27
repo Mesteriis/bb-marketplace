@@ -16,8 +16,8 @@ import { PrPage } from "./src/ui/review/pr-page.tsx";
 import { CiOverview } from "./src/ui/ci/ci-overview.tsx";
 import { IssuePage } from "./src/ui/review/issue-page.tsx";
 import { parseRef, refPath, type ReviewApi } from "./src/ui/review/review-api.ts";
-import { ciApi, failed, historyApi, okValue } from "./src/app/apis.ts";
-import { ciTab, historyTab, ThreadCi, ThreadHistory, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
+import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.ts";
+import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut } from "./src/app/thread-tabs.tsx";
 import "./src/ui/git.css";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
@@ -176,6 +176,8 @@ function Dashboard({subPath}: {subPath: string}) {
   const navigate = useBbNavigate();
   const panel = experimental_useAppPanel();
   const historyGraph = useSettings().values?.historyGraph !== false;
+  const [reviewRevision, setReviewRevision] = useState(0);
+  useRealtime("code-review-changed", useCallback(() => setReviewRevision(value => value + 1), []));
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
     checkConnection: async input => {
       const result = await client.call("checkConnection",input);
@@ -206,6 +208,7 @@ function Dashboard({subPath}: {subPath: string}) {
     },
     ci: ciApi(client, navigate),
     history: historyApi(client),
+    review: codeReviewApi(client, navigate),
     forgeStatus: async (copyId,recheck) => {
       const result = await client.call("forgeStatus",{copyId,recheck});
       return result.ok ? result.value : failed(result);
@@ -290,7 +293,7 @@ function Dashboard({subPath}: {subPath: string}) {
         }
       }}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} historyGraph={historyGraph}
+      loaded={loaded} error={error} api={api} onOpen={open} inboxBadge={badge} historyGraph={historyGraph} reviewRevision={reviewRevision}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
@@ -412,6 +415,7 @@ export default definePluginApp(app => {
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:PinnedGit});
   app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
   app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
+  app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:ThreadReview});
   registerHistoryShortcut(app.slots);
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:PinnedGit});
 });

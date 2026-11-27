@@ -1,3 +1,4 @@
+import type { CodeReviewApi } from "./code-review/review-api.ts";
 import { useEffect, useState, type FormEvent } from "react";
 import type { Account, Repo } from "../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../core/repository-features.ts";
@@ -16,6 +17,7 @@ export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> &
   features(copyId:string,section:RepositorySection):Promise<{repo:Repo;features:FeatureList}>;
   ci:CiApi;
   history:HistoryApi;
+  review:CodeReviewApi;
 };
 
 const labels = {

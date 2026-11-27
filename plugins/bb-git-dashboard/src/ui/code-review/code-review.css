@@ -1,0 +1,12 @@
+.git-ws .git-code-review { gap: 10px; }
+.git-ws .git-code-review h3 { margin: 0; font-size: 14px; }
+.git-ws .git-code-review-bar { flex-wrap: wrap; gap: 8px; align-items: center; }
+.git-ws .git-code-review-bar input[type="text"], .git-ws .git-code-review-bar input:not([type]) { width: 14em; }
+.git-ws .git-code-review-composer-bar { flex-wrap: wrap; gap: 6px; align-items: center; }
+.git-ws .git-code-review-thread-head { flex-wrap: wrap; gap: 6px; align-items: center; }
+.git-ws .git-code-review-new { margin: 6px 10px 10px; display: grid; gap: 4px; }
+.git-ws .git-code-review-suggestion { display: grid; gap: 6px; }
+.git-ws .git-code-review-suggestion .git-added { color: var(--git-added, #42a675); }
+.git-ws .git-code-review-suggestion .git-removed { color: var(--git-removed, #d95f76); }
+.git-ws .git-review-tag[data-severity="must-fix"] { border-color: var(--destructive); color: var(--destructive); }
+.git-ws .git-review-tag[data-severity="question"] { border-color: var(--git-focus); color: var(--git-focus); }

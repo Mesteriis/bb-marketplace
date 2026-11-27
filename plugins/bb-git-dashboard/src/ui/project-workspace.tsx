@@ -8,17 +8,20 @@ import { ConnectionWizard, type ConnectionApi } from "./connection-wizard.tsx";
 import { RepositoryPanel, type RepositoryApi } from "./repository-panel.tsx";
 import "./project-workspace.css";
 import { HistoryPanel } from "./history/history-panel.tsx";
+import { ReviewPanel } from "./code-review/review-panel.tsx";
 
 type Host = {id:string;name:string};
 type Project = {id:string;name:string};
 type Location = {hostId:string;projectId:string;path:string;name:string|null};
-const sections = ["Code","History","Actions","Issues","Variables"] as const;
+const sections = ["Code","History","Review","Actions","Issues","Variables"] as const;
 type Section = typeof sections[number];
 
-export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue,historyGraph = true}: {
+export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded,error,api,onOpen,onAttach,onClone,renderWorktree,inboxBadge = null,onOpenIssue,historyGraph = true,reviewRevision = 0}: {
   copies:Copy[]; hosts:Host[]; projects:Project[]; locations:Location[]; subPath:string;
   /** The History tab draws branch and merge lanes; off by the historyGraph setting. */
   historyGraph?:boolean;
+  /** Changes when a copy's line review changed elsewhere (an agent answered). */
+  reviewRevision?:number;
   loaded:boolean; error:string; api:RepositoryApi & ConnectionApi & {trees(id:string):Promise<GitResult>};
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
   onClone(hostId:string,source:string,destination:string,projectId?:string):Promise<Copy>;
@@ -118,7 +121,8 @@ export function ProjectWorkspace({copies,hosts,projects,locations,subPath,loaded
         })}
       </>}
       {loaded && copy && section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id} graph={historyGraph}/>}
-      {loaded && copy && section !== "Code" && section !== "History" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
+      {loaded && copy && section === "Review" && <ReviewPanel key={copy.id} api={api.review} copyId={copy.id} revision={reviewRevision}/>}
+      {loaded && copy && section !== "Code" && section !== "History" && section !== "Review" && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={repo!.name}
         accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>}
       {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {
         setAccounts(previous => [...previous.filter(item => item.id !== account.id),account]);

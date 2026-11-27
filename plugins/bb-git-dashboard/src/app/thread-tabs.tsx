@@ -4,12 +4,14 @@ import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Copy } from "../core/workspace.ts";
 import { CiPanel } from "../ui/ci/ci-panel.tsx";
 import { HistoryPanel } from "../ui/history/history-panel.tsx";
-import { ciApi, historyApi } from "./apis.ts";
+import { ciApi, codeReviewApi, historyApi } from "./apis.ts";
+import { ReviewPanel } from "../ui/code-review/review-panel.tsx";
 
 const signal = "git-workspace-changed";
 /** The thread's Git History tab; also what the header shortcut opens. */
 export const historyTab = {id: "git-history", context: {kind: "thread"}, availability: "action"} as const;
 export const ciTab = {id: "git-ci", context: {kind: "thread"}, availability: "action"} as const;
+export const reviewTab = {id: "git-review", context: {kind: "thread"}, availability: "action"} as const;
 
 /** The working copy attached to the thread's environment, or why there is none. */
 function useThreadCopy(threadId: string) {
@@ -46,6 +48,16 @@ export function ThreadCi({threadId}: {threadId: string}) {
   const navigate = useBbNavigate();
   const api = useMemo(() => ciApi(client, navigate), [client, navigate]);
   return <ThreadFrame state={state}>{copy => <CiPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId}/>}</ThreadFrame>;
+}
+
+/** The line review of the thread's working copy; comments are sent to this very thread. */
+export function ThreadReview({threadId}: {threadId: string}) {
+  const {client, state} = useThreadCopy(threadId);
+  const navigate = useBbNavigate();
+  const api = useMemo(() => codeReviewApi(client, navigate), [client, navigate]);
+  const [revision, setRevision] = useState(0);
+  useRealtime("code-review-changed", useCallback(() => setRevision(value => value + 1), []));
+  return <ThreadFrame state={state}>{copy => <ReviewPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId} revision={revision}/>}</ThreadFrame>;
 }
 
 const headerShortcut: PluginThreadActionRegistration<boolean> = {

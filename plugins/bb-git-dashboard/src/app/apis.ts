@@ -3,6 +3,7 @@ import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Failure } from "../core/workspace.ts";
 import type { CiApi } from "../ui/ci/ci-api.ts";
 import type { HistoryApi } from "../ui/history/history-api.ts";
+import type { CodeReviewApi } from "../ui/code-review/review-api.ts";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Navigate = ReturnType<typeof useBbNavigate>;
@@ -50,5 +51,21 @@ export function historyApi(client: Client): HistoryApi {
     revision: async copyId => okValue(await client.call("historyRevision", {copyId})).revision,
     commit: async (copyId, hash) => okValue(await client.call("historyCommit", {copyId, hash})).value,
     patch: async (copyId, hash, path) => okValue(await client.call("historyPatch", {copyId, hash, path})),
+  };
+}
+
+/** The line review over RPC; shared by the Git panel and the thread's Review tab. */
+export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi {
+  return {
+    view: async (copyId, target, ignoreWhitespace) => okValue(await client.call("reviewView", {copyId, target, ignoreWhitespace})),
+    createThread: async (sessionId, thread) => { okValue(await client.call("reviewCreateThread", {sessionId, ...thread})); },
+    addComment: async (threadId, body) => { okValue(await client.call("reviewAddComment", {threadId, body})); },
+    editComment: async (commentId, body) => { okValue(await client.call("reviewEditComment", {commentId, body})); },
+    deleteComment: async commentId => { okValue(await client.call("reviewDeleteComment", {commentId})); },
+    setStatus: async (threadId, status) => { okValue(await client.call("reviewSetStatus", {threadId, status})); },
+    send: async (sessionId, threadId, threadIds, note) => okValue(await client.call("reviewSend", {sessionId, threadId, threadIds, note})),
+    apply: async (threadId, commentId) => { okValue(await client.call("reviewApply", {threadId, commentId})); },
+    targets: async copyId => okValue(await client.call("reviewTargets", {copyId})).threads,
+    openThread: threadId => navigate.toThread(threadId),
   };
 }
