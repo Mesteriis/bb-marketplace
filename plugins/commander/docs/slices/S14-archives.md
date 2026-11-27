@@ -1,6 +1,6 @@
 # S14. Архивы как источник и создание — спецификация helper-протокола
 
-Статус: **ревизия 2 после ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
+Статус: **ревизия 5 после повторного ревью astra+opus (repair)**, кода нет; ждёт повторного ревью.
 Решения координатора A–H и правки ревью 1–7 внесены ниже (§3, §4, §5, §6, §7, §10, §11).
 Основание: ADR 0002 (accepted), [план 2a, задача 7](../plans/stage-2a.md),
 [приёмка S14](../../research/stage-2-libs.md#приёмка-s14), `docs/security.md`.
@@ -38,6 +38,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
 | `package.json` | `scripts` (`build:helper`, `helper:sums`, `check:build`) и поле `files` (включить `bin/commander-archive-helper`, `bin/SHA256SUMS`); остальное не трогаю; файл правит и S18 — слияние по очереди |
 | корневой `THIRD_PARTY_NOTICES.md` | запись по `cargo metadata --locked --format-version 1 --filter-platform aarch64-apple-darwin`: **каждый** крейт из `Cargo.lock`, попадающий в бинарник (имя, версия, лицензия, источник), `zip` 8.6.0 и `tar` 0.4.46 отдельными строками; текст лицензий приложен, если требует лицензия; сверка списка скриптом `scripts/check-notices.mjs` (расхождение с `cargo metadata` — ошибка `check:build`) |
 | `.gitignore` | `helper/target/` |
+| `src/adapters/bb/rpc-handlers.ts` (блок `publicError`), `src/core/job-store.ts` (`Checkpoint.commitIntent`, только после решения координатора), `src/adapters/bb/migrations.ts` (JSON-колонка) | см. §10, §11 |
 | `src/core/errors.ts`, `errors.test.ts` | `ErrorCode += invalid_archive`, `reason?` с проверкой пары code+reason (§10) — разрешено координатором |
 
 ## 3. Процесс helper
@@ -71,7 +72,7 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   шагом среза — тест на macOS arm64 (процесс выделяет сверх лимита; результат
   записывается в спецификацию и в `hello.rlimit_as: "enforced"|"not_enforced"|
   "failed"`). **На rlimit не опираемся.** Защита: ограниченные буферы (§4–§5),
-  `RLIMIT_CPU` (по умолчанию 600 с суммарно на процесс), `RLIMIT_CORE=0`
+  лимит CPU **на запрос**: перед каждым запросом helper читает `getrusage` и ставит `RLIMIT_CPU` soft = использованное + 120 с (hard = soft + 5 с); `SIGXCPU` → выход, адаптер видит `helper_crashed` и перезапускает по правилам §11 (суммарно на процесс лимита нет, долгий `read` с непрерывными кадрами CPU-бюджет запроса обновляет на каждый data-кадр), `RLIMIT_CORE=0`
   (пароль не попадает в core), тайм-аут на запрос **30 с без единого кадра**
   (длинный `read` шлёт data-кадры и не упирается; по истечении — `helper_crashed`
   с причиной `timeout`, SIGKILL), и **сторож RSS в адаптере**: опрос
@@ -88,7 +89,31 @@ USTAR/PAX, `flate2` не в зависимостях); 7z/RAR; многотом�
   (сегменты пути, байты); helper делает `openat` по сегментам с
   `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` для каталогов и
   `O_RDONLY|O_NOFOLLOW|O_CLOEXEC` для последнего, затем `fstat` — регулярный
-  файл. Абсолютный путь одной строкой helper не принимает. Предпроверка и разбор
+  файл. Абсолютный путь одной строкой helper не принимает.
+  **Жёсткие правила обхода:** helper отклоняет `rootB64`, не являющийся
+  абсолютным путём, и сегменты `""`, `"."`, `".."`, содержащие `/` или NUL
+  (`invalid_path`); корень открывается `open(root,
+  O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC)`; на macOS дополнительно `O_NOFOLLOW_ANY`
+  (отказ при symlink в **любом** компоненте) как вторая линия. `rootB64`
+  адаптер берёт **только из доверенного реестра endpoint** (корень
+  `host:<id>` или каталог копий в `dataDir`), не из RPC-запроса, не из
+  агентского ввода. **Остаточный доверенный префикс (записан):** сам корень
+  endpoint / `dataDir` — ссылки внутри корня helper не разрешает, но ссылки
+  *в* пути до корня считаются доверенной конфигурацией.
+  **Сверка:** `expect` для локального архива **обязателен**; первая сверка —
+  по `fstat` уже **открытого** fd **до** разбора (расхождение →
+  `changed_since_open`, разбор не начинается); все последующие сверки
+  сравнивают с **исходным отпечатком** (`dev, ino, size, mtime`), а не с
+  предыдущим ответом. `verify` не принимает строку пути: helper заново обходит
+  от корня по тем же сегментам через `openat`/`fstatat(AT_SYMLINK_NOFOLLOW)` и
+  сравнивает `dev, ino, size, mtime` с `fstat(fd)`; symlink на месте файла или
+  пропажа → `changed_since_open`.
+  **Какой это endpoint — «машина сервера».** Признак — поле хоста в
+  `bb.sdk.hosts.list()` (идентификатор/флаг локальной машины сервера плагина);
+  первым шагом среза проверяю декларации SDK 0.6.132 и записываю точное имя
+  вызова в спецификацию. **Если надёжного признака нет — всегда приватная
+  копия (§7), без «пути без копии».** Тест: файл подменён между предварительным
+  `stat` и `open` (rename нового файла на место) → `changed_since_plan`. Предпроверка и разбор
   идут по одному дескриптору (Node не имеет `openat`, поэтому обход делает
   helper). Адаптер до `open` сверяет fingerprint архива с `expect` от
   `FileProvider` (`stat`), после `open` и после каждого запроса — снова; при
@@ -229,7 +254,7 @@ boolean|null}` отдельным запросом: helper дочитывает 
 3. Только после этого служебное тело читается в буфер, не больше проверенного
    размера. PAX разбирается своим ограниченным разбором (`<len> k=v\n`,
    `len` ≤ размер тела, без вложенных записей); ошибка формата —
-   `bad_pax`. PAX `size` (и `GNU.sparse.*`) → `unsupported_pax_size`,
+   `bad_pax`. PAX `size` (и `GNU.sparse.*`) → `pax_size`,
    `unsupported_format`: переопределения размера не принимаются.
    **Записанное ограничение:** файлы > 8 ГиБ принимаются только в формате
    GNU base-256 (поле `size` заголовка); tar с PAX `size` для больших файлов
@@ -254,7 +279,7 @@ boolean|null}` отдельным запросом: helper дочитывает 
 2. Отказ: номер диска ≠ 0, диск каталога ≠ 0, число записей на диске ≠ общему
    (`multi_volume`); смещение/размер каталога вне файла, `offset + size >
    eocd_pos`, переполнение (`checked_add`) → `bad_range`; число записей
-   > `maxEntries` → `entries_exceeded` (границы: 100 000 проходят, 100 001 — нет);
+   > `maxEntries` → `too_many_entries` (границы: 100 000 проходят, 100 001 — нет);
    размер каталога > 64 МиБ → `directory_too_large`.
 3. Каталог проходится ограниченными чтениями (буфер ≤ 64 КиБ): для каждой
    записи сигнатура `PK\1\2`, длины `name/extra/comment` внутри каталога,
@@ -279,30 +304,33 @@ boolean|null}` отдельным запросом: helper дочитывает 
    выходит за `cd_offset`, разные имена → отказ при `open`.
 7. Шифрование: помечается `encrypted` (флаг bit 0, AES-extra `0x9901`). Без
    пароля чтение шифрованной записи — `password_required`; ZipCrypto с
-   верным 1-байтовым заголовком, но неверным CRC — `bad_password_or_corrupt`
+   верным 1-байтовым заголовком, но неверным CRC — `bad_password`
    (запись дочитывается и проверяется CRC, как в пробе `compat`).
    Сжатие кроме `Stored`/`Deflate` — `unsupported_compression`.
 
 ### 5.3 Реально обработанные байты (при чтении)
 
-Внутренний буфер декодирования 8 КиБ; после каждого буфера: `out_total`
-(на архив), `in_total`, `out_entry`, `in_entry` (прочитано сжатых байт —
-счётчик над `Read`). Отказ `limit_exceeded` и очистка потока, если
-`out_total > maxTotalBytes`; или **по записи** `out_entry > maxRatio × in_entry`
-при `out_entry ≥ 65 536` (льгота 64 КиБ — **только для одной записи**:
-крошечный хорошо сжимаемый файл); или **по архиву** `out_total > maxRatio ×
-in_total` при `out_total ≥ 1 МиБ` (множество мелких записей льготой не
-обходится). Общий коэффициент проверяется **при `open` по заявленным размерам**
-и **при чтении по фактическим байтам до выдачи порции** в `WriteSession`
-(порция не отдаётся, пока счётчики не обновлены и проверены). `maxRatio` по
-умолчанию 100, владелец может поднять в настройках; текст отказа: «Архив
+Внутренний буфер декодирования 8 КиБ; после каждого буфера обновляются
+`out_total`, `in_total`, `out_entry`, `in_entry` (прочитано сжатых байт —
+счётчик над `Read`). **Отказ `limit_exceeded` и очистка потока, если:**
+1. `out_total > maxTotalBytes` (`total_bytes`);
+2. по записи `out_entry > maxRatio × in_entry` при `out_entry ≥ 65 536`
+   (`ratio`; льгота 64 КиБ — **только для одной записи**);
+3. по архиву `out_total > maxRatio × in_total` при `out_total ≥ 1 МиБ`
+   (`ratio`; множество мелких записей льготой не обходится);
+4. в конце записи `out_entry ≠` заявленному `usize` (`size_mismatch`);
+5. CRC не сошёлся (`crc_mismatch`);
+6. данные кончились раньше (`truncated`).
+
+Общий коэффициент проверяется **при `open` по заявленным размерам** и **при
+чтении по фактическим байтам до выдачи порции** в `WriteSession` (порция не
+отдаётся, пока счётчики не обновлены). Превышение отношения — не более чем
+на один буфер: для fixture «ratio 1:1000» записанные байты < 101 × сжатых.
+`maxRatio` по умолчанию 100, владелец может поднять; текст отказа: «Архив
 сжат сильнее допустимого (коэффициент > N:1); возможно, это архивная бомба.
 Поднять предел можно в настройках». Границы-тесты: запись `out_entry` = 65 535
 (льгота, отказа нет при ratio > 100) и 65 536 (проверка включается); архив из
-10 000 записей по 32 КиБ с ratio 1000 → отказ по общему коэффициенту; или `out_entry ≠ заявленному usize` в конце
-(`size_mismatch`), или CRC не сошёлся (`crc_mismatch`), или данные кончились
-раньше (`truncated`). Превышение отношения — не более чем на один буфер:
-для fixture «ratio 1:1000» записанные байты < 101 × сжатых.
+10 000 записей по 32 КиБ с ratio 1000 → отказ по общему коэффициенту.
 
 ### 5.4 Имена и типы (helper + `archive-guard.ts`)
 
@@ -421,7 +449,7 @@ Core / guard (vitest, без helper):
    проверяет число прочитанных байт; отдельный процесс, пик RSS ≤ 32 МиБ).
 2. Служебная запись ровно 1 048 576 → читается; 1 048 577 → `meta_too_large`;
    цепочка служебных суммой 4 МиБ + 1 → `meta_too_large`; `bad_pax`; PAX `size`
-   → `unsupported_pax_size`; усечение → `truncated`; base-256 переполнение →
+   → `pax_size`; усечение → `truncated`; base-256 переполнение →
    `size_overflow`.
 3. ZIP/ZIP64: 100 001 записей, каталог 64 МиБ + 1, диапазон за файлом, диск ≠ 0,
    count_mismatch, усечённый ZIP64 locator → отказ **до** `ZipArchive::new`
@@ -447,8 +475,11 @@ Core / guard (vitest, без helper):
 
 Добавлено ревью (A–H, правки 1–7):
 13. `open` с корнем endpoint и сегментами: symlink в промежуточном сегменте и в
-    последнем → отказ (`O_NOFOLLOW`); подмена файла после `open` → `changed_since_plan`,
-    helper закрыт.
+    последнем → отказ (`O_NOFOLLOW`, `O_NOFOLLOW_ANY`); сегменты `""`, `"."`, `".."`, с `/`
+    и NUL, неабсолютный `rootB64` → `invalid_path`; **файл подменён между
+    предварительным `stat` и `open`** → `changed_since_plan`; подмена после `open` →
+    `changed_since_open`, helper закрыт; `verify` обнаруживает symlink на месте файла и
+    пропажу; отсутствие `expect` у локального архива → отказ.
 14. Не-локальный endpoint: приватная копия, `estimateId` обязателен для агента;
     изменение исходника между запросами → `changed_since_plan`; копии
     удалены при закрытии, падении helper и при старте (сироты).
@@ -479,93 +510,118 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 Решено координатором: файлы сверх плана мои (бинарь в git по ADR 0002;
 `package.json` правит и S18 — слияние по очереди); `.tar.gz/.tgz` не делать;
 точные дубли имён — отказ всего архива с понятным текстом (§10); ссылки при
-распаковке всегда отклоняются; порог 64 КиБ — льгота только для одной записи
-плюс общий коэффициент (§5.3); коды ошибок — `ErrorCode += invalid_archive`
-и необязательный закрытый `reason` в `CommanderErrorShape` (§10), правку
-`src/core/errors.ts` и её тесты делает S14 отдельным блоком.
+распаковке всегда отклоняются; льгота 64 КиБ — только для одной записи плюс
+общий коэффициент (§5.3); коды ошибок — `ErrorCode += invalid_archive` и
+необязательный `reason` с проверкой пары `code`+`reason` (§10); `errors.ts`,
+`errors.test.ts` — во владении S14; класс RPC `invalid_archive` → `invalid`.
 
 Остаются:
-1. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
-2. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
-   у Remote Hub, подпись ad-hoc; карантин на чистой машине — до релиза, не в
-   этом срезе.
-3. Изменение существующего ZIP/TAR — `unsupported` (ADR: сначала проверка
-   метаданных).
-4. `RLIMIT_AS` не считаем гарантией (§3); результат теста — в спецификацию.
-5. Добавление `invalid_archive` затрагивает потребителей `ErrorCode`
-   (исчерпывающие `switch`/таблицы UI, `rpc.ts`): правки в них — только своими
-   блоками; если найдётся несовместимое место вне владения — стоп и вопрос.
+1. **Решение координатора по `Checkpoint.commitIntent`** (§11): поле в
+   `job-store.ts` (контракт S3/S6, колонка JSON в S6) и блок в
+   `job-runner.ts` перед `session.commit`. Без него — фолбэк §11 (ручное
+   подтверждение при потерянном commit).
+2. Признак «host — машина сервера» (§3): имя вызова SDK уточняю первым шагом;
+   нет признака — всегда приватная копия.
+3. Пароль живёт только в helper; при рестарте плагина/helper вводится заново.
+4. Сборка helper: `cargo` есть локально (rustc 1.97); бинарник коммитится как
+   у Remote Hub, подпись ad-hoc; карантин на чистой машине — до релиза.
+5. Изменение существующего ZIP/TAR — `unsupported`.
+6. `RLIMIT_AS` не считаем гарантией (§3); результат теста — в спецификацию.
+7. `invalid_archive` затрагивает потребителей `ErrorCode` (исчерпывающие
+   `switch`/таблицы UI, `rpc.ts`): правки только своими блоками; несовместимое
+   место вне владения — стоп и вопрос.
+8. Мои дополнения к списку подкодов `reason` (§10): `too_many_open_archives`,
+   `unsupported_format`, `unsupported_compression`, `archives_unavailable`;
+   итого 37.
 
 ## 10. Коды ошибок и подкоды (`reason`)
 
-Решение координатора. В `src/core/errors.ts` (правка вне плана, разрешена):
+Решение координатора (б). `src/core/errors.ts` и `errors.test.ts` — во
+владении S14 для этого блока:
 - `ErrorCode` += `"invalid_archive"`;
-- `CommanderErrorShape` += необязательное `reason`; допустимые значения —
-  **закрытый набор для каждого `code`**, схема проверяет **пару** `code` +
-  `reason` (`superRefine` по таблице ниже): недопустимая пара не проходит.
-  `CommanderError` получает необязательную опцию `reason`, `toShape()` её
-  выдаёт. Префиксов вида `[bad_tar]` в `message` нет; UI выбирает строку по
-  паре `code` + `reason`.
-- Ошибки без `reason` читаются и пишутся как раньше (поле необязательно,
-  `strict()` схема остаётся). `reason` допустим **только** у кодов из таблицы;
-  у остальных (`no_space`, `changed_since_plan`, `cancelled`, `timeout`,
-  `consent_required`, …) любой `reason` не проходит.
+- `CommanderErrorShape` += необязательное `reason` (`z.enum`, ниже);
+  схема проверяет **пару** `code` + `reason` (`superRefine`): недопустимая
+  пара не проходит; `reason` допустим только у кодов из таблицы пар, у
+  остальных (`no_space`, `changed_since_plan`, `cancelled`, `timeout`,
+  `consent_required`, …) любой `reason` не проходит;
+- `CommanderError` получает необязательную опцию `reason`; `toShape()` её
+  выдаёт (без `reason` ключ не добавляется);
+- префиксов в `message` нет нигде; UI выбирает строку по паре `code` +
+  `reason`;
+- класс RPC (`publicError`, `rpc-handlers.ts`, отдельный блок S14):
+  `invalid_archive` → `invalid`; остальные — по существующей таблице
+  (`auth_failed`, `unsupported`, `limit_exceeded`, `internal` → `invalid`;
+  `changed_since_plan` → `conflict`). `publicError` отдаёт `toShape()` в
+  JSON, поэтому `reason` доходит до UI без изменений кода маршалинга.
 
-Допустимые пары (всего 34 подкода):
+Допустимые пары:
 
 | `code` | допустимые `reason` |
 |---|---|
-| `invalid_archive` | `bad_tar, bad_zip, bad_eocd, bad_zip64, bad_range, bad_pax, count_mismatch, scan_mismatch, overlapping_entries, local_name_mismatch, multi_volume, truncated, size_overflow, duplicate_name, size_mismatch, crc_mismatch, aes_auth_failed` (17) |
-| `unsupported` | `unsupported_format, unsupported_compression, unsupported_pax_size, archives_unavailable` (4) |
-| `limit_exceeded` | `meta_too_large, directory_too_large, entries_exceeded, name_too_long, total_bytes_exceeded, ratio_exceeded, too_many_open_archives` (7) |
-| `auth_failed` | `password_required, bad_password_or_corrupt` (2) |
-| `internal` | `helper_checksum_failed, helper_version_mismatch, helper_crashed, protocol_error` (4) |
+| `invalid_archive` | `bad_tar, bad_zip, bad_eocd, bad_zip64, bad_range, bad_pax, count_mismatch, scan_mismatch, overlapping_entries, local_name_mismatch, multi_volume, truncated, size_overflow, duplicate_name, crc_mismatch, size_mismatch, aes_auth_failed` (повреждённые данные — не `internal`) |
+| `limit_exceeded` | `meta_too_large, directory_too_large, too_many_entries, name_too_long, ratio, total_bytes, too_many_open_archives` (последний — добавлен мной: слот helper-процессов) |
+| `auth_failed` | `password_required, bad_password` |
+| `unsupported` | `link_not_supported, link_escapes, encryption_unsupported, v7_tar, pax_size, unsupported_format, unsupported_compression, archives_unavailable` (три последних и `unsupported_format` добавлены мной: sparse/нестандартные типы, методы сжатия кроме Stored/Deflate, нет helper для платформы) |
+| `internal` | `helper_checksum_failed, helper_version_mismatch, helper_crashed, protocol_error` |
 
-Тесты схемы (`errors.test.ts`, литералы):
-- без `reason` (старая форма) проходит; `toShape()` без `reason` ключ не добавляет;
-- проходят: `invalid_archive`+`duplicate_name`, `limit_exceeded`+`ratio_exceeded`,
-  `auth_failed`+`password_required`, `unsupported`+`archives_unavailable`,
-  `internal`+`helper_crashed`;
-- **не проходят**: `invalid_archive`+`ratio_exceeded`, `limit_exceeded`+`bad_tar`,
-  `auth_failed`+`duplicate_name`, `unsupported`+`password_required`,
-  `no_space`+`bad_tar`, `internal`+`bad_zip`, любой `code`+`"no_such_reason"`;
-- `message` по-прежнему ≤ 500, пары из набора проходят `toShape()` и обратный разбор.
-- `link_not_supported`, `link_escapes` и остальные причины элементов плана —
-  `RefusedReason` (§5.4), **не** `reason` ошибки.
+Итого 37 подкодов. `link_not_supported`/`link_escapes` — `reason` ошибки,
+когда операция над самой ссылкой запрошена напрямую (`read` ссылки через
+`ArchiveProvider`); при пакетной распаковке те же причины — поле элемента
+плана (`RefusedReason`, ниже), не ошибка.
+`encryption_unsupported`: запись ZipCrypto при создании, неизвестная сила
+AES, шифрование TAR.
 
-Коды helper → `ErrorCode` + `reason` → строка UI. Строки UI — русские; агент
-видит `code`, `reason`, `retryable` и безопасное `message` (без путей и имён
-записей).
+Строки по парам (RU), класс RPC, что видит агент (всегда `code`, `reason`,
+`retryable`, безопасное `message` без путей и имён записей):
 
-| Код helper / адаптера | `ErrorCode` | `reason` | Класс | Строка UI (RU) |
-|---|---|---|---|---|
-| `bad_tar`, `bad_zip`, `bad_eocd`, `bad_zip64`, `bad_range`, `bad_pax`, `count_mismatch`, `scan_mismatch`, `overlapping_entries`, `local_name_mismatch`, `multi_volume`, `truncated`, `size_overflow` | `invalid_archive` | тот же код | отказ | «Архив повреждён или имеет неподдерживаемую структуру» |
-| `duplicate_name` | `invalid_archive` | `duplicate_name` | отказ | **«В архиве повторяются имена записей; распаковка невозможна»**; для TAR добавляется: «(так бывает после `tar -r`)» |
-| `size_mismatch`, `crc_mismatch`, `aes_auth_failed` | `invalid_archive` | тот же код | элемент `failed`, temp убирает раннер | «Данные записи повреждены (контрольная сумма или размер)» |
-| `unsupported_format`, `unsupported_compression`, `unsupported_pax_size` | `unsupported` | тот же код | отказ | «Формат или вариант архива не поддерживается» |
-| `archives_unavailable` | `unsupported` | `archives_unavailable` | отказ, не повторять | «Архивы недоступны: нет helper для платформы» (или «Модуль архивов перезапускался слишком часто; откройте архив заново») |
-| `meta_too_large`, `directory_too_large`, `entries_exceeded`, `name_too_long` | `limit_exceeded` | тот же код | отказ | «Архив устроен необычно: превышен предел служебных данных, числа записей или длины имени» |
-| `total_bytes_exceeded` | `limit_exceeded` | `total_bytes_exceeded` | отказ | «Превышен предел распаковки (общий размер)» |
-| `ratio_exceeded` | `limit_exceeded` | `ratio_exceeded` | отказ | «Архив сжат сильнее допустимого (коэффициент > N:1); возможно, это архивная бомба. Поднять предел можно в настройках» |
-| `too_many_open_archives` | `limit_exceeded` | `too_many_open_archives`, `retryable` | повторить позже | «Открыто слишком много архивов (максимум 4)» |
-| `password_required` | `auth_failed` | `password_required` | ждёт владельца (`awaitsOwner`) | «Архив зашифрован: введите пароль» |
-| `bad_password_or_corrupt` (в т. ч. `bad_password_or_corrupt` ZipCrypto) | `auth_failed` | `bad_password_or_corrupt` | отказ, ввод повторить | «Неверный пароль или повреждённые данные» |
-| `helper_checksum_failed` | `internal` | `helper_checksum_failed` | сбой установки | «Модуль архивов повреждён: контрольная сумма не совпала. Переустановите плагин» |
-| `helper_version_mismatch` | `internal` | `helper_version_mismatch` | сбой установки | «Модуль архивов несовместим с версией плагина» |
-| `helper_crashed`, `protocol_error` | `internal`, `retryable` | тот же код | сбой, можно повторить | «Модуль архивов остановился. Повторите; пароль придётся ввести заново» |
-| `changed_since_open` | `changed_since_plan` | — | конфликт | «Архив изменился на диске; обновите панель» |
-| `no_space` (staging/копия) | `no_space` | — | отказ | «Не хватает места для временного файла» |
-| `cancelled`, `timeout` | `cancelled`, `timeout` | — | — | стандартные строки Commander |
+| `code` + `reason` | Класс RPC | Строка UI | Агент |
+|---|---|---|---|
+| `invalid_archive` + любой структурный (`bad_tar`…`size_overflow`, кроме `duplicate_name`) | `invalid` | «Архив повреждён или имеет неподдерживаемую структуру» | пара как есть |
+| `invalid_archive` + `duplicate_name` | `invalid` | **«В архиве повторяются имена записей; распаковка невозможна»**; для TAR: «(так бывает после `tar -r`)» | пара как есть |
+| `invalid_archive` + `crc_mismatch`/`size_mismatch`/`aes_auth_failed` | `invalid` | «Данные записи повреждены (контрольная сумма или размер)»; элемент задания `failed`, temp убирает раннер | пара как есть |
+| `limit_exceeded` + `meta_too_large`/`directory_too_large`/`too_many_entries`/`name_too_long` | `invalid` | «Архив устроен необычно: превышен предел служебных данных, числа записей или длины имени» | пара как есть |
+| `limit_exceeded` + `total_bytes` | `invalid` | «Превышен предел распаковки (общий размер)» | пара как есть |
+| `limit_exceeded` + `ratio` | `invalid` | «Архив сжат сильнее допустимого (коэффициент > N:1); возможно, это архивная бомба. Поднять предел можно в настройках» | пара как есть |
+| `limit_exceeded` + `too_many_open_archives` (`retryable`) | `invalid` | «Открыто слишком много архивов (максимум 4)» | пара как есть |
+| `auth_failed` + `password_required` | `invalid` | «Архив зашифрован: введите пароль»; задание → **ждёт владельца** (`awaitsOwner`) | пара как есть; пароль не запрашивается и не принимается |
+| `auth_failed` + `bad_password` | `invalid` | «Неверный пароль или повреждённые данные» (ZipCrypto не различает) | пара как есть, без деталей |
+| `unsupported` + `link_not_supported` | `invalid` | «Ссылки при распаковке не поддерживаются» | пара как есть |
+| `unsupported` + `link_escapes` | `invalid` | «Ссылка выходит за каталог назначения» | пара как есть |
+| `unsupported` + `encryption_unsupported` | `invalid` | «Этот вариант шифрования не поддерживается» | пара как есть |
+| `unsupported` + `v7_tar`/`pax_size`/`unsupported_format`/`unsupported_compression` | `invalid` | «Формат или вариант архива не поддерживается» (для `pax_size` добавляется: «файлы больше 8 ГиБ принимаются только в формате GNU») | пара как есть |
+| `unsupported` + `archives_unavailable` | `invalid` | «Архивы недоступны: нет helper для платформы» (или «Модуль архивов перезапускался слишком часто; откройте архив заново») | пара как есть |
+| `internal` + `helper_checksum_failed` | `invalid` | «Модуль архивов повреждён: контрольная сумма не совпала. Переустановите плагин» | пара как есть |
+| `internal` + `helper_version_mismatch` | `invalid` | «Модуль архивов несовместим с версией плагина» | пара как есть |
+| `internal` + `helper_crashed`/`protocol_error` (`retryable`) | `invalid` | «Модуль архивов остановился. Повторите; пароль придётся ввести заново» | пара как есть, `retryable` |
+| `changed_since_plan` (без `reason`) | `conflict` | «Архив изменился на диске; обновите панель» | как есть |
+| `no_space` (staging/копия) | `invalid` | «Не хватает места для временного файла» | как есть |
+| `cancelled`, `timeout` | `invalid` | стандартные строки Commander | как есть |
 
-Агент: шифрованный архив → `auth_failed` + `password_required` (пароль не
-запрашивается и не принимается); оценка копии без `estimateId` →
-`consent_required` (код S10, не `reason`).
+`consent_required` без `reason`: агент запросил копию архива без
+`estimateId`.
 
-Элементы плана распаковки с причинами `refused` (`unsafe_name`, `backslash`,
-`name_encoding`, `special_file`, `name_collision`, `link_not_supported`,
-`link_escapes`, `encrypted_no_password`) — **не ошибки**, а поля элемента
-плана (отдельный enum `RefusedReason`, §5.4); в `ErrorCode` не попадают.
-Открытие архива с `duplicate_name` отказывает целиком (ошибка выше).
+**Причины `refused` у элементов плана (не ошибки; отдельный enum
+`RefusedReason`, §5.4):** `unsafe_name`, `backslash`, `name_encoding`,
+`special_file`, `name_collision`, `link_not_supported`, `link_escapes`,
+`encrypted_no_password`. UI по каждой: «Запись пропущена: небезопасное имя» /
+«…имя содержит обратную косую черту» / «…имя не в UTF-8» / «…специальный файл»
+/ «…имя совпадает с другим после нормализации» / «Ссылки при распаковке не
+поддерживаются» / «Ссылка выходит за каталог назначения» / «Нужен пароль».
+
+**Тесты (литералы):**
+- строка задания этапа 1 (`job.error` без `reason`, fixture `main@b44884df`)
+  читается и пишется как раньше; `toShape()` без `reason` ключ не добавляет;
+- `reason` вне enum не проходит (`{"code":"invalid_archive","reason":"nope"}`);
+- недопустимая пара не проходит: `invalid_archive`+`ratio`, `limit_exceeded`+
+  `bad_tar`, `auth_failed`+`duplicate_name`, `unsupported`+`password_required`,
+  `no_space`+`bad_tar`, `internal`+`bad_zip`;
+- допустимые пары проходят: по одной из каждого `code` из таблицы;
+- `message` ≤ 500 и для пар с `reason`;
+- сквозной: `ArchiveProvider` падает с `invalid_archive`+`duplicate_name` →
+  `publicError` → `refusal("invalid", JSON)` → разбор на стороне UI даёт ту же
+  пару и выбирает строку из таблицы (тест UI на литерал строки);
+- для каждой строки таблицы ровно одна строка UI (тест полноты: любая
+  допустимая пара имеет текст, пары без текста — ошибка теста).
 
 ## 11. Падение helper, рестарт, публикация
 
@@ -585,15 +641,46 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 по чекпоинтам stage-1/S17 после повторного `open` и сверки fingerprint.
 
 **Публикация (решение H).** `pack` и распаковка публикуют через
-`WriteSession`; три исхода различаются:
-1. **Сбой до публикации** (ошибка `write`/`read_finish`/helper упал до
-   `commit`) → элемент `failed`, `abort()`, ничего не опубликовано.
-2. **Подтверждённый отказ** (`commit` вернул `changed_since_plan`/
-   `already_exists`/`no_space`) → соответствующий конфликт/ошибка,
-   `abort()`.
-3. **Потеря ответа на `commit`** (обрыв/таймаут после отправки) →
-   `outcome_unknown` со сверкой по чекпоинту stage-1 (`Checkpoint.committed`,
-   `verified`): раннер сверяет цель с ожидаемым fingerprint; совпало — элемент
-   `done` **без повторной публикации**; не совпало — решает владелец.
-   Приёмочный тест: ответ потерян **после** rename → задание завершается
-   `done`, второй `commit` не вызывается (счётчик вызовов на моке =1).
+`WriteSession`; исходы различаются так:
+1. **Сбой до публикации, исход известен** (локальная ошибка чтения,
+   `read_finish`, падение helper до `commit`, `write` вернул подтверждённый
+   отказ) → элемент `failed`, `abort()`, ничего не опубликовано.
+2. **Подтверждённый отказ `commit`** (`changed_since_plan`/`already_exists`/
+   `no_space`) → конфликт/ошибка, `abort()`.
+3. **Ошибка `write` без подтверждённого исхода** (на SFTP: `connection_failed`,
+   `timeout` или потерянный ответ **после** отправки запроса) →
+   `outcome_unknown` с чекпоинтом (temp мог измениться): `abort()` вслепую
+   **не вызывается**, temp остаётся для сверки по `tempFingerprint`
+   (reconcile stage-1). Не `failed`.
+4. **Потеря ответа на `commit`** (обрыв/таймаут после отправки) →
+   `outcome_unknown`; публикацию доказывает чекпоинт, записанный **до**
+   отправки `commit`.
+
+**Доказательство публикации и правка раннера.** Сейчас `job-runner.ts:1078`
+вызывает `session.commit(...)`, а `committed` пишется после возврата
+(`:1091`); до этого в чекпоинте есть только `tempPath` и `tempFingerprint`
+(последний `recordTemp`) — без `sourceHash` и без признака «commit
+отправлен». **Правка нужна** (в `job-runner.ts`, отдельный блок S14, плюс
+добавление поля в `Checkpoint` из `job-store.ts` — **контракт S3/S6**, прошу
+решение координатора): непосредственно **перед** `session.commit`
+раннер делает `mark("copying", { commitIntent: { size, sha256 | null,
+tempFingerprint, targetPath, expectTarget } })` (S6 хранит в `*_json`-колонке;
+миграция с тестом на fixture-БД). Сверка при восстановлении (reconcile):
+если есть `commitIntent`, temp **отсутствует**, а цель существует с
+`size == commitIntent.size` и (`sha256 == commitIntent.sha256`, если он есть,
+иначе `mtime == tempFingerprint.mtime` и `size`) → публикация доказана:
+`committed`, **без повторного commit**; если цель отсутствует, а temp на месте
+→ commit не дошёл: повтор безопасен; любой другой исход (цель другого вида,
+цель есть и temp есть, сверка недоступна) → `unknown`, решает владелец.
+Дополнительно раннер (в том же блоке) маппит
+`connection_failed`/`timeout` из `write`/`commit` удалённого провайдера в
+`outcome_unknown` (сейчас маппится только `outcome_unknown`,
+`:1054–1056`); для локального провайдера эти коды остаются подтверждёнными
+отказами. Тесты: SFTP-мок, у которого `write` теряет ответ после применения →
+`outcome_unknown`, temp не удалён; **ответ на `commit` потерян после rename** →
+задание `done`, второй `commit` не вызван (счётчик = 1); потерян до rename →
+повтор commit один раз; цель подменена третьей стороной → `unknown`.
+Если координатор не разрешит поле `Checkpoint`, фолбэк: для `pack` и
+распаковки всегда `verify: sha256` (S3 `verifyCopy` уже сверяет цель по
+`sourceHash`), а потерянный commit → `outcome_unknown` без автоматического
+`done` — владелец подтверждает вручную.
