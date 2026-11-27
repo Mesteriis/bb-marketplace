@@ -1,0 +1,84 @@
+import type { BigIntStats } from "node:fs";
+import { lstat } from "node:fs/promises";
+import { win32 } from "node:path";
+import { CommanderError } from "../../../core/errors.ts";
+import { type NameSegment, type ResourcePath } from "../../../core/path.ts";
+import { hasErrno } from "./errors.ts";
+import { validateTargetName, type NamePlatform } from "./names.ts";
+
+export type FsPath = Buffer | string;
+const slash = Buffer.from("/");
+
+export function encodeName(name: NameSegment): Buffer {
+  return "t" in name ? Buffer.from(name.t) : Buffer.from(name.b, "base64");
+}
+
+export function decodeName(bytes: Buffer): NameSegment {
+  const t = bytes.toString("utf8");
+  return bytes.equals(Buffer.from(t)) ? { t } : { b: bytes.toString("base64") };
+}
+
+export function childPath(parent: FsPath, name: NameSegment): FsPath {
+  if (typeof parent === "string") {
+    if (!("t" in name) || /[\\/:]/u.test(name.t)) {
+      throw new CommanderError("invalid_path", "Invalid Windows path component");
+    }
+    return parent.endsWith("\\") ? parent + name.t : parent + "\\" + name.t;
+  }
+  return Buffer.concat(parent.equals(slash) ? [slash, encodeName(name)] : [parent, slash, encodeName(name)]);
+}
+
+export async function lstatOrNull(path: FsPath): Promise<BigIntStats | null> {
+  try {
+    return await lstat(path, { bigint: true });
+  } catch (error) {
+    if (hasErrno(error, "ENOENT")) return null;
+    throw error;
+  }
+}
+
+export function sameNode(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+export function requireDirectory(stats: BigIntStats): void {
+  if (stats.isSymbolicLink()) throw new CommanderError("permission_denied", "Symbolic link in directory path");
+  if (!stats.isDirectory()) throw new CommanderError("not_a_directory", "Expected a directory");
+}
+
+export async function resolvePath(path: ResourcePath, platform: NamePlatform, opts: {
+  target?: boolean;
+  mutable?: boolean;
+} = {}) {
+  const segments = path.segments;
+  const drive = segments[0];
+  if (opts.target && segments.length > 0) validateTargetName(segments[segments.length - 1]!, platform);
+  let full: FsPath = slash;
+  let start = 0;
+  if (platform === "win32") {
+    if (!drive || !("t" in drive) || !/^[a-z]:$/iu.test(drive.t)) {
+      throw new CommanderError("invalid_path", "A Windows drive is required");
+    }
+    // The namespace prefix preserves existing names that Win32 would normalize.
+    full = win32.toNamespacedPath(drive.t + "\\");
+    start = 1;
+  }
+  if (segments.length === start) {
+    if (opts.mutable || opts.target) throw new CommanderError("permission_denied", "Cannot modify a filesystem root");
+    return { full, parent: null, parentStats: null, stats: await lstatOrNull(full) };
+  }
+  let parentStats = await lstat(full, { bigint: true });
+  requireDirectory(parentStats);
+  for (const name of segments.slice(start, -1)) {
+    full = childPath(full, name);
+    parentStats = await lstat(full, { bigint: true });
+    requireDirectory(parentStats);
+  }
+  const parent = full;
+  full = childPath(parent, segments[segments.length - 1]!);
+  const stats = await lstatOrNull(full);
+  if (opts.target && stats?.isSymbolicLink()) {
+    throw new CommanderError("permission_denied", "Symbolic link at target");
+  }
+  return { full, parent, parentStats, stats };
+}
