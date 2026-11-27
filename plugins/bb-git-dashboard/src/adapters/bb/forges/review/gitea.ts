@@ -52,12 +52,14 @@ export function giteaReview(account: Account, token: string, path: string, send:
         .flat().map(object).sort((left, right) => text(left.created_at).localeCompare(text(right.created_at)));
       const threads = new Map<string, Thread>();
       for (const row of lineComments) {
-        const line = Number(row.position) || Number(row.original_position) || null;
-        const key = text(row.path) + "\u0000" + line;
+        // A removed line's comment has no new position: its old line is the original position.
+        const right = Number(row.position) > 0;
+        const line = right ? Number(row.position) : Number(row.original_position) || null;
+        const key = text(row.path) + "\u0000" + (right ? "R" : "L") + line;
         const thread = threads.get(key);
         const resolved = object(row.resolver).login !== undefined;
         if (thread) { thread.comments.push(commentOf(row)); thread.isResolved = thread.isResolved || resolved; continue; }
-        threads.set(key, {id: String(row.id), path: text(row.path), side: "RIGHT", startLine: null, isPending: false, line, isResolved: resolved,
+        threads.set(key, {id: String(row.id), path: text(row.path), side: right ? "RIGHT" : "LEFT", startLine: null, isPending: false, line, isResolved: resolved,
           isOutdated: !!head && !!sha(row.commit_id) && row.commit_id !== head, resolvedBy: resolved ? text(object(row.resolver).login) : null,
           canToggleResolved: true, diffHunk: text(row.diff_hunk) || null, comments: [commentOf(row)], awaitingReply: false});
       }
@@ -96,6 +98,7 @@ export function giteaReview(account: Account, token: string, path: string, send:
         commits: commits.map(object).map(row => ({oid: text(row.sha), shortOid: text(row.sha).slice(0, 7), headline: text(object(row.commit).message).split("\n")[0],
           author: text(object(object(row.commit).author).name) || "unknown", avatarUrl: null, committedDate: text(object(object(row.commit).author).date), ci: null})).reverse(),
         commitCount: commits.length, myReviewOid: null,
+        fromFork: !!text(object(object(raw.head).repo).full_name) && text(object(object(raw.head).repo).full_name) !== text(object(object(raw.base).repo).full_name),
       };
       return ownLinks(account, detail);
     },

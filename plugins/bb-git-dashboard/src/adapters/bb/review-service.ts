@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describeIssueAction, type IssueAction, type Issues } from "../../core/issues/model.ts";
 import { describePrAction, type PrAction } from "../../core/pulls/actions.ts";
 import { mergeMethods, pullCapabilities, pullLimitation, type PullOperation } from "../../core/pulls/capabilities.ts";
+import { canSubmitReview } from "../../core/pulls/review.ts";
 import type { PullReview } from "../../core/pulls/review-port.ts";
 import type { Account } from "../../core/providers.ts";
 import { giteaIssues } from "./forges/issues/gitea.ts";
@@ -47,19 +48,22 @@ function operationsOf(action: PrAction): PullOperation[] {
  */
 export function reviewService(deps: Deps) {
   const now = deps.now ?? Date.now;
-  const previews = new Map<string, {expires: number; run(): Promise<unknown>}>();
+  // Pull request and issue previews live apart, so neither can be confirmed through the other.
+  const stores = {pull: new Map<string, {expires: number; run(): Promise<unknown>}>(), issue: new Map<string, {expires: number; run(): Promise<unknown>}>()};
   async function open(accountId: string, path: string) {
     const {account, token} = await deps.credential(accountId);
     return {account, review: (deps.review ?? reviewOf)(account, token, path)};
   }
-  function remember<T>(run: () => Promise<T>, lines: string[]) {
+  function remember<T>(store: keyof typeof stores, run: () => Promise<T>, lines: string[]) {
+    const previews = stores[store];
     for (const [key, value] of previews) if (value.expires < now()) previews.delete(key);
     const id = randomUUID();
     const expires = now() + previewTtl;
     previews.set(id, {expires, run});
     return {id, lines, expires: new Date(expires).toISOString()};
   }
-  async function take<T>(previewId: string): Promise<T> {
+  async function take<T>(store: keyof typeof stores, previewId: string): Promise<T> {
+    const previews = stores[store];
     const preview = previews.get(previewId);
     previews.delete(previewId);
     if (!preview || preview.expires < now()) throw new Error("PREVIEW_EXPIRED");
@@ -79,19 +83,23 @@ export function reviewService(deps: Deps) {
     async files(accountId: string, path: string, number: number) {
       return {files: await (await open(accountId, path)).review.files(number)};
     },
-    async prepare(accountId: string, path: string, number: number, action: PrAction) {
+    /** `shown` is the head the page rendered: line numbers come from its diff, so a newer head refuses the write. */
+    async prepare(accountId: string, path: string, number: number, action: PrAction, shown?: string | null) {
       const {account, review} = await open(accountId, path);
       if (operationsOf(action).some(operation => !pullCapabilities(account.kind)[operation])) throw new Error("PROVIDER_UNSUPPORTED");
       if (action.kind === "merge" && !mergeMethods(account.kind).includes(action.method)) throw new Error("PROVIDER_UNSUPPORTED");
+      if (action.kind === "review" && !canSubmitReview(action.event, action.body, action.comments.length)) throw new Error("INVALID_INPUT");
       const read = await review.detail(number);
-      if (!read.headSha) throw new Error("STALE_HEAD");
-      return remember(async () => {
+      if (!read.headSha || (shown && shown !== read.headSha)) throw new Error("STALE_HEAD");
+      // GitHub keeps one pending review per person; a new review or line comment is refused while one is open.
+      if (read.pendingReviewId && (action.kind === "review" || action.kind === "lineComment")) throw new Error("PENDING_REVIEW");
+      return remember("pull", async () => {
         const current = await review.detail(number);
         if (current.headSha !== read.headSha) throw new Error("STALE_HEAD");
         return review.act(number, action, current);
       }, describePrAction({number, repo: path, headRefName: read.headRefName, baseRefName: read.baseRefName}, action));
     },
-    confirm: (previewId: string) => take<{outcome: "completed" | "accepted"}>(previewId),
+    confirm: (previewId: string) => take<{outcome: "completed" | "accepted"}>("pull", previewId),
     async issueDetail(accountId: string, path: string, number: number) {
       const {account, token} = await deps.credential(accountId);
       return {issue: await (deps.issues ?? issuesOf)(account, token, path).detail(number)};
@@ -100,8 +108,8 @@ export function reviewService(deps: Deps) {
       const {account, token} = await deps.credential(accountId);
       if (account.kind === "azure") throw new Error("PROVIDER_UNSUPPORTED");
       const issues = (deps.issues ?? issuesOf)(account, token, path);
-      return remember(() => issues.act(action), describeIssueAction(path, action));
+      return remember("issue", () => issues.act(action), describeIssueAction(path, action));
     },
-    issueConfirm: (previewId: string) => take<{number: number}>(previewId),
+    issueConfirm: (previewId: string) => take<{number: number}>("issue", previewId),
   };
 }

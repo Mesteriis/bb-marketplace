@@ -99,3 +99,15 @@ test("request changes is refused before anything is sent", async () => {
     {message: "PROVIDER_UNSUPPORTED"});
   assert.equal(calls.length, 0);
 });
+
+test("a comment on a renamed file names its old path; a review that stops halfway says so", async () => {
+  let failAt = 0, posted = 0;
+  const {send, calls} = gitlab({["POST " + mr + "/discussions"]: () => ++posted === failAt ? new Response("", {status: 500}) : Response.json({id: 1})});
+  const api = gitlabReview(account, token, "group/sub/app", send);
+  await api.act(7, {kind: "lineComment", path: "new.ts", oldPath: "old.ts", line: 4, side: "LEFT", startLine: null, body: "Why removed?"}, current);
+  assert.deepEqual(calls[0].body.position, {position_type: "text", base_sha: base, start_sha: start, head_sha: head, new_path: "new.ts", old_path: "old.ts", old_line: 4});
+  failAt = 3;
+  await assert.rejects(api.act(7, {kind: "review", event: "APPROVE", body: "", comments: [1, 2, 3].map(line =>
+    ({path: "a.ts", line, side: "RIGHT" as const, startLine: null, body: "c" + line}))}, current), (error: Error & {done?: number; total?: number}) =>
+    error.message === "OUTCOME_PARTIAL" && error.done === 1 && error.total === 4);
+});

@@ -252,7 +252,7 @@ function Dashboard({subPath}: {subPath: string}) {
   const review = useMemo<ReviewApi>(() => ({
     detail: async ref => okValue(await client.call("prDetail",ref)),
     files: async ref => okValue(await client.call("prFiles",ref)).files,
-    prepare: async (ref,action) => okValue(await client.call("prPrepare",{...ref,action})),
+    prepare: async (ref,action,shown) => okValue(await client.call("prPrepare",{...ref,action,shown})),
     confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
     ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
     openThread: threadId => navigate.toThread(threadId),
@@ -283,7 +283,7 @@ function Dashboard({subPath}: {subPath: string}) {
           <span>{ref.repo} {ref.kind === "pr" ? "#" + ref.number : ref.number === "new" ? "· new issue" : "issue #" + ref.number}</span>
         </nav>
         {ref.kind === "pr" && typeof ref.number === "number"
-          ? <PrPage key={subPath} api={review} target={{accountId:ref.accountId,repo:ref.repo,number:ref.number}} onStep={order.length ? step : undefined}/>
+          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;

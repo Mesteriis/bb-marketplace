@@ -6,7 +6,9 @@ const filePath = z.string().min(1).max(1000).refine(value => !value.startsWith("
 const line = z.number().int().min(1).max(10_000_000);
 const anchorShape = {path: filePath, line, side: z.enum(["LEFT", "RIGHT"]), startLine: line.nullable(), body: text,
   /** For an unchanged row: its line number on the other side (GitLab anchors such a row on both). */
-  contextLine: line.nullable().optional()};
+  contextLine: line.nullable().optional(),
+  /** A renamed file's old path, for a comment on its old side (GitLab names both paths). */
+  oldPath: filePath.nullable().optional()};
 const inRange = (value: {line: number; startLine: number | null}) => value.startLine === null || value.startLine <= value.line;
 const anchor = z.object(anchorShape).refine(inRange, "INVALID_RANGE");
 

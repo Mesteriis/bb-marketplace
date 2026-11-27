@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { z } from "zod";
-import { branchThread, projectsOfRepo } from "../../core/pulls/agent-target.ts";
+import { agentPlan, projectsOfRepo, type AgentThread } from "../../core/pulls/agent-target.ts";
 import type { FixSubject } from "../../core/pulls/detail.ts";
 import { findingsPrompt, fixPrompt } from "../../core/pulls/prompt.ts";
 import type { agentSubject } from "../../core/pulls/review-contract.ts";
@@ -30,13 +30,16 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
     const text = subject.kind === "all" ? findingsPrompt(detail, subjects) : fixPrompt(detail, subjects[0]);
     const projectIds = projectsOfRepo(account.kind, repo, await bb.sdk.projects.list());
     const threads = (await Promise.all(projectIds.map(projectId => bb.sdk.threads.list({projectId, archived: false, limit: 100})))).flat();
-    const existing = branchThread(threads as Parameters<typeof branchThread>[0], projectIds, detail.headRefName);
-    if (existing) {
-      await bb.sdk.threads.send({threadId: existing, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]});
-      return {threadId: existing, created: false};
+    const plan = agentPlan(detail, projectIds, threads as unknown as AgentThread[]);
+    if ("error" in plan) throw new Error(plan.error);
+    if ("send" in plan) {
+      await bb.sdk.threads.send({threadId: plan.send, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]});
+      return {threadId: plan.send, created: false};
     }
-    if (!projectIds.length) throw new Error("PROJECT_REQUIRED");
-    const spawned = await bb.sdk.threads.spawn({projectId: projectIds[0], prompt: text, title: "Fix " + repo + " #" + number, environment: {type: "project-default"}}) as {threadId?: string; id?: string};
+    // A managed worktree started from the head branch, so the project's own checkout is left alone.
+    const spawned = await bb.sdk.threads.spawn({projectId: plan.spawn.projectId, prompt: text, title: "Fix " + repo + " #" + number,
+      environment: {type: "host", workspace: {type: "managed-worktree",
+        baseBranch: plan.spawn.baseBranch ? {kind: "named", name: plan.spawn.baseBranch} : {kind: "default"}}}}) as {threadId?: string; id?: string};
     const threadId = spawned.threadId ?? spawned.id;
     if (!threadId) throw new Error("OUTCOME_UNKNOWN");
     return {threadId, created: true};
@@ -44,7 +47,8 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
   return {
     prDetail: handle(({accountId, repo, number}: Target) => service.detail(accountId, repo, number)),
     prFiles: handle(({accountId, repo, number}: Target) => service.files(accountId, repo, number)),
-    prPrepare: handle(({accountId, repo, number, action}: Target & {action: Parameters<typeof service.prepare>[3]}) => service.prepare(accountId, repo, number, action)),
+    prPrepare: handle(({accountId, repo, number, action, shown}: Target & {action: Parameters<typeof service.prepare>[3]; shown?: string | null}) =>
+      service.prepare(accountId, repo, number, action, shown)),
     prConfirm: handle(({previewId}: {previewId: string}) => service.confirm(previewId)),
     prAsk: handle(ask),
     issueDetail: handle(({accountId, repo, number}: Target) => service.issueDetail(accountId, repo, number)),

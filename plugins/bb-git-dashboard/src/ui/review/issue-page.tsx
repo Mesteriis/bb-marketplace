@@ -46,7 +46,7 @@ export function IssuePage({api, accountId, repo, number, onCreated}: {api: Revie
         <div className="git-row"><button type="submit" disabled={!comment.trim()}>Comment</button></div>
       </form>
     </>}
-    {error && issue && <p className="git-error" role="alert">{error}</p>}
+    {error && (issue || number === "new") && <p className="git-error" role="alert">{error}</p>}
     {preview && <ConfirmDialog title={preview.title} lines={preview.lines} onConfirm={async () => {
       const result = await api.issueConfirm(preview.id);
       if (preview.action.kind === "create") onCreated(result.number);

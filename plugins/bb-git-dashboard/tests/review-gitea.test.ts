@@ -82,3 +82,14 @@ test("writes use reviews for line comments, the resolve endpoints, the title pre
     ["POST", "/pulls/7/merge", {Do: "rebase", head_commit_id: head}],
   ]);
 });
+
+test("a comment on a removed line is on the old side, in its own thread", async () => {
+  const {send} = gitea({
+    ["GET " + repo + "/pulls/7"]: () => Response.json(pull), ["GET " + repo + "/issues/7/comments"]: () => Response.json([]),
+    ["GET " + repo + "/pulls/7/reviews"]: () => Response.json([{id: 11, user: {login: "ann"}, state: "COMMENT", body: "", submitted_at: "2026-11-27T01:00:00Z"}]),
+    ["GET " + repo + "/pulls/7/reviews/11/comments"]: () => Response.json([comment(2, "ann", "New side"), comment(3, "ann", "Old side", {position: 0, original_position: 5})]),
+    ["GET " + repo + "/pulls/7/commits"]: () => Response.json([]), ["GET /api/v1/user"]: () => Response.json({login: "me"}),
+  });
+  const detail = await giteaReview(account, token, "o/r", send).detail(7);
+  assert.deepEqual(detail.threads.map(thread => [thread.id, thread.side, thread.line]), [["2", "RIGHT", 5], ["3", "LEFT", 5]]);
+});

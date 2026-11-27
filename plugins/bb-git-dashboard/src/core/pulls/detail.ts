@@ -78,6 +78,8 @@ export interface PrDetail {
   headSha: string | null;
   /** GitLab's diff refs, which anchor a line comment. */
   diffRefs?: {base: string; head: string; start: string} | null;
+  /** The head branch lives in another repository (a fork). */
+  fromFork?: boolean;
   /** The signed-in GitHub user looking at the PR. */
   viewer: string;
   number: number;

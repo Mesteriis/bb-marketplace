@@ -39,6 +39,7 @@ export interface RawDetail {
   reviewDecision: string | null;
   mergeable: string;
   headRefOid?: string;
+  isCrossRepository?: boolean;
   repository: { nameWithOwner: string; defaultBranchRef?: { name: string } | null };
   reviewThreads: {
     nodes: {
@@ -162,6 +163,7 @@ export function toDetail(raw: RawDetail, viewer = ""): PrDetail {
     forge: "github",
     id: raw.id ?? "",
     headSha: raw.headRefOid ?? null,
+    fromFork: raw.isCrossRepository === true,
     viewer,
     number: raw.number,
     title: raw.title,

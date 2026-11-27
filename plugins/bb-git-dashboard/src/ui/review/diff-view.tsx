@@ -5,7 +5,7 @@ import type { PrDetailView, PrFileView } from "./review-api.ts";
 import { ThreadView } from "./thread-view.tsx";
 
 type Thread = PrDetailView["threads"][number];
-export type DraftComment = {path: string; line: number; side: "LEFT" | "RIGHT"; startLine: number | null; contextLine: number | null; body: string};
+export type DraftComment = {path: string; oldPath: string | null; line: number; side: "LEFT" | "RIGHT"; startLine: number | null; contextLine: number | null; body: string};
 
 const rowKey = (row: DiffLine) => row.kind === "del" ? "L" + row.oldLine : "R" + row.newLine;
 const threadKey = (thread: Thread) => (thread.side === "LEFT" ? "L" : "R") + thread.line;
@@ -23,6 +23,7 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
   const [body, setBody] = useState("");
   const byLine = new Map<string, Thread[]>();
   for (const thread of threads) if (thread.line !== null && !thread.isOutdated) byLine.set(threadKey(thread), [...byLine.get(threadKey(thread)) ?? [], thread]);
+  const keyOf = (thread: Thread) => thread.id + ":" + thread.comments.length;
   const loose = threads.filter(thread => thread.line === null || thread.isOutdated || !rows.some(row => row.kind !== "hunk" && rowKey(row) === threadKey(thread)));
   const anchor = selection ? lineAnchor(rows, selection.from, selection.to) : null;
   const pick = (index: number, extend: boolean) => {
@@ -31,8 +32,10 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
   };
   const comment = (now: boolean) => {
     if (!anchor || !body.trim()) return;
-    const value = {path: file.path, ...anchor, body};
-    if (now) act({kind: "lineComment", ...value}); else onDraft(value);
+    const value = {path: file.path, oldPath: file.previousPath, ...anchor, body};
+    // A comment sent now stays in the box until the page reloads after confirmation, so cancelling keeps it.
+    if (now) { act({kind: "lineComment", ...value}); return; }
+    onDraft(value);
     setSelection(null); setBody("");
   };
   const selected = (index: number) => selection !== null && index >= Math.min(selection.from, selection.to) && index <= Math.max(selection.from, selection.to);
@@ -42,7 +45,7 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
       <span className="git-muted">{file.status}</span>
       <span className="git-inbox-plus">+{file.additions}</span><span className="git-inbox-minus">−{file.deletions}</span>
     </header>
-    {loose.map(thread => <ThreadView key={thread.id} thread={thread} can={can} act={act} ask={() => ask(thread)}/>)}
+    {loose.map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)}/>)}
     {!file.patch ? <p className="git-muted">No line diff for this file (binary, too large, or not provided by the forge).</p> :
       <div className="git-review-diff" data-wrap={wrap || undefined} role="table" aria-label={"Diff of " + file.path}>
         {rows.map((row, index) => <div key={index} role="row">
@@ -56,7 +59,7 @@ export function FileDiff({file, threads, wrap, canComment, act, ask, onDraft, ca
             </>}
           </div>
           {row.kind !== "hunk" && byLine.get(rowKey(row))?.map(thread =>
-            <ThreadView key={thread.id} thread={thread} can={can} act={act} ask={() => ask(thread)} showPath={false}/>)}
+            <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)} showPath={false}/>)}
           {selection && index === Math.max(selection.from, selection.to) && <form className="git-review-composer"
             onSubmit={event => { event.preventDefault(); comment(true); }}>
             <p className="git-muted">{anchor ? "Comment on " + (anchor.startLine ? "lines " + anchor.startLine + "–" + anchor.line : "line " + anchor.line) +

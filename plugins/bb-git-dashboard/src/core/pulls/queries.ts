@@ -93,7 +93,7 @@ export const PR_DETAIL_QUERY = `query($owner: String!, $name: String!, $number: 
   viewer { login }
   repository(owner: $owner, name: $name) { pullRequest(number: $number) {
     id number title url isDraft state createdAt body changedFiles additions deletions viewerCanUpdate
-    author { login avatarUrl(size: 64) } headRefName headRefOid baseRefName reviewDecision mergeable
+    author { login avatarUrl(size: 64) } headRefName headRefOid isCrossRepository baseRefName reviewDecision mergeable
     repository { nameWithOwner defaultBranchRef { name } } ${STACK}
     reviewThreads(first: 100) { nodes {
       id isResolved isOutdated viewerCanResolve viewerCanUnresolve path line originalLine startLine diffSide resolvedBy { login }

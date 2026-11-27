@@ -21,7 +21,7 @@ export const prDetail = z.object({
   labels: z.array(z.object({name: z.string(), color: nullable})), body: z.string(), canEdit: z.boolean(),
   commits: z.array(z.object({oid: z.string(), shortOid: z.string(), headline: z.string(), author: z.string(), avatarUrl: nullable, committedDate: z.string(),
     ci: z.enum(["failing", "pending", "passing", "skipped"]).nullable()})),
-  commitCount: z.number().int(), myReviewOid: nullable, diffRefs: z.object({base: z.string(), head: z.string(), start: z.string()}).nullable().optional(),
+  commitCount: z.number().int(), myReviewOid: nullable, diffRefs: z.object({base: z.string(), head: z.string(), start: z.string()}).nullable().optional(), fromFork: z.boolean().optional(),
 });
 const file = z.object({path: z.string(), previousPath: nullable, status: z.string(), additions: z.number().int(), deletions: z.number().int(), patch: nullable});
 const target = {accountId: id, repo: z.string().min(3).max(500), number: z.number().int().positive()};
@@ -36,7 +36,7 @@ export const reviewContract = {
   prDetail: {input: z.object(target), output: answer({detail: prDetail, capabilities: z.record(z.string(), z.boolean()),
     limitations: z.record(z.string(), z.string()), mergeMethods: z.array(z.enum(["merge", "squash", "rebase"]))})},
   prFiles: {input: z.object(target), output: answer({files: z.array(file)})},
-  prPrepare: {input: z.object({...target, action: prAction}), output: preview},
+  prPrepare: {input: z.object({...target, action: prAction, shown: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).nullable().optional()}), output: preview},
   prConfirm: {input: z.object({previewId: id}), output: answer({outcome: z.enum(["completed", "accepted"])})},
   prAsk: {input: z.object({...target, subject: agentSubject}), output: answer({threadId: id, created: z.boolean()})},
   issueDetail: {input: z.object(target), output: answer({issue: z.object({number: z.number().int(), title: z.string(), body: z.string(), open: z.boolean(),

@@ -6,7 +6,7 @@ import type { PullReview } from "../../../../core/pulls/review-port.ts";
 import type { Account } from "../../../../core/providers.ts";
 import { array, client, object, segment, sha, text, type Json } from "../../provider-http.ts";
 import { gitlabProject } from "../gitlab-provider.ts";
-import { ownLinks, repoParts } from "./shared.ts";
+import { inOrder, ownLinks, repoParts } from "./shared.ts";
 
 const maxPages = 20;
 const draftPrefix = /^\s*(?:\[Draft\]|\(Draft\)|Draft:)\s*/i;
@@ -97,6 +97,7 @@ export function gitlabReview(account: Account, token: string, path: string, send
         commits: commits.map(row => ({oid: text(row.id), shortOid: text(row.short_id), headline: text(row.title), author: text(row.author_name) || "unknown",
           avatarUrl: null, committedDate: text(row.committed_date), ci: null})),
         commitCount: commits.length, myReviewOid: null,
+        fromFork: raw.source_project_id !== undefined && raw.source_project_id !== raw.target_project_id,
         diffRefs: sha(refs.base_sha) && sha(refs.start_sha) && head ? {base: refs.base_sha as string, head, start: refs.start_sha as string} : null,
       };
       return ownLinks(account, detail);
@@ -112,12 +113,12 @@ export function gitlabReview(account: Account, token: string, path: string, send
     },
     async act(number, action: PrAction, current) {
       const target = mr(number);
-      const position = (value: {path: string; line: number; side: "LEFT" | "RIGHT"; contextLine?: number | null}) => {
+      const position = (value: {path: string; line: number; side: "LEFT" | "RIGHT"; contextLine?: number | null; oldPath?: string | null}) => {
         const refs = current.diffRefs;
         if (!refs) throw new Error("STALE_HEAD");
         const lines = value.contextLine ? (value.side === "RIGHT" ? {new_line: value.line, old_line: value.contextLine} : {old_line: value.line, new_line: value.contextLine})
           : value.side === "RIGHT" ? {new_line: value.line} : {old_line: value.line};
-        return {position_type: "text", base_sha: refs.base, start_sha: refs.start, head_sha: refs.head, new_path: value.path, old_path: value.path, ...lines};
+        return {position_type: "text", base_sha: refs.base, start_sha: refs.start, head_sha: refs.head, new_path: value.path, old_path: value.oldPath ?? value.path, ...lines};
       };
       switch (action.kind) {
         case "comment": await http(target + "/notes", {method: "POST", body: {body: action.body}}); break;
@@ -126,9 +127,11 @@ export function gitlabReview(account: Account, token: string, path: string, send
         case "lineComment": await http(target + "/discussions", {method: "POST", body: {body: action.body, position: position(action)}}); break;
         case "review":
           if (action.event === "REQUEST_CHANGES") throw new Error("PROVIDER_UNSUPPORTED");
-          for (const comment of action.comments) await http(target + "/discussions", {method: "POST", body: {body: comment.body, position: position(comment)}});
-          if (action.body.trim()) await http(target + "/notes", {method: "POST", body: {body: action.body}});
-          if (action.event === "APPROVE") await http(target + "/approve", {method: "POST", body: {sha: current.headSha}});
+          await inOrder([
+            ...action.comments.map(comment => () => http(target + "/discussions", {method: "POST", body: {body: comment.body, position: position(comment)}})),
+            ...(action.body.trim() ? [() => http(target + "/notes", {method: "POST", body: {body: action.body}})] : []),
+            ...(action.event === "APPROVE" ? [() => http(target + "/approve", {method: "POST", body: {sha: current.headSha}})] : []),
+          ]);
           break;
         case "requestReviewer": {
           const users = array((await http("/api/v4/users?username=" + segment(action.reviewer))).payload).map(object);

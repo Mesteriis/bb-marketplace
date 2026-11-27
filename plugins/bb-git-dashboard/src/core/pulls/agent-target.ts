@@ -103,3 +103,16 @@ export function branchThread(threads: readonly AgentThread[], projectIds: readon
   return threads.filter(thread => thread.archivedAt === null && projectIds.includes(thread.projectId) && thread.environmentBranchName === branch)
     .sort((left, right) => right.updatedAt - left.updatedAt)[0]?.id ?? null;
 }
+
+/**
+ * Where Fix with agent goes: the newest thread on the pull request's branch in one of its projects, else a new thread
+ * in a managed worktree started from the head branch. A fork's branch lives in another repository, so a fork never
+ * reuses a base-repository thread and its worktree starts from the default branch.
+ */
+export function agentPlan(pr: {headRefName: string; fromFork?: boolean}, projectIds: readonly string[], threads: readonly AgentThread[]):
+  {send: string} | {spawn: {projectId: string; baseBranch: string | null}} | {error: "PROJECT_REQUIRED"} {
+  const existing = pr.fromFork ? null : branchThread(threads, projectIds, pr.headRefName);
+  if (existing) return {send: existing};
+  if (!projectIds.length) return {error: "PROJECT_REQUIRED"};
+  return {spawn: {projectId: projectIds[0], baseBranch: pr.fromFork ? null : pr.headRefName}};
+}

@@ -57,6 +57,8 @@ const next: Record<string, string> = {
   PROJECT_REQUIRED: "Attach this working copy to a BB project to hand CI runs to its threads.",
   PROVIDER_CONFLICT: "The forge refused this in the current state of the run. Refresh and try again later.",
   PROVIDER_RATE_LIMITED: "The forge's request limit is reached. Wait a minute and refresh.",
+  PENDING_REVIEW: "You have a pending review on this pull request. Submit or discard it on the forge first.",
+  OUTCOME_PARTIAL: "Only part of this was sent before the forge failed. Refresh and check what arrived before sending again.",
   SSH_CONFIG_UNAVAILABLE: "Check the SSH host alias in ~/.ssh/config on the working copy’s host.",
   OPERATION_EXISTS: "Look up the previous operation before starting a new one.",
 };

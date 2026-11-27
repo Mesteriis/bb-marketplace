@@ -20,3 +20,17 @@ export function ownLinks(account: Account, detail: PrDetail): PrDetail {
     checks: detail.checks.map(check => ({...check, url: check.url === null ? null : ownLink(account, check.url)})),
   };
 }
+
+/**
+ * Runs the requests of one confirmed write in order. A failure after the first has landed is OUTCOME_PARTIAL with how
+ * many went through, so the page can say so instead of inviting a repeat that would duplicate them.
+ */
+export async function inOrder(steps: (() => Promise<unknown>)[]): Promise<void> {
+  for (let index = 0; index < steps.length; index++) {
+    try { await steps[index](); }
+    catch (error) {
+      if (index === 0) throw error;
+      throw Object.assign(new Error("OUTCOME_PARTIAL"), {done: index, total: steps.length});
+    }
+  }
+}

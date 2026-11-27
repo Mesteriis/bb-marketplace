@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { PrAction } from "../../core/pulls/actions.ts";
 import { canSubmitReview, reviewEvents, type ReviewEvent } from "../../core/pulls/review.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
@@ -14,7 +14,9 @@ const methodLabel = {merge: "Merge", squash: "Squash and merge", rebase: "Rebase
 const stateLabel: Record<string, string> = {OPEN: "Open", CLOSED: "Closed", MERGED: "Merged"};
 
 /** A pull request: header and state actions, then its discussion, checks, files with line threads, commits and threads. */
-export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; onStep?(step: -1 | 1): void}) {
+export function PrPage({api, accountId, repo, number, onStep}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void}) {
+  // Kept by value: a re-render of the app (an alert arriving) must not reload the page and drop a review in progress.
+  const target = useMemo<PrRef>(() => ({accountId, repo, number}), [accountId, repo, number]);
   const [view, setView] = useState<PrView | null>(null);
   const [files, setFiles] = useState<PrFileView[] | null>(null);
   const [tab, setTab] = useState<Tab>("Overview");
@@ -44,6 +46,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
     const keys = (event: KeyboardEvent) => {
       const element = event.target as HTMLElement;
       if (event.metaKey || event.ctrlKey || event.altKey || element.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)) return;
+      if (document.querySelector("dialog[open]")) return;
       if (event.key === "[" && onStep) onStep(-1);
       if (event.key === "]" && onStep) onStep(1);
     };
@@ -53,7 +56,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
 
   const act = async (action: PrAction, label: string) => {
     setNotice("");
-    try { setPreview({...await api.prepare(target, action), title: label, kind: action.kind}); }
+    try { setPreview({...await api.prepare(target, action, view?.detail.headSha ?? null), title: label, kind: action.kind}); }
     catch (failure) { setNotice(message(failure)); }
   };
   const ask = async (subject: Parameters<ReviewApi["ask"]>[1]) => {
@@ -78,7 +81,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
           : <form className="git-row" onSubmit={formEvent => { formEvent.preventDefault(); if (title.trim()) void act({kind: "editTitle", title}, "Rename"); }}>
             <input aria-label="Title" value={title} onChange={change => setTitle(change.target.value)}/><button type="submit">Save</button>
             <button type="button" onClick={() => setTitle(null)}>Cancel</button></form>}
-        {title === null && can.editTitle && <button type="button" className="git-link" aria-label="Edit title" onClick={() => setTitle(detail.title)}>✎</button>}
+        {title === null && can.editTitle && detail.canEdit && <button type="button" className="git-link" aria-label="Edit title" onClick={() => setTitle(detail.title)}>✎</button>}
         {detail.url && <a href={detail.url} target="_blank" rel="noreferrer">Open on the forge</a>}
       </div>
       <p className="git-muted">{detail.repo} · {detail.author} · <code>{detail.headRefName}</code> into <code>{detail.baseRefName}</code>
@@ -158,7 +161,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
       </form>}
       {!files ? <p className="git-muted" role="status">Loading files…</p> : files.length === 0 ? <p className="git-muted">No changed files.</p> :
         files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} canComment={open && can.lineComment} can={threadCan}
-          threads={detail.threads.filter(thread => thread.path === file.path)}
+          threads={detail.threads.filter(thread => thread.path === file.path || (file.previousPath !== null && thread.path === file.previousPath))}
           act={action => void act(action, action.kind === "lineComment" ? "Line comment" : action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
           ask={thread => void ask({kind: "thread", threadId: thread.id})} onDraft={draft => setDrafts(previous => [...previous, draft])}/>)}
     </div>}
@@ -171,7 +174,7 @@ export function PrPage({api, target, onStep}: {api: ReviewApi; target: PrRef; on
 
     {tab === "Comments" && <div className="git-stack">
       {detail.threads.length === 0 && <p className="git-muted">No review threads.</p>}
-      {detail.threads.map(thread => <ThreadView key={thread.id} thread={thread} can={threadCan}
+      {detail.threads.map(thread => <ThreadView key={thread.id + ":" + thread.comments.length} thread={thread} can={threadCan}
         act={action => void act(action, action.kind === "resolve" ? (action.resolved ? "Resolve" : "Unresolve") : "Reply")}
         ask={() => void ask({kind: "thread", threadId: thread.id})}/>)}
     </div>}

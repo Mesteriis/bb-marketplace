@@ -93,3 +93,10 @@ test("line comments and the draft state are refused before anything is sent", as
   await assert.rejects(api.act(7, {kind: "editBody", body: "x".repeat(4001)}, current), {message: "INVALID_INPUT"});
   assert.equal(calls.length, 0);
 });
+
+test("a review whose vote fails after its comment was posted says it stopped halfway", async () => {
+  const {send} = azure({["POST " + pr + "/threads"]: () => Response.json({id: 1}), ["PUT " + pr + "/reviewers/" + me]: () => new Response("", {status: 500}),
+    ["GET /contoso/_apis/connectionData"]: () => Response.json({authenticatedUser: {id: me}})});
+  await assert.rejects(azureReview(account, token, "Web/app", send).act(7, {kind: "review", event: "APPROVE", body: "Good", comments: []}, current),
+    (error: Error & {done?: number}) => error.message === "OUTCOME_PARTIAL" && error.done === 1);
+});

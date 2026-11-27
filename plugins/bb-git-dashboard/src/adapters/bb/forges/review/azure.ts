@@ -5,7 +5,7 @@ import type { CheckStatus } from "../../../../core/pulls/github.ts";
 import type { PullReview } from "../../../../core/pulls/review-port.ts";
 import type { Account } from "../../../../core/providers.ts";
 import { array, client, object, segment, sha, text, type Json } from "../../provider-http.ts";
-import { ownLinks, repoParts } from "./shared.ts";
+import { inOrder, ownLinks, repoParts } from "./shared.ts";
 
 const version = "7.1";
 const resolvedStatuses = new Set(["fixed", "wontFix", "closed", "byDesign"]);
@@ -76,7 +76,7 @@ export function azureReview(account: Account, token: string, path: string, send:
         reviewers, labels: array(raw.labels).map(row => ({name: text(object(row).name), color: null})), body: text(raw.description), canEdit: true,
         commits: array(commits.value).map(object).map(row => ({oid: text(row.commitId), shortOid: text(row.commitId).slice(0, 8), headline: text(row.comment).split("\n")[0],
           author: text(object(row.author).name) || "unknown", avatarUrl: null, committedDate: text(object(row.author).date), ci: null})),
-        commitCount: array(commits.value).length, myReviewOid: null,
+        commitCount: array(commits.value).length, myReviewOid: null, fromFork: raw.forkSource !== undefined && raw.forkSource !== null,
       };
       return ownLinks(account, detail);
     },
@@ -99,8 +99,10 @@ export function azureReview(account: Account, token: string, path: string, send:
         case "lineComment": case "draft": throw new Error("PROVIDER_UNSUPPORTED");
         case "review":
           if (action.comments.length) throw new Error("PROVIDER_UNSUPPORTED");
-          if (action.body.trim()) await write("POST", pr + "/threads", {comments: [{parentCommentId: 0, content: action.body, commentType: 1}], status: "active"});
-          if (action.event !== "COMMENT") await vote(action.event === "APPROVE" ? 10 : -10);
+          await inOrder([
+            ...(action.body.trim() ? [() => write("POST", pr + "/threads", {comments: [{parentCommentId: 0, content: action.body, commentType: 1}], status: "active"})] : []),
+            ...(action.event !== "COMMENT" ? [() => vote(action.event === "APPROVE" ? 10 : -10)] : []),
+          ]);
           break;
         case "requestReviewer": await write("PUT", pr + "/reviewers/" + segment(action.reviewer), {vote: 0}); break;
         case "editTitle": await write("PATCH", pr, {title: action.title}); break;

@@ -13,7 +13,8 @@ export type PrRef = {accountId: string; repo: string; number: number};
 export type ReviewApi = {
   detail(ref: PrRef): Promise<PrView>;
   files(ref: PrRef): Promise<PrFileView[]>;
-  prepare(ref: PrRef, action: PrAction): Promise<Preview>;
+  /** `shown` is the head the page rendered; a newer head refuses the preview. */
+  prepare(ref: PrRef, action: PrAction, shown: string | null): Promise<Preview>;
   confirm(previewId: string): Promise<{outcome: "completed" | "accepted"}>;
   ask(ref: PrRef, subject: z.infer<typeof agentSubject>): Promise<{threadId: string; created: boolean}>;
   openThread(threadId: string): void;

@@ -7,13 +7,13 @@ import type { PullReview } from "../src/core/pulls/review-port.ts";
 import type { Account } from "../src/core/providers.ts";
 
 const account = (kind: Account["kind"]): Account => ({kind, id: "a", label: "A", origin: "https://github.com", organization: "", username: "me"});
-function setup(kind: Account["kind"] = "github") {
+function setup(kind: Account["kind"] = "github", extra: Partial<PrDetail> = {}, act?: PullReview["act"]) {
   let head = "a".repeat(40);
   const acts: string[] = [];
   const review: PullReview = {
-    detail: async number => ({forge: kind, id: "PR", headSha: head, number, repo: "o/r", headRefName: "f", baseRefName: "main", title: "T"} as PrDetail),
+    detail: async number => ({forge: kind, id: "PR", headSha: head, number, repo: "o/r", headRefName: "f", baseRefName: "main", title: "T", pendingReviewId: null, ...extra} as PrDetail),
     files: async () => [],
-    act: async (_number, action) => { acts.push(action.kind); return {outcome: "completed"}; },
+    act: act ?? (async (_number, action) => { acts.push(action.kind); return {outcome: "completed"}; }),
   };
   const issues: Issues = {detail: async () => { throw new Error("unused"); }, act: async action => { acts.push("issue:" + action.kind); return {number: 9}; }};
   let now = 0;
@@ -60,4 +60,40 @@ test("issue writes are previewed and confirmed once", async () => {
   assert.deepEqual(await service.issueConfirm(preview.id), {number: 9});
   await assert.rejects(service.issueConfirm(preview.id), {message: "PREVIEW_EXPIRED"});
   assert.deepEqual(acts, ["issue:create"]);
+});
+
+test("the preview is checked against the head the page showed, not only the head read at preview", async () => {
+  const {service, acts} = setup();
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "lineComment", path: "a.ts", line: 1, side: "RIGHT", startLine: null, body: "x"}, "c".repeat(40)),
+    {message: "STALE_HEAD"});
+  const preview = await service.prepare("a", "o/r", 7, {kind: "comment", body: "x"}, "a".repeat(40));
+  await service.confirm(preview.id);
+  assert.deepEqual(acts, ["comment"]);
+});
+
+test("pull request and issue previews cannot be confirmed through each other", async () => {
+  const {service, acts} = setup();
+  const issue = await service.issuePrepare("a", "o/r", {kind: "create", title: "T", body: ""});
+  await assert.rejects(service.confirm(issue.id), {message: "PREVIEW_EXPIRED"});
+  const pull = await service.prepare("a", "o/r", 7, {kind: "comment", body: "x"});
+  await assert.rejects(service.issueConfirm(pull.id), {message: "PREVIEW_EXPIRED"});
+  assert.deepEqual(acts, []);
+});
+
+test("a review the forge would refuse is refused at the preview", async () => {
+  const {service} = setup();
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "review", event: "REQUEST_CHANGES", body: " ", comments: []}), {message: "INVALID_INPUT"});
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "review", event: "COMMENT", body: "", comments: []}), {message: "INVALID_INPUT"});
+});
+
+test("a pending GitHub review blocks a new review or line comment until it is finished on GitHub", async () => {
+  const {service} = setup("github", {pendingReviewId: "PRR_1"});
+  await assert.rejects(service.prepare("a", "o/r", 7, {kind: "lineComment", path: "a.ts", line: 1, side: "RIGHT", startLine: null, body: "x"}), {message: "PENDING_REVIEW"});
+  await service.prepare("a", "o/r", 7, {kind: "comment", body: "x"});
+});
+
+test("a write that stops halfway says how far it got", async () => {
+  const {service} = setup("gitlab", {}, async () => { throw Object.assign(new Error("OUTCOME_PARTIAL"), {done: 2, total: 3}); });
+  const preview = await service.prepare("a", "o/r", 7, {kind: "review", event: "APPROVE", body: "", comments: []});
+  await assert.rejects(service.confirm(preview.id), {message: "OUTCOME_PARTIAL"});
 });
