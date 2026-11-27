@@ -1,4 +1,4 @@
-// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@ea8e3bfa):
+// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@22933aad):
 // plugins/remote-hub/src/core/sftp-contract.ts. Плагины не импортируют файлы друг друга,
 // поэтому схемы переписаны здесь. Ничего, кроме zod и самого себя, не импортирует.
 //
@@ -6,7 +6,7 @@
 // ссылки на учётные данные или имени элемента Keychain (все объекты `.strict()`).
 import { z } from "zod";
 
-export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@ea8e3bfa";
+export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@22933aad";
 
 export const SFTP_LIMITS = {
   /** Наибольший объём байт одного чтения или одной записи. */
@@ -233,6 +233,10 @@ export const SFTP_REFUSALS = {
   host_key_changed: "forbidden",
   permission_denied: "forbidden",
   profile_not_found: "not_found",
+  /**
+   * The channel is gone and the request was NOT sent to the server: for a changing operation nothing was applied.
+   * Opening a new channel and repeating is safe.
+   */
   channel_closed: "not_found",
   no_such_file: "not_found",
   profile_not_sftp: "invalid",
@@ -250,6 +254,11 @@ export const SFTP_REFUSALS = {
   not_empty: "conflict",
   /** Сервер не может сделать запрошенное (атомарная замена без posix-rename). */
   unsupported: "conflict",
+  /**
+   * Only for a changing operation: the request WAS sent and the channel died before the answer. It may or may not have
+   * been applied; Remote Hub does not repeat it.
+   */
+  outcome_unknown: "conflict",
   failure: "conflict",
 } as const satisfies Record<string, "forbidden" | "not_found" | "conflict" | "invalid">;
 export type SftpRefusalCode = keyof typeof SFTP_REFUSALS;

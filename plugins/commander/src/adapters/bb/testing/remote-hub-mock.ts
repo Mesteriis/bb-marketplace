@@ -62,6 +62,11 @@ export interface RemoteHubMockOptions {
   onOpen?: (opened: number) => void;
   /** Every write reply says this many bytes were written, whatever was sent. */
   writtenOverride?: number;
+  /**
+   * The next operation of this kind is applied, then the channel dies before the answer: the caller gets
+   * outcome_unknown (Remote Hub's refusal for a changing operation that was sent and never answered).
+   */
+  dieAfterSend?: SftpOp;
   /** Runs when an operation reaches the helper, with its kind; the test may abort here. */
   onOperation?: (op: SftpOp) => void;
   /** A rename is applied at once, but its reply is withheld until releaseHeld(). */
@@ -136,6 +141,8 @@ export class RemoteHubMock implements RemoteHubPort {
   private fault: "drop" | "abort" | undefined;
   private armed: "drop" | "abort" | undefined;
   private lastApplied: SftpOp | undefined;
+  private dieOn: SftpOp | undefined;
+  private readonly appliedByOp = new Map<SftpOp, number>();
   private readonly options: RemoteHubMockOptions;
   private readonly heldReply: Promise<void> | undefined;
   private releaseReply: (() => void) | undefined;
@@ -147,6 +154,7 @@ export class RemoteHubMock implements RemoteHubPort {
     this.hostKey = options.hostKey ?? "trusted";
     this.failNext = options.failNext;
     this.fault = options.faultNext;
+    this.dieOn = options.dieAfterSend;
     this.seedDir("/");
     if (options.dirSize !== undefined) {
       this.seedDir("/big");
@@ -181,6 +189,16 @@ export class RemoteHubMock implements RemoteHubPort {
 
   revoke(): void {
     this.consent = "revoked";
+  }
+
+  /** The next operation of this kind is applied, then the channel dies before the answer (outcome_unknown). */
+  dieNext(op: SftpOp): void {
+    this.dieOn = op;
+  }
+
+  /** How many operations of this kind the helper has applied (a refused call is not counted). */
+  appliedCount(op: SftpOp): number {
+    return this.appliedByOp.get(op) ?? 0;
   }
 
   /** Releases a withheld rename reply. */
@@ -287,6 +305,7 @@ export class RemoteHubMock implements RemoteHubPort {
 
     const output = this.execute(input);
     this.lastApplied = input.op;
+    this.appliedByOp.set(input.op, this.appliedCount(input.op) + 1);
     this.applied += 1;
     if (!this.bumped && this.options.generationBumpAfter === this.applied) {
       this.bumped = true;
@@ -294,6 +313,13 @@ export class RemoteHubMock implements RemoteHubPort {
       for (const old of this.channels.values()) old.alive = false;
     }
     if (fault === "drop") throw new Error("socket hang up");
+    if (this.dieOn === input.op) {
+      this.dieOn = undefined;
+      for (const channel of this.channels.values()) channel.alive = false;
+      // A read that loses its channel is channel_closed (not sent, so repeatable); a changing operation that was sent
+      // and never answered is outcome_unknown.
+      this.refuse(reads ? "channel_closed" : "outcome_unknown");
+    }
 
     if (this.options.misreply) return { op: input.op === "remove" ? "mkdir" : "remove" };
     if (input.op === "write" && this.options.writtenOverride !== undefined) {

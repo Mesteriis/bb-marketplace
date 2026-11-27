@@ -4,8 +4,10 @@
 //
 // Error rules, applied in one place (`send`):
 // - a refusal is definitive when the server says the operation was not applied (see DEFINITIVE);
-// - any other failure of a mutation after it was sent is outcome_unknown and is never repeated;
-// - a read may be repeated once on a closed channel; a cancelled read is cancelled.
+// - channel_closed: the request was not sent; the call is repeated once on a new channel (reads and mutations),
+//   a second channel_closed is connection_failed;
+// - outcome_unknown from Remote Hub, or any other failure of a mutation after it was sent: never repeated;
+// - a cancelled read is cancelled.
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
 import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
@@ -71,12 +73,15 @@ const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
   exists: "already_exists",
   not_empty: "is_a_directory",
   unsupported: "unsupported",
+  outcome_unknown: "outcome_unknown",
   failure: "internal",
 };
 
 /**
- * Refusals the server gives when it did NOT apply the operation. Any other refusal of a mutation
- * (unreachable, failure, channel_closed) can hide an applied change, so it is outcome_unknown.
+ * Refusals the server gives when it did NOT apply the operation (a changing operation is then safe to report as
+ * failed). Not listed here, and therefore outcome_unknown for a mutation: unreachable and failure (the request may
+ * have been applied) and outcome_unknown itself. channel_closed is not listed either: the request was never sent,
+ * so it is repeated once (see execute), and a second channel_closed is connection_failed.
  */
 const DEFINITIVE: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
   "caller_not_plugin",
@@ -312,17 +317,21 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
     return waitForOpen(opening, signal);
   }
 
-  /** One operation. A read is reopened once on a closed channel, and never after the caller has aborted. */
+  /**
+   * One operation. A channel_closed reply means the request was not sent (for a mutation nothing was applied), so it is
+   * repeated once on a new channel, for reads and mutations alike; a second channel_closed is connection_failed.
+   * Never repeated after the caller has aborted.
+   */
   async function execute(build: (channel: string) => SftpOpInput, mutating: boolean, signal: AbortSignal): Promise<SftpOpOutput> {
     if (signal.aborted) throw commanderError("cancelled");
     const first = await openChannel(signal);
     try {
       return await send(build(first), mutating, signal);
     } catch (error) {
-      if (mutating || !(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
+      if (!(error instanceof SftpRefusal && error.code === "channel_closed")) throw error;
       if (signal.aborted) throw commanderError("cancelled");
       const second = await openChannel(signal);
-      return send(build(second), false, signal);
+      return send(build(second), mutating, signal);
     }
   }
 
@@ -335,8 +344,12 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
       output = await callPort("hub_sftp_op", input, signal);
     } catch (error) {
       if (error instanceof SftpRefusal) {
-        if (error.code === "channel_closed" || error.code === "consent_revoked") dropChannel(input.channelId);
-        if (mutating && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
+        // A refusal that ends the channel (closed, revoked, or lost after a send) drops it, and with it atomicReplace.
+        if (error.code === "channel_closed" || error.code === "consent_revoked" || error.code === "outcome_unknown") {
+          dropChannel(input.channelId);
+        }
+        // channel_closed: the request never reached the server, so the caller may repeat it once (see execute).
+        if (mutating && error.code !== "channel_closed" && !DEFINITIVE.has(error.code)) throw commanderError("outcome_unknown");
         throw error;
       }
       // A reply the schema refuses (ZodError) or a lost reply: a mutation may have been applied, so its outcome is unknown.
