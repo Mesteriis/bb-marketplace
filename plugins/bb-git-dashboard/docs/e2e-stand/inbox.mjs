@@ -15,7 +15,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  await page.getByRole("button", { name: /^Мои PR/ }).click({ timeout: 30000 });
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   const tabs = page.getByRole("navigation", { name: "Pull request tabs" });
   const row = title => page.locator(".git-inbox-item", { hasText: title });
   check("both accounts are listed", await visible(page.getByRole("heading", { name: "stand Gitea" })) && await visible(page.getByRole("heading", { name: "stand GitLab" })));
@@ -50,16 +50,16 @@ try {
   check("the alert arrives as a toast", await page.locator(".git-inbox-toast", { hasText: "CI failing · stand/gamma#5" }).count() === 1);
   check("and in New since you last looked", await visible(page.getByRole("region", { name: "New since you last looked" })));
   await page.screenshot({ path: out + "/inbox-alert.png", fullPage: true });
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
-  check("the My PRs button counts the unseen alert", (await page.getByRole("button", { name: /^Мои PR/ }).innerText()).replace(/\s+/g, "") === "МоиPR1");
-  await page.getByRole("button", { name: /^Мои PR/ }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();
+  check("the My PRs button counts the unseen alert", (await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).innerText()).replace(/\s+/g, "") === "MyPRs1");
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click();
   await page.getByRole("button", { name: "Mark as seen" }).click();
   check("Mark as seen clears the list", await page.getByRole("region", { name: "New since you last looked" }).count() === 0 ||
     await page.getByRole("region", { name: "New since you last looked" }).waitFor({ state: "detached", timeout: 5000 }).then(() => true, () => false));
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
-  check("and the badge", (await page.getByRole("button", { name: /^Мои PR/ }).innerText()).replace(/\s+/g, "") === "МоиPR");
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();
+  check("and the badge", (await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).innerText()).replace(/\s+/g, "") === "MyPRs");
 
-  await page.getByRole("button", { name: /^Мои PR/ }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click();
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(400);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

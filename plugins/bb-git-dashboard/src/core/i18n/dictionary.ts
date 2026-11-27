@@ -4,7 +4,6 @@
 export const en = {
   "count.files": "{n|file|files}",
   "common.cancel": "Cancel",
-  "common.close": "Close",
   "common.confirm": "Confirm",
   "common.loading": "Loading…",
   "section.inbox": "My PRs",
@@ -39,9 +38,10 @@ export const en = {
   "shell.unread": "{n|new item|new items}",
   "shell.openThreads": "{n|open comment thread|open comment threads}",
   "shell.language": "Language",
-  "shell.languageAuto": "As in BB",
   "shell.folderExpand": "Show {name}",
   "shell.folderCollapse": "Hide {name}",
+  "shell.noFolder": "No folder",
+  "shell.accounts": "{n|connected account|connected accounts}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -49,7 +49,6 @@ export type MessageKey = keyof typeof en;
 export const ru: Record<MessageKey, string> = {
   "count.files": "{n|файл|файла|файлов}",
   "common.cancel": "Отмена",
-  "common.close": "Закрыть",
   "common.confirm": "Подтвердить",
   "common.loading": "Загрузка…",
   "section.inbox": "Мои PR",
@@ -84,7 +83,8 @@ export const ru: Record<MessageKey, string> = {
   "shell.unread": "{n|новый|новых|новых}",
   "shell.openThreads": "{n|открытое обсуждение|открытых обсуждения|открытых обсуждений}",
   "shell.language": "Язык",
-  "shell.languageAuto": "Как в BB",
   "shell.folderExpand": "Показать {name}",
   "shell.folderCollapse": "Скрыть {name}",
+  "shell.noFolder": "Без папки",
+  "shell.accounts": "{n|подключённый аккаунт|подключённых аккаунта|подключённых аккаунтов}",
 };

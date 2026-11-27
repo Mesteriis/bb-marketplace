@@ -1,0 +1,40 @@
+/* The side column of the Git panel (BB's experimental_sidebar slot): search, sections, projects folder, connections
+   and language, top to bottom; the tree scrolls by itself, the foot stays. */
+div:has(> .contents > .g-side) { flex: 1 1 0; min-height: 0; }
+.git-ws.g-side {
+  box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; height: 100%; min-height: 0; overflow: hidden;
+  padding: 12px 10px; background: transparent;
+}
+.git-ws.g-side ul { list-style: none; margin: 0; padding: 0; }
+.git-ws .g-find {
+  display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 9px; margin-bottom: 10px; flex: none;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--background); color: var(--muted-foreground);
+}
+.git-ws .g-find:focus-within { outline: 2px solid var(--ring); outline-offset: 0; }
+.git-ws .g-find input { flex: 1; min-width: 0; border: 0; padding: 0; background: transparent; outline: none; }
+.git-ws .g-find input::-webkit-search-cancel-button { display: none; }
+.git-ws .g-side-sections { display: grid; gap: 2px; flex: none; }
+.git-ws .g-side-label { padding: 14px 8px 6px; flex: none; }
+.git-ws .g-side-note { padding: 4px 8px; color: var(--muted-foreground); font-size: 12px; }
+.git-ws .g-side-tree { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.git-ws .g-side-tree:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 6px; }
+.git-ws .g-tree-row { display: flex; align-items: center; gap: 2px; }
+.git-ws .g-tree-row .g-tree { flex: 1; min-width: 0; }
+.git-ws .g-tree-row .g-tree-more { flex: none; width: 28px; padding: 0; opacity: 0; }
+.git-ws .g-tree-row:hover .g-tree-more, .git-ws .g-tree-more:focus-visible, .git-ws .g-tree-more[aria-expanded="true"] { opacity: 1; }
+.git-ws .g-tree:disabled { opacity: 1; cursor: default; }
+.git-ws .g-side-foot { flex: none; display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.git-ws .g-side-language { display: flex; align-items: center; justify-content: space-between; padding: 0 0 0 8px; color: var(--muted-foreground); }
+.git-ws .g-side-hidden { padding: 8px; color: var(--muted-foreground); }
+.git-ws .g-side-hidden summary { cursor: pointer; }
+
+/* A project's sources and actions, opened with ⋯. */
+.git-ws.g-side .git-source-actions { display: grid; gap: 4px; min-width: 0; margin: 2px 0 6px 26px; padding: 8px; background: var(--git-subtle); border-radius: 8px; }
+.git-ws.g-side .git-source-actions > button, .git-ws.g-side .git-source-item > button { text-align: start; }
+.git-ws.g-side .git-source-item { display: grid; gap: 4px; min-width: 0; border-bottom: 1px solid var(--border); padding-block: 4px; }
+.git-ws.g-side .git-source-item code { overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
+.git-ws.g-side .git-source-item small { color: var(--muted-foreground); }
+
+/* The page head of every section. */
+.git-ws .g-page { display: flex; flex-direction: column; min-height: 100%; }
+.git-ws .g-head .g-actions > .g-inp { width: min(340px, 45vw); }

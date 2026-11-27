@@ -137,8 +137,9 @@ try {
   await commitList.selectOption(featureCommit);
   check("a recent commit is picked from the list", await visible(review.getByRole("region", { name: "feature.txt" })) && /^[0-9a-f]{40}$/.test(featureCommit), featureCommit);
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  check("the Reviews button counts open comment threads", await visible(page.getByRole("button", { name: /^Reviews/ }).getByLabel(/open comment threads/)));
-  await page.getByRole("button", { name: /^Reviews/ }).click();
+  const reviewsSection = page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Reviews\b/ });
+  check("the Reviews section counts open comment threads", await visible(reviewsSection.getByLabel(/open comment threads?$/)));
+  await reviewsSection.click();
   const reviews = page.getByRole("region", { name: "Reviews" });
   check("the Reviews page lists the Any file review", await visible(reviews.getByRole("button", { name: /gamma.*files of the working copy/ })));
   await reviews.getByRole("button", { name: /gamma.*files of the working copy/ }).click();

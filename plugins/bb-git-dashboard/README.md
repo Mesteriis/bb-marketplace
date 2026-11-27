@@ -4,6 +4,8 @@ Plugin ID and package name are both `bb-git-dashboard`; the display name is **Ma
 
 The Git sidebar groups projects by the parent directory of their default BB source. Search by project or folder name above the independently scrolling list. Projects without a source appear under «Без папки».
 
+The sidebar is the panel's one navigation: **My PRs**, **CI/CD**, **Reviews**, **Projects** and **Catalog** with their counts, the projects folder tree, **Connections** (the connected accounts, a new connection and the accounts' repositories) and the interface language. Press `/` to search. The language follows BB's (Russian for a Russian BB, English otherwise) until RU or EN is chosen in the sidebar or **Interface language** in the plugin settings; sections take the setting as they move to the new interface, the sidebar first.
+
 ## Build and install
 
 From this directory, with Node 22.18+ and BB 0.50.1+:

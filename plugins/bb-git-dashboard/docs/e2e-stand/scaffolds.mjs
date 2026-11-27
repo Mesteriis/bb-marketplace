@@ -19,7 +19,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  await page.getByRole("button", { name: "Каталог" }).click({ timeout: 30000 });
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Catalog\b/ }).click({ timeout: 30000 });
   const catalog = page.getByRole("region", { name: "Catalog" });
   await catalog.getByRole("button", { name: "New project…" }).click({ timeout: 60000 });
   const section = page.getByRole("region", { name: "New project" });

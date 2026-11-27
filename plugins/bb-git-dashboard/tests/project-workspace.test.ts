@@ -67,7 +67,8 @@ test("sidebar filters by project or parent and keeps unrelated matching folder n
   ],[]);
   deepEqual(sidebarFolders(rows," WORK ").map(folder => folder.rows.map(row => row.id)),[["a"],["b"]]);
   equal(sidebarFolders(rows,"alp")[0]?.label,"Work");
-  equal(sidebarFolders(rows,"gamma")[0]?.label,"Без папки");
+  // A project without a source has no folder; the interface names it in its own language.
+  equal(sidebarFolders(rows,"gamma")[0]?.label,"");
   equal(sidebarFolders(rows,"absent").length,0);
 });
 

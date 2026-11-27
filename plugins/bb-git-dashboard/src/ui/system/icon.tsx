@@ -1,6 +1,6 @@
 import { createContext, useContext, type ComponentType } from "react";
 
-type IconProps = {name: string; className?: string; "aria-hidden"?: boolean};
+type IconProps = {name: string; className?: string; "aria-hidden"?: boolean | "false" | "true"};
 const IconContext = createContext<ComponentType<IconProps> | null>(null);
 
 /** The app hands in BB's lucide icon component; the UI layer only names icons. */

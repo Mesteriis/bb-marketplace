@@ -29,7 +29,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git", { waitUntil: "load" });
-  await page.getByRole("button", { name: /^Мои PR/ }).click({ timeout: 30000 });
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   await page.locator(".git-inbox-item", { hasText: "Add greeting check" }).locator("a").first().click();
   const pr = page.getByRole("region", { name: "Pull request stand/beta #3" });
   const opened = await visible(pr.getByRole("heading", { name: /Add greeting check/ }));
@@ -60,7 +60,7 @@ try {
   check("and reaches Gitea as the pull request's body", gitea().some(write => write.path.endsWith("/pulls/3") && write.body?.body === "New description."),
     gitea().filter(write => write.path.endsWith("/pulls/3")));
 
-  await page.getByRole("button", { name: "My PRs" }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Retry flaky test" }).locator("a").first().click();
   const mr = page.getByRole("region", { name: "Pull request stand/gamma #5" });
   check("a GitLab merge request opens", await visible(mr.getByRole("heading", { name: /Retry flaky test/ })));
@@ -69,7 +69,7 @@ try {
   check("resolving a thread is previewed", await confirm(page, "Resolve a review thread on stand/gamma #5"));
   check("and resolves the GitLab discussion", JSON.stringify(gitlab().at(-1)) === JSON.stringify({method: "PUT", path: "/api/v4/projects/7/merge_requests/5/discussions/disc-1", body: {resolved: true}}), gitlab().at(-1));
   // Approving needs a merge request by someone else: !8 asks for my review.
-  await page.getByRole("button", { name: "My PRs" }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
   await page.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Review requested/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Rename variables" }).locator("a").first().click();
   const other = page.getByRole("region", { name: "Pull request stand/gamma #8" });
@@ -82,7 +82,7 @@ try {
   const approve = gitlab().find(write => write.path.endsWith("/merge_requests/8/approve"));
   check("and is pinned to the reviewed head", approve?.body?.sha === "d".repeat(40), approve);
 
-  await page.getByRole("button", { name: "My PRs" }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
   // My PRs comes back on the tab it was left on (Review requested): the draft is on Open.
   await page.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Open/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Follow-up on retries" }).locator("a").first().click();
@@ -91,7 +91,7 @@ try {
   check("Ready for review is previewed", await confirm(page, "Mark stand/gamma #6 ready for review"));
   check("and drops GitLab's Draft: prefix", JSON.stringify(gitlab().at(-1)?.body) === JSON.stringify({title: "Follow-up on retries"}), gitlab().at(-1));
 
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();
   await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
   const select = page.locator(".git-add-copy select").first();
   const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/gamma"))?.value ?? "");
@@ -114,7 +114,7 @@ try {
   await issue.getByRole("button", { name: "Comment", exact: true }).click();
   check("an issue comment is previewed", await confirm(page, "Comment on stand/gamma issue #4"));
   check("and reaches GitLab", gitlab().some(write => write.path.endsWith("/issues/4/notes") && write.body?.body === "Fixed in !5."));
-  await page.getByRole("button", { name: "Projects", exact: true }).click();
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();
   await openGamma();
   await page.getByRole("button", { name: "New issue" }).click({ timeout: 20000 });
   await page.getByRole("textbox", { name: "Issue title" }).fill("Add a backoff");
@@ -123,7 +123,7 @@ try {
   check("and is created on GitLab", gitlab().some(write => write.method === "POST" && write.path === "/api/v4/projects/7/issues" && write.body?.title === "Add a backoff"));
 
   await page.setViewportSize({ width: 768, height: 900 });
-  await page.getByRole("button", { name: "My PRs" }).click().catch(() => {});
+  await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click().catch(() => {});
   await page.locator(".git-inbox-item", { hasText: "Add greeting check" }).locator("a").first().click().catch(() => {});
   await page.waitForTimeout(800);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

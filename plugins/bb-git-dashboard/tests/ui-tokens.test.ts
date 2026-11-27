@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { contrast, hexToOklch, type Oklch } from "./support/color.ts";
 
-const read = (path: string) => readFileSync(new URL("../src/ui/system/" + path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL("../src/ui/" + path, import.meta.url), "utf8");
 const strip = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, "");
-const tokens = strip(read("tokens.css"));
-const system = strip(read("system.css"));
+const tokens = strip(read("system/tokens.css"));
+const system = strip(read("system/system.css"));
+const shell = strip(read("shell/shell.css"));
 const bbTokens = new Set(["--background", "--foreground", "--muted-foreground", "--border", "--accent", "--card", "--primary",
   "--primary-foreground", "--destructive", "--ring", "--font-mono"]);
 
@@ -53,7 +54,7 @@ function resolve(name: string, background: Oklch): Oklch {
 }
 
 test("the plugin's CSS uses BB's theme tokens and its own --git-* only, with no theme of its own", () => {
-  for (const [file, css] of [["tokens.css", tokens], ["system.css", system]] as const) {
+  for (const [file, css] of [["tokens.css", tokens], ["system.css", system], ["shell.css", shell]] as const) {
     for (const [, name] of css.matchAll(/var\((--[\w-]+)/g)) {
       assert.ok(bbTokens.has(name!) || name!.startsWith("--git-"), file + " uses " + name);
     }
@@ -80,11 +81,14 @@ test("every status colour reads at 4.5:1 on the page and on its own tone, in eve
   assert.deepEqual(failures, []);
 });
 
-test("a tone stays a tone: lighter than the text on dark palettes, darker on light ones, and hue-stable", () => {
+test("a tone stays a tone: near the page's lightness and on its own hue, in every palette", () => {
   for (const [palette, background] of palettes) {
-    const tone = resolve("--git-bad-bg", background);
-    assert.ok(Math.abs(tone.l - background.l) < 0.12, palette + " bad tone stays near the page lightness");
-    assert.equal(tone.h, 25, palette + " bad tone keeps its hue");
+    for (const [tone, hue] of [["--git-bad-bg", 25], ["--git-good-bg", 155], ["--git-warn-bg", 50], ["--git-violet-bg", 291.6]] as const) {
+      const value = resolve(tone, background);
+      assert.ok(Math.abs(value.l - background.l) < 0.12, palette + " " + tone + " stays near the page lightness");
+      assert.ok(value.c > background.c || value.c > 0.01, palette + " " + tone + " carries its colour");
+      assert.equal(value.h, hue, palette + " " + tone + " keeps its hue");
+    }
   }
 });
 
