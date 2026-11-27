@@ -52,6 +52,18 @@ export function gitDashboardCli(ci: Ci, review: Review) {
       "review reply": answer("reply", "Answer in a comment thread; it stays open", "reply"),
       "review resolve": answer("resolve", "Resolve a comment thread with a one-line summary of the change", "summary"),
       "review dismiss": answer("dismiss", "Close a comment thread you will not act on, with the reason", "reason"),
+      "review comment": cliCommand({summary: "Leave a comment on the diff under review (AI review, summary and explain runs only)",
+        description: "Comments on lines --line to --end-line of <file> on --side (new by default, old for removed lines), on the whole file with --line 0, or on the whole diff with --general. The comment is the words after the file, or --text-base64.",
+        positionals: [{name: "file", description: "The file's path in the diff (leave out with --general)"}, {name: "text", description: "The comment", variadic: true}] as const,
+        options: {line: {type: "integer", min: 0, max: 10_000_000, placeholder: "n", description: "First line (0 for the whole file)"},
+          "end-line": {type: "integer", min: 1, max: 10_000_000, placeholder: "n", description: "Last line; defaults to --line"},
+          side: {type: "enum", values: ["new", "old"], description: "Which side the lines count on"},
+          severity: {type: "enum", values: ["must-fix", "suggestion", "nit", "question"], description: "How much it matters"},
+          general: {type: "boolean", description: "Comment on the whole diff instead of a file"},
+          "text-base64": textOption},
+        run: (input, ctx) => review.comment({file: input.positionals.file, words: input.positionals.text, encoded: input.options["text-base64"],
+          line: input.options.line, endLine: input.options["end-line"], side: input.options.side, severity: input.options.severity,
+          general: input.options.general}, ctx.threadId)}),
     },
   });
 }

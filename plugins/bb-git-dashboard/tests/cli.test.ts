@@ -4,6 +4,7 @@ import { ciCli } from "../src/adapters/bb/ci-cli.ts";
 import { gitDashboardCli } from "../src/adapters/bb/cli.ts";
 import { reviewCommands } from "../src/adapters/bb/code-review-cli.ts";
 import type { ReviewThread } from "../src/core/code-review/model.ts";
+import { CodedError } from "../src/core/workspace.ts";
 
 const thread = (status: ReviewThread["status"] = "open"): ReviewThread => ({id: "abcdef123456", sessionId: "s", filePath: "src/a.ts", side: "new",
   startLine: 3, endLine: 4, status, severity: "must-fix", anchorContent: "x\ny", createdAt: 1, updatedAt: 1,
@@ -11,6 +12,8 @@ const thread = (status: ReviewThread["status"] = "open"): ReviewThread => ({id: 
 
 function setup() {
   const answers: {caller: string; prefix: string; action: string; text: string}[] = [];
+  const comments: unknown[] = [];
+  const bound: string[] = [];
   const ciCalls: string[] = [];
   const ci = ciCli({
     context: async () => ({copyId: "c1", permission: "read"}),
@@ -28,8 +31,14 @@ function setup() {
       answers.push({caller, prefix, action, text});
       return thread(action === "reply" ? "open" : "resolved");
     },
+    comment: async (caller, input) => {
+      if (input.startLine === 9) throw new CodedError("LINE_NOT_IN_DIFF", "Lines shown there: 1-3.");
+      comments.push({caller, ...input});
+      return {...thread(), filePath: input.filePath, side: input.side, startLine: input.startLine, endLine: input.endLine};
+    },
+    bind: async caller => { bound.push(caller); },
   });
-  return {cli: gitDashboardCli(ci, review), answers, ciCalls};
+  return {cli: gitDashboardCli(ci, review), answers, ciCalls, comments, bound};
 }
 
 test("review reply, resolve and dismiss take words or base64, from the thread the comments went to", async () => {
@@ -73,8 +82,23 @@ test("review list --json drops whole threads to fit and still parses", async () 
   const big = {...{id: "abcdef123456", sessionId: "s", filePath: "a.ts", side: "new" as const, startLine: 1, endLine: 1, status: "open" as const, severity: null,
     anchorContent: "y".repeat(300_000), createdAt: 1, updatedAt: 1, delivery: null, comments: []}};
   const cli = gitDashboardCli(ciCli({context: async () => ({copyId: "c", permission: "read"}), service: {} as never, approve: async () => false}),
-    reviewCommands({sentTo: () => [big, {...big, id: "bcdef1234567"}], answer: async () => big}));
+    reviewCommands({sentTo: () => [big, {...big, id: "bcdef1234567"}], answer: async () => big, comment: async () => big, bind: async () => {}}));
   const result = await cli.run(["review", "list", "--json"], {threadId: "thr_1"});
   assert.equal(JSON.parse(result.stdout ?? "").length, 1);
   assert.match(result.stderr ?? "", /1 thread\(s\) left out/);
+});
+
+test("review comment leaves a run's comment on lines, the whole file or the whole diff, and a refusal says which lines are shown", async () => {
+  const {cli, comments, bound} = setup();
+  const lines = await cli.run(["review", "comment", "src/a.ts", "--line", "3", "--end-line", "4", "--severity", "nit", "Split", "this."], {threadId: "thr_run"});
+  assert.equal(lines.stdout, "Added comment thread abcdef123456 on src/a.ts:3-4 (new side).\n");
+  await cli.run(["review", "comment", "src/a.ts", "--line", "0", "Whole", "file"], {threadId: "thr_run"});
+  await cli.run(["review", "comment", "--general", "Looks", "fine."], {threadId: "thr_run"});
+  assert.deepEqual(comments, [
+    {caller: "thr_run", filePath: "src/a.ts", side: "new", startLine: 3, endLine: 4, severity: "nit", body: "Split this."},
+    {caller: "thr_run", filePath: "src/a.ts", side: null, startLine: 0, endLine: 0, severity: null, body: "Whole file"},
+    {caller: "thr_run", filePath: "__general__", side: null, startLine: 0, endLine: 0, severity: null, body: "Looks fine."}]);
+  assert.deepEqual(bound, ["thr_run", "thr_run", "thr_run"]);
+  assert.match((await cli.run(["review", "comment", "src/a.ts", "x"], {threadId: "thr_run"})).stderr ?? "", /Give --line/);
+  assert.match((await cli.run(["review", "comment", "src/a.ts", "--line", "9", "x"], {threadId: "thr_run"})).stderr ?? "", /LINE_NOT_IN_DIFF: Lines shown there: 1-3\./);
 });

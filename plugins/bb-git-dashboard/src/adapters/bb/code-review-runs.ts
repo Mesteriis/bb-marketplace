@@ -200,6 +200,15 @@ export function codeReviewRuns(deps: RunDeps) {
     return parsePatchLines(file.patch);
   }
 
+  /** Asks the view's reviewer about a thread, one question per view at a time. */
+  function askReviewer(reviewThreadId: string, viewerThreadId: string | null = null): Promise<ReviewRun | null> {
+    const {sessionId} = store.thread(reviewThreadId) ?? fail("NOT_FOUND");
+    const next = (asking.get(sessionId) ?? Promise.resolve()).catch(() => undefined).then(() => sendToReviewer(reviewThreadId, viewerThreadId));
+    asking.set(sessionId, next);
+    void next.finally(() => { if (asking.get(sessionId) === next) asking.delete(sessionId); }).catch(() => undefined);
+    return next;
+  }
+
   return {
     /** Where the run pickers start: the settings' provider and model when it lists that model, else its default. */
     async defaults(copyId: string, threadId: string | null) {
@@ -260,17 +269,10 @@ export function codeReviewRuns(deps: RunDeps) {
     /** An owner's comment with @reviewer or @agent asks the view's reviewer, in the background. */
     onUserComment(thread: ReviewThread, body: string, viewerThreadId: string | null) {
       if (!mentionsReviewer(body)) return;
-      this.askReviewer(thread.id, viewerThreadId).catch(error => deps.log("Could not ask the reviewer about " + thread.id + ": " + String(error)));
+      askReviewer(thread.id, viewerThreadId).catch(error => deps.log("Could not ask the reviewer about " + thread.id + ": " + String(error)));
     },
 
-    /** Asks the view's reviewer about a thread, one question per view at a time. */
-    askReviewer(reviewThreadId: string, viewerThreadId: string | null = null): Promise<ReviewRun | null> {
-      const {sessionId} = store.thread(reviewThreadId) ?? fail("NOT_FOUND");
-      const next = (asking.get(sessionId) ?? Promise.resolve()).catch(() => undefined).then(() => sendToReviewer(reviewThreadId, viewerThreadId));
-      asking.set(sessionId, next);
-      void next.finally(() => { if (asking.get(sessionId) === next) asking.delete(sessionId); }).catch(() => undefined);
-      return next;
-    },
+    askReviewer,
 
     /** Closes a run: it loses its rights first, then its thread is archived. */
     async close(runId: string) {

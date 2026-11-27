@@ -5,7 +5,9 @@
  * `--text-base64-stdin`, so quotes, backticks and new lines survive whatever the shell.
  */
 import { PluginCliError } from "@get-bb/plugin-sdk";
-import { describeLocation, type ReviewThread } from "../../core/code-review/model.ts";
+import { describeLocation, GENERAL_PATH, type ReviewThread, type Severity } from "../../core/code-review/model.ts";
+import { failureFor } from "../../core/workspace.ts";
+import type { AgentCommentInput } from "./code-review-runs.ts";
 import type { AgentAction } from "./code-review-service.ts";
 
 /** The longest text a command takes, in UTF-8 bytes; its base64 still fits BB's 16 KiB stdin line. */
@@ -49,7 +51,12 @@ export function formatThread(thread: ReviewThread): string {
 export type ReviewCliDeps = {
   sentTo(callerThreadId: string, all: boolean): ReviewThread[];
   answer(callerThreadId: string, prefix: string, action: AgentAction, text: string): Promise<ReviewThread>;
+  comment(callerThreadId: string, input: AgentCommentInput): Promise<ReviewThread>;
+  /** Binds a run's thread that calls in before BB answered its start. */
+  bind(callerThreadId: string): Promise<void>;
 };
+export type CommentOptions = {file: string | undefined; words: readonly string[]; encoded: string | undefined; line: number | undefined;
+  endLine: number | undefined; side: "old" | "new" | undefined; severity: Severity | undefined; general: boolean};
 const done: Record<AgentAction, string> = {reply: "Replied in", resolve: "Resolved", dismiss: "Dismissed"};
 const codeOf = (error: unknown) => error instanceof Error && /^[A-Z_]+$/.test(error.message) ? error.message : "GIT_REJECTED";
 
@@ -61,10 +68,12 @@ export function reviewCommands(deps: ReviewCliDeps) {
   };
   const refused = (error: unknown): never => {
     if (error instanceof PluginCliError) throw error;
-    throw new PluginCliError(codeOf(error), {code: codeOf(error).toLowerCase()});
+    const failure = failureFor(error, "GIT_REJECTED");
+    throw new PluginCliError(failure.detail ? codeOf(error) + ": " + failure.detail : codeOf(error), {code: codeOf(error).toLowerCase(), hint: failure.next});
   };
   return {
-    list(all: boolean, json: boolean, threadId: string | undefined) {
+    async list(all: boolean, json: boolean, threadId: string | undefined) {
+      await deps.bind(caller(threadId));
       const rows = deps.sentTo(caller(threadId), all);
       if (json) {
         // Whole threads are dropped from the end until the JSON fits, so it always parses; stderr says what was left out.
@@ -77,8 +86,23 @@ export function reviewCommands(deps: ReviewCliDeps) {
     },
     async answer(action: AgentAction, id: string, words: readonly string[], encoded: string | undefined, threadId: string | undefined) {
       const text = textOf(words, encoded);
+      await deps.bind(caller(threadId));
       const thread = await deps.answer(caller(threadId), id, action, text).catch(refused);
       return {exitCode: 0, stdout: done[action] + " comment thread " + thread.id + " (" + describeLocation(thread) + ").\n"};
+    },
+    /** An AI review run's comment on lines of a file, the whole file (`--line 0`) or the whole diff (`--general`). */
+    async comment(options: CommentOptions, threadId: string | undefined) {
+      const {file, general} = options;
+      if (!general && file === undefined) throw new PluginCliError("Give a file, or --general for the whole diff.", {code: "missing_required"});
+      // With --general there is no file, so the first word of the comment lands in its place.
+      const words = general && file !== undefined ? [file, ...options.words] : options.words;
+      const text = textOf(words, options.encoded);
+      if (!general && options.line === undefined) throw new PluginCliError("Give --line (0 for the whole file).", {code: "missing_required"});
+      const startLine = general ? 0 : options.line!;
+      await deps.bind(caller(threadId));
+      const thread = await deps.comment(caller(threadId), {filePath: general ? GENERAL_PATH : file!, side: startLine === 0 ? null : options.side ?? "new",
+        startLine, endLine: options.endLine ?? startLine, severity: options.severity ?? null, body: text}).catch(refused);
+      return {exitCode: 0, stdout: "Added comment thread " + thread.id + " on " + describeLocation(thread) + ".\n"};
     },
   };
 }

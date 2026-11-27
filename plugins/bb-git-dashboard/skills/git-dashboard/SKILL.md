@@ -54,3 +54,12 @@ How to answer (diff-review's rules, after diffity):
 - A comment may hold a ```` ```suggestion ```` block: the code suggested for the thread's lines. Apply it if it is right, then resolve the thread.
 
 A thread you leave unanswered when your turn ends shows "No reply" to the owner.
+
+### AI runs
+
+The owner can start AI runs from Review: an AI review, a summary, an explanation of a file or lines, a fix in a new thread, and a reviewer that answers comments mentioning `@reviewer` or `@agent`. Each run is a thread of its own, a child of the reviewed thread, on the same working copy; its first message says what to do.
+
+- An AI review, summary or explanation run leaves comments with `git_review_comment` (lines of a file, or the whole file with `startLine` 0) and `git_review_general_comment` (the whole diff), or `bb git-dashboard review comment <file> --line <n> [--end-line <n>] [--side old|new] [--severity …]` and `review comment --general`. Lines must be shown in the view's diff on that side; a refusal lists the lines that are, so retry with those.
+- An AI review run may answer every thread of its review, not only those sent to it, and later questions about the view arrive as new messages in its thread.
+- A run asked not to edit should not: the review lists every file that changed while it ran.
+- When the owner closes a run, its thread is archived and loses every right, those from threads sent to it included.

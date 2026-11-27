@@ -1,7 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { failureFor, type Copy } from "../../core/workspace.ts";
+import { RUN_PERMISSION_MODES } from "../../core/code-review/runs.ts";
+import { RUN_METADATA_KEY } from "../../core/code-review/tool-names.ts";
+import { codeReviewRuns, type RunPlace } from "./code-review-runs.ts";
 import { codeReviewService } from "./code-review-service.ts";
 import { hostContract } from "./host-contract.ts";
+import { RunStore } from "./review-run-store.ts";
 import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts";
 
 type Caller = {experimental_caller: {kind: string}};
@@ -25,7 +29,28 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   const db = bb.storage.database() as unknown as ReviewDb & Parameters<typeof bb.storage.migrate>[0];
   bb.storage.migrate(db, REVIEW_MIGRATIONS);
   const store = new ReviewStore(db);
+  const runStore = new RunStore(db);
+  const settings = bb.settings.define({
+    aiProvider: {type: "string", label: "Line review: provider for AI runs", default: "claude-code",
+      description: "The provider AI reviews, summaries and fixes in a new thread start with (each run can pick another): claude-code, codex, opencode, … A reviewer started by @reviewer and Explain use it too."},
+    aiModel: {type: "string", label: "Line review: model for AI runs", default: "",
+      description: "The model for that provider, as `bb provider models` lists it. Empty uses the provider's default."},
+    aiPermissionMode: {type: "select", label: "Line review: permission mode for AI runs", default: "auto", options: [...RUN_PERMISSION_MODES],
+      experimental_optionLabels: {auto: "Approve for me", "accept-edits": "Accept edits"},
+      description: "How AI runs start. A provider without the chosen mode runs in full mode instead. A review is asked not to edit either way, and the review lists any file that changed while it ran."},
+  });
   const at = (copy: Copy) => ({hostId: copy.hostId});
+  const providerName = async (threadId: string) => {
+    const {providerId} = await bb.sdk.threads.get({threadId}) as {providerId: string};
+    return providerNames[providerId] ?? providerId;
+  };
+  const threadTurnStart = async (threadId: string) => {
+    const events = await bb.sdk.threads.events.list({threadId, types: ["turn/started"], order: "desc", limit: "20"});
+    // A sub-agent's turn carries the tool call that started it; only the thread's own turns count.
+    const own = (events as {type: string; createdAt: number; data: {parentToolCallId?: string}}[])
+      .find(event => event.type === "turn/started" && event.data.parentToolCallId === undefined);
+    return own?.createdAt ?? null;
+  };
   const service = codeReviewService({
     store, copy: copyOf,
     host: {
@@ -42,25 +67,71 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     },
     threads: {
       send: async (threadId, text) => { await bb.sdk.threads.send({threadId, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]}); },
-      providerName: async threadId => {
-        const {providerId} = await bb.sdk.threads.get({threadId}) as {providerId: string};
-        return providerNames[providerId] ?? providerId;
-      },
-      turnStart: async threadId => {
-        const events = await bb.sdk.threads.events.list({threadId, types: ["turn/started"], order: "desc", limit: "20"});
-        // A sub-agent's turn carries the tool call that started it; only the thread's own turns count.
-        const own = (events as {type: string; createdAt: number; data: {parentToolCallId?: string}}[])
-          .find(event => event.type === "turn/started" && event.data.parentToolCallId === undefined);
-        return own?.createdAt ?? null;
-      },
+      providerName,
+      turnStart: threadTurnStart,
       copyOf: threadCopy,
     },
     changed: copyId => bb.realtime.publish(codeReviewSignal, {copyId}),
   });
 
-  const turnEnded = ({thread}: {thread: {id: string}}) => { service.turnEnded(thread.id).catch(() => { /* the next turn retries */ }); };
-  bb.events.on("thread.idle", turnEnded);
-  bb.events.on("thread.failed", turnEnded);
+  const diff = async (copy: Copy, target: Parameters<typeof service.view>[1]) => {
+    const result = value(await host.call("reviewDiff", {root: copy.root, identity: copy.identity, target, ignoreWhitespace: false}, at(copy)));
+    return {value: result.value, target: result.target};
+  };
+  const routing = (place: RunPlace) => "environmentId" in place ? {environmentId: place.environmentId} : {hostId: place.hostId, projectId: place.projectId};
+  const runs = codeReviewRuns({
+    store, runs: runStore, review: service, copy: copyOf, diff, settings: () => settings.get(), threadCopy, pluginId: bb.pluginId,
+    changed: copyId => bb.realtime.publish(codeReviewSignal, {copyId}),
+    log: message => bb.log.warn(message),
+    bb: {
+      thread: async threadId => {
+        const thread = await bb.sdk.threads.get({threadId}) as {environmentId: string | null; originPluginId?: string | null};
+        return {environmentId: thread.environmentId, originPluginId: thread.originPluginId ?? null};
+      },
+      metadata: async threadId => await bb.sdk.threads.getPluginMetadata({threadId}) as Record<string, unknown>,
+      spawn: async request => {
+        const {place, execution} = request;
+        const spawned = await bb.sdk.threads.spawn({
+          projectId: request.projectId, title: request.title, prompt: request.prompt,
+          environment: "environmentId" in place ? {type: "reuse", environmentId: place.environmentId}
+            : {type: "host", hostId: place.hostId, workspace: {type: "unmanaged", path: place.path}},
+          providerId: execution.providerId,
+          ...(execution.model ? {model: execution.model} : {}),
+          ...(request.providerReasoning ? {} : {reasoningLevel: execution.reasoningLevel}),
+          ...(execution.serviceTier ? {serviceTier: execution.serviceTier} : {}),
+          permissionMode: request.permissionMode,
+          ...("parentThreadId" in place ? {parentThreadId: place.parentThreadId} : {}),
+          pluginMetadata: {[RUN_METADATA_KEY]: request.runId},
+        });
+        const record = spawned as {threadId?: string; id?: string};
+        return record.threadId ?? record.id ?? (() => { throw new Error("OUTCOME_UNKNOWN"); })();
+      },
+      send: async (threadId, text) => { await bb.sdk.threads.send({threadId, mode: "queue-if-active", input: [{type: "text", text, mentions: []}]}); },
+      archive: async threadId => { await bb.sdk.threads.archive({threadId}); },
+      models: async (place, providerId) => {
+        const options = await bb.sdk.providers.models({...routing(place), providerId});
+        if (options.modelLoadError !== null) return {models: [], error: options.modelLoadError.detail ?? providerId + " could not list its models (" + options.modelLoadError.code + ")."};
+        return {models: options.models.map(entry => ({id: entry.id, model: entry.model, isDefault: entry.isDefault, defaultReasoningEffort: entry.defaultReasoningEffort})), error: null};
+      },
+      permissionModes: async (place, providerId) => {
+        const providers = await bb.sdk.providers.list("environmentId" in place ? {environmentId: place.environmentId} : {hostId: place.hostId});
+        return providers.find(provider => provider.id === providerId)?.capabilities.permissionModes ?? null;
+      },
+      turnStart: threadTurnStart,
+      providerName,
+    },
+  });
+
+  // A turn that ends, well or badly, closes out what was sent to that thread and the runs it carries.
+  const turnEnded = async (thread: {id: string}, lastText: string | null, failed: boolean) => {
+    try {
+      await runs.bindIfPending(thread.id);
+      await service.turnEnded(thread.id);
+      await runs.turnEnded(thread.id, lastText, failed);
+    } catch { /* the next turn retries */ }
+  };
+  bb.events.on("thread.idle", ({thread, lastAssistantText}) => { void turnEnded(thread, lastAssistantText, false); });
+  bb.events.on("thread.failed", ({thread, error}) => { void turnEnded(thread, error, true); });
 
   const handle = <I, O extends object>(action: (input: I) => O | Promise<O>) => async (input: I, context: Caller) => {
     if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
@@ -70,15 +141,34 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
   const handlers = {
     reviewView: handle(({copyId, target, ignoreWhitespace}: {copyId: string; target: Parameters<typeof service.view>[1]; ignoreWhitespace: boolean}) =>
       service.view(copyId, target, ignoreWhitespace)),
-    reviewCreateThread: handle(async ({sessionId, ...input}: {sessionId: string} & Parameters<typeof service.createThread>[1]) =>
-      ({thread: await service.createThread(sessionId, input)})),
-    reviewAddComment: handle(({threadId, body}: {threadId: string; body: string}) => { service.addComment(threadId, body); return {}; }),
+    reviewCreateThread: handle(async ({sessionId, viewerThreadId, ...input}: {sessionId: string; viewerThreadId?: string | null} & Parameters<typeof service.createThread>[1]) => {
+      const thread = await service.createThread(sessionId, input);
+      runs.onUserComment(thread, input.body, viewerThreadId ?? null);
+      return {thread};
+    }),
+    reviewAddComment: handle(({threadId, body, viewerThreadId}: {threadId: string; body: string; viewerThreadId?: string | null}) => {
+      service.addComment(threadId, body);
+      const thread = store.thread(threadId);
+      if (thread) runs.onUserComment(thread, body, viewerThreadId ?? null);
+      return {};
+    }),
     reviewEditComment: handle(({commentId, body}: {commentId: string; body: string}) => { service.editComment(commentId, body); return {}; }),
     reviewDeleteComment: handle(({commentId}: {commentId: string}) => { service.deleteComment(commentId); return {}; }),
     reviewSetStatus: handle(({threadId, status}: {threadId: string; status: "open" | "resolved" | "dismissed"}) => { service.setStatus(threadId, status); return {}; }),
     reviewSend: handle(({sessionId, threadId, threadIds, note}: {sessionId: string; threadId: string; threadIds: string[]; note: string}) =>
       service.send(sessionId, threadId, threadIds, note)),
     reviewApply: handle(async ({threadId, commentId}: {threadId: string; commentId: string}) => { await service.applySuggestion(threadId, commentId); return {}; }),
+    reviewRunDefaults: handle(async ({copyId, viewerThreadId}: {copyId: string; viewerThreadId?: string | null}) => runs.defaults(copyId, viewerThreadId ?? null)),
+    reviewRuns: handle(({sessionId}: {sessionId: string}) => ({runs: runs.list(sessionId)})),
+    reviewStartReview: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.startReview>[0], "threadId"> & {viewerThreadId?: string | null}) =>
+      ({run: await runs.startReview({...input, threadId: viewerThreadId ?? null})})),
+    reviewStartSummary: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.startSummary>[0], "threadId"> & {viewerThreadId?: string | null}) =>
+      ({run: await runs.startSummary({...input, threadId: viewerThreadId ?? null})})),
+    reviewStartExplain: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.startExplain>[0], "threadId"> & {viewerThreadId?: string | null}) =>
+      ({run: await runs.startExplain({...input, threadId: viewerThreadId ?? null})})),
+    reviewFix: handle(async ({viewerThreadId, ...input}: Omit<Parameters<typeof runs.fixInNewThread>[0], "threadId"> & {viewerThreadId?: string | null}) =>
+      runs.fixInNewThread({...input, threadId: viewerThreadId ?? null})),
+    reviewCloseRun: handle(async ({runId}: {runId: string}) => { await runs.close(runId); return {}; }),
     reviewTargets: handle(async ({copyId}: {copyId: string}) => {
       const copy = await copyOf(copyId);
       if (!copy?.projectId) return {threads: []};
@@ -92,5 +182,5 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       return {threads};
     }),
   };
-  return {handlers, service};
+  return {handlers, service, runs};
 }
