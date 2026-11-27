@@ -8,6 +8,7 @@ import {
   sftpChannelEventSchema,
   sftpMethods,
   sftpOpInputSchema,
+  base64Bytes,
   sftpPathSchema,
   uint64Schema,
 } from "./sftp-contract.ts";
@@ -27,6 +28,17 @@ describe("paths", () => {
 
   it("refuses a text path with a NUL in it", () => {
     expect(sftpPathSchema.safeParse({ text: "/tmp/a\u0000b" }).success).toBe(false);
+  });
+});
+
+describe("base64Bytes", () => {
+  it("counts the decoded bytes with the padding", () => {
+    expect(base64Bytes("")).toBe(0);
+    expect(base64Bytes("aGk=")).toBe(2);
+    expect(base64Bytes("aA==")).toBe(1);
+    expect(base64Bytes("aGkh")).toBe(3);
+    expect(base64Bytes("aGk")).toBeNull();
+    expect(base64Bytes("=Gk=")).toBeNull();
   });
 });
 
@@ -77,6 +89,25 @@ describe("operations", () => {
     expect(ok({ op: "write", path: { text: "/f" }, offset: "5", data: "aGk=", create: "truncate" })).toBe(false);
     expect(ok({ op: "write", path: { text: "/f" }, offset: "0", data: "aGk=" })).toBe(false);
     expect(ok({ op: "write", path: { text: "/f" }, offset: "0", data: "", create: "truncate" })).toBe(true); // an empty file
+  });
+
+  it("takes a chunk of exactly 4 MiB and refuses one or two bytes more, whatever the padding", () => {
+    const chunk = (bytes: number) => Buffer.alloc(bytes, 0x61).toString("base64");
+    const write = (data: string) => sftpOpInputSchema.safeParse({ channelId: CH, op: "write", path: { text: "/f" }, offset: "0", data, create: "truncate" }).success;
+    expect(write(chunk(4194304))).toBe(true);
+    expect(write(chunk(4194305))).toBe(false);
+    expect(write(chunk(4194306))).toBe(false);
+    expect(write(chunk(4194303))).toBe(true);
+  });
+
+  it("refuses base64 that is not canonical: a wrong length, a foreign character, padding in the middle or three pads", () => {
+    const write = (data: string) => sftpOpInputSchema.safeParse({ channelId: CH, op: "write", path: { text: "/f" }, offset: "0", data, create: "truncate" }).success;
+    expect(write("aGk=")).toBe(true);
+    expect(write("aGk")).toBe(false);
+    expect(write("aG k")).toBe(false);
+    expect(write("a=k=")).toBe(false);
+    expect(write("a===")).toBe(false);
+    expect(write("aGk-")).toBe(false); // the URL alphabet is not accepted
   });
 
   it("needs the read level to look and the write level to change anything", () => {

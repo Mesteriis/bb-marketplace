@@ -28,8 +28,33 @@ export function levelAllows(granted: SftpLevel, needed: SftpLevel): boolean {
   return SFTP_LEVELS.indexOf(granted) >= SFTP_LEVELS.indexOf(needed);
 }
 
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-const base64Schema = (maxBytes: number) => z.string().max(Math.ceil(maxBytes / 3) * 4).regex(BASE64);
+/**
+ * How many bytes canonical base64 text decodes to, or null when it is not canonical base64 (standard alphabet, length a
+ * multiple of four, at most two `=` and only at the end). One pass over the text: a 4 MiB chunk is 5.6 million characters,
+ * which a regular expression with a repeated group cannot take.
+ */
+export function base64Bytes(text: string): number | null {
+  const n = text.length;
+  if (n % 4 !== 0) return null;
+  let pad = 0;
+  if (n > 0 && text.charCodeAt(n - 1) === 61) pad = text.charCodeAt(n - 2) === 61 ? 2 : 1;
+  for (let i = 0; i < n - pad; i++) {
+    const c = text.charCodeAt(i);
+    const ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 47;
+    if (!ok) return null;
+  }
+  return (n / 4) * 3 - pad;
+}
+
+/** Canonical base64 of at most `maxBytes` DECODED bytes (the padding is counted, so one byte over is refused). */
+const base64Schema = (maxBytes: number) =>
+  z
+    .string()
+    .max(Math.ceil(maxBytes / 3) * 4)
+    .refine((s) => {
+      const bytes = base64Bytes(s);
+      return bytes !== null && bytes <= maxBytes;
+    }, "not canonical base64, or more bytes than allowed");
 
 /**
  * A remote path or name. `text` when it is valid UTF-8; `bytes` (base64 of the raw bytes) when it is not, so a name the
@@ -87,7 +112,12 @@ export const sftpOpInputSchema = z.union([
     onChannel("realpath", { path: sftpPathSchema }),
     onChannel("read", { path: sftpPathSchema, offset: uint64Schema, length: z.number().int().min(1).max(SFTP_LIMITS.chunkBytes) }),
     onChannel("mkdir", { path: sftpPathSchema }),
-    /** `overwrite: true` replaces an existing target atomically where the server can (posix-rename); else `unsupported`. */
+    /**
+     * `overwrite: false`: the target must not exist (`exists` otherwise). `overwrite: true`: an atomic replace, which only a
+     * server with the posix-rename extension can do. Without that extension `overwrite: true` is refused with `unsupported`
+     * ALWAYS, whether or not the target exists: Remote Hub never emulates it with remove-then-rename and never answers by
+     * what happens to be on the server.
+     */
     onChannel("rename", { from: sftpPathSchema, to: sftpPathSchema, overwrite: z.boolean() }),
     /** Removes one file or one EMPTY directory; nothing recursive happens on the server. */
     onChannel("remove", { path: sftpPathSchema, kind: z.enum(["file", "dir"]) }),
