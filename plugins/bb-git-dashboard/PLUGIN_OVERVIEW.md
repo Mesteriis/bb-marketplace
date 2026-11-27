@@ -10,6 +10,10 @@ Each working copy is matched to its forge from the `origin` remote. SSH host ali
 
 The **Projects folder** setting (default `~/projects` on the scanned host) and its exclusion list define which folders count as projects: a folder with a `.git` directory is a project, a repository inside another project's folder is listed under that project, a linked worktree or a submodule belongs to its parent, and hidden folders, `node_modules`, `vendor` and `references` are skipped. A preview counts the top-level and nested projects found, returns them as a tree and lists what was skipped and why.
 
+## History
+
+The History tab of a working copy draws the commit graph over all branches, tags and remotes, labels HEAD, branches and tags, lists uncommitted changes on top, and opens a commit's files and patches. It reads Git on the copy's own host without changing anything and refreshes when refs or the working tree change.
+
 ## CI/CD
 
 The Actions tab of a connected repository lists GitHub Actions, Gitea Actions or Azure Pipelines runs with All, Active and Failed filters. A run shows its jobs and steps and opens the failed job's log at its error line. Re-run failed or all jobs, cancel a run, or run a workflow with the inputs it declares; every change is shown for confirmation first. Ask agent opens an investigation thread on the working copy with the error excerpt, Send to threads passes the same excerpt to chosen threads, and failure notifications send each new failed run to them. Log text reaches agents as fenced, untrusted data.
