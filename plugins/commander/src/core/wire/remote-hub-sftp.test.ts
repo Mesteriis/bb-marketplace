@@ -24,7 +24,7 @@ const P = "5b568675-f842-4a96-83e0-78ae53d96024";
 
 describe("contract id", () => {
   it("names the Remote Hub commit it mirrors", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@ea8e3bfa");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@22933aad");
     expect(SFTP_EVENTS_CHANNEL).toBe("remote-hub.sftp");
   });
 });

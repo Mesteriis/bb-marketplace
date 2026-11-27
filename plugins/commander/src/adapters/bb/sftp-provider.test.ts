@@ -67,7 +67,7 @@ function tempName(session: SftpWriteSession): string {
 
 describe("contract and capabilities", () => {
   it("exports the contract id it mirrors and declares only the stage-one capabilities", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@ea8e3bfa");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@22933aad");
     const { provider } = setup();
     expect([...provider.capabilities].sort()).toEqual(["list", "mkdir", "read", "remove", "rename", "seek", "stat", "write"]);
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
@@ -153,7 +153,7 @@ describe("ambiguous outcome of a mutation (a transport failure after sending)", 
     expect(mock.exists("/d")).toBe(true);
   });
 
-  it.each(["unreachable", "failure", "channel_closed"] as const)("a creating write refused with %s is outcome_unknown from openWrite", async (code) => {
+  it.each(["unreachable", "failure"] as const)("a creating write refused with %s is outcome_unknown from openWrite", async (code) => {
     const { provider } = setup({ failAll: code });
     const error = await expectCode(openWrite(provider, at("f.txt"), signal()), "outcome_unknown");
     expect(error.retryable).toBe(false);
@@ -387,14 +387,44 @@ describe("generation change", () => {
     expect(mock.opCount("op:list")).toBe(3);
   });
 
-  it("a creating write across a restart is outcome_unknown from openWrite, and not repeated", async () => {
-    const { mock, provider } = setup({ generationBumpAfter: 2 });
+  it("a creating write after a helper restart is repeated once and applied once", async () => {
+    const { mock, provider } = setup({ generationBumpAfter: 1 });
     mock.seedFile("/a.txt", "a");
     await provider.stat(at("a.txt"), signal());
-    await provider.stat(at("a.txt"), signal());
-    await expectCode(openWrite(provider, at("new.txt"), signal()), "outcome_unknown");
-    expect(mock.opCount("op:write")).toBe(1);
-    expect(mock.opCount("open")).toBe(1);
+    const session = await openWrite(provider, at("w.txt"), signal(), { t: ".w.part" });
+    await session.write(0n, bytes("abc"), signal());
+    expect(text(mock.bytesAt("/.w.part"))).toBe("abc");
+    expect(mock.appliedCount("write")).toBe(2);
+    expect(mock.opCount("op:write")).toBe(3);
+    expect(mock.opCount("open")).toBe(2);
+  });
+
+  it("two channel_closed in a row on a creating write are connection_failed, retryable, with no third call", async () => {
+    const { mock, provider } = setup({ failAll: "channel_closed" });
+    const error = await expectCode(openWrite(provider, at("f.txt"), signal()), "connection_failed");
+    expect(error.retryable).toBe(true);
+    expect(mock.opCount("op:write")).toBe(2);
+    expect(mock.opCount("open")).toBe(2);
+  });
+
+  it("a write whose helper dies after applying it is outcome_unknown, and is not repeated", async () => {
+    const { mock, provider } = setup();
+    const session = await openWrite(provider, at("f.txt"), signal());
+    mock.dieNext("write");
+    const error = await expectCode(session.write(0n, bytes("abc"), signal()), "outcome_unknown");
+    expect(error.retryable).toBe(false);
+    expect(mock.appliedCount("write")).toBe(2);
+    expect(mock.opCount("op:write")).toBe(2);
+    expect(mock.exists(`/${tempName(session)}`)).toBe(true);
+  });
+
+  it("a mkdir whose helper dies after applying it is outcome_unknown, and is not repeated", async () => {
+    const { mock, provider } = setup();
+    mock.dieNext("mkdir");
+    await expectCode(provider.mkdir(at("d"), signal()), "outcome_unknown");
+    expect(mock.appliedCount("mkdir")).toBe(1);
+    expect(mock.opCount("op:mkdir")).toBe(1);
+    expect(mock.exists("/d")).toBe(true);
   });
 
   it("after a second channel_closed on an idempotent read, the retry stops with connection_failed", async () => {
@@ -627,6 +657,7 @@ describe("error mapping", () => {
     ["permission_denied", "permission_denied", false],
     ["profile_not_found", "unsupported", false],
     ["channel_closed", "connection_failed", true],
+    ["outcome_unknown", "outcome_unknown", false],
     ["no_such_file", "not_found", false],
     ["profile_not_sftp", "unsupported", false],
     ["limit_exceeded", "limit_exceeded", false],
@@ -646,7 +677,7 @@ describe("error mapping", () => {
 
   it("the table covers every refusal code of the contract", () => {
     expect(TABLE.map(([code]) => code).sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
-    expect(TABLE).toHaveLength(23);
+    expect(TABLE).toHaveLength(24);
   });
 
   it.each(TABLE)("refusal %s on a read is %s (retryable %s), with no leaked text", async (code, expected, retryable) => {
