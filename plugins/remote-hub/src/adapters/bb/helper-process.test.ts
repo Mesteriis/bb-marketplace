@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   decodeFrame,
   encodeControlFrame,
@@ -98,6 +98,23 @@ function decodeControlFrames(writes: Buffer[]): ControlMessage[] {
   return frames;
 }
 
+// The helper ships for darwin/arm64 only and CI runs this file on Linux, so a test that needs to get past the platform
+// check names its machine here instead of inheriting the host's.
+function onMachine(platform: NodeJS.Platform, arch: string): void {
+  const real = {
+    platform: Object.getOwnPropertyDescriptor(process, "platform")!,
+    arch: Object.getOwnPropertyDescriptor(process, "arch")!,
+  };
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { ...real.platform, value: platform });
+    Object.defineProperty(process, "arch", { ...real.arch, value: arch });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, "platform", real.platform);
+    Object.defineProperty(process, "arch", real.arch);
+  });
+}
+
 describe("helper-process (pure parts)", () => {
   it("resolves the binary path inside the plugin directory", () => {
     expect(helperBinaryPath("/plugins/remote-hub")).toBe("/plugins/remote-hub/bin/" + HELPER_BIN_NAME);
@@ -107,47 +124,64 @@ describe("helper-process (pure parts)", () => {
     expect(parseHelperVersion("remote-hub-helper 0.1.0\n")).toBe("0.1.0");
   });
 
-  it("returns null platform error on this darwin/arm64 machine", () => {
-    expect(platformError()).toBeNull();
+  describe("on another machine than darwin/arm64", () => {
+    onMachine("linux", "x64");
+
+    it("names the machine and probes nothing", async () => {
+      const unsupported = {
+        code: "unsupported_platform",
+        message: "Remote Hub helper is built for darwin/arm64; this machine is linux/x64",
+      };
+      expect(platformError()).toEqual(unsupported);
+      expect(await probeHelper("/fixed/plugin/root/bin/" + HELPER_BIN_NAME)).toEqual({ ok: false, error: unsupported });
+    });
   });
 
-  it("a binary that does not match its checksum file is refused before anything is executed", async () => {
-    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const dir = mkdtempSync(join(tmpdir(), "rh-probe-"));
-    try {
-      const bin = join(dir, HELPER_BIN_NAME);
-      writeFileSync(bin, "#!/bin/sh\ntouch " + join(dir, "RAN") + "\n", { mode: 0o755 });
-      writeFileSync(join(dir, "SHA256SUMS"), "0".repeat(64) + "  " + HELPER_BIN_NAME + "\n");
-      const probe = await probeHelper(bin);
+  describe("on darwin/arm64", () => {
+    onMachine("darwin", "arm64");
+
+    it("returns null platform error", () => {
+      expect(platformError()).toBeNull();
+    });
+
+    it("a binary that does not match its checksum file is refused before anything is executed", async () => {
+      const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const dir = mkdtempSync(join(tmpdir(), "rh-probe-"));
+      try {
+        const bin = join(dir, HELPER_BIN_NAME);
+        writeFileSync(bin, "#!/bin/sh\ntouch " + join(dir, "RAN") + "\n", { mode: 0o755 });
+        writeFileSync(join(dir, "SHA256SUMS"), "0".repeat(64) + "  " + HELPER_BIN_NAME + "\n");
+        const probe = await probeHelper(bin);
+        expect(probe.ok).toBe(false);
+        if (probe.ok) return;
+        expect(probe.error.code).toBe("helper_checksum_failed");
+        expect(probe.error.message).toContain("not someone who can write to the plugin directory");
+        expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
+        // No checksum file at all is a refusal too (there is no unverified mode), and the script is not run.
+        rmSync(join(dir, "SHA256SUMS"));
+        const noSums = await probeHelper(bin);
+        expect(noSums.ok).toBe(false);
+        if (!noSums.ok) expect(noSums.error.message).toContain("no_sums");
+        expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // R10: the expected message is a literal, not built with the function under test.
+    it("returns helper_missing with a literal expected message", async () => {
+      const missing = "/fixed/plugin/root/bin/" + HELPER_BIN_NAME;
+      const probe = await probeHelper(missing);
       expect(probe.ok).toBe(false);
       if (probe.ok) return;
-      expect(probe.error.code).toBe("helper_checksum_failed");
-      expect(probe.error.message).toContain("not someone who can write to the plugin directory");
-      expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
-      // No checksum file at all is a refusal too (there is no unverified mode), and the script is not run.
-      rmSync(join(dir, "SHA256SUMS"));
-      const noSums = await probeHelper(bin);
-      expect(noSums.ok).toBe(false);
-      if (!noSums.ok) expect(noSums.error.message).toContain("no_sums");
-      expect((await import("node:fs")).existsSync(join(dir, "RAN"))).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  // R10: the expected message is a literal, not built with the function under test.
-  it("returns helper_missing with a literal expected message", async () => {
-    const missing = "/fixed/plugin/root/bin/" + HELPER_BIN_NAME;
-    const probe = await probeHelper(missing);
-    expect(probe.ok).toBe(false);
-    if (probe.ok) return;
-    expect(probe.error).toEqual({
-      code: "helper_missing",
-      message:
-        "Remote Hub helper binary is missing at /fixed/plugin/root/bin/remote-hub-helper; run 'npm run build:helper' in the plugin directory",
-      path: missing,
+      expect(probe.error).toEqual({
+        code: "helper_missing",
+        message:
+          "Remote Hub helper binary is missing at /fixed/plugin/root/bin/remote-hub-helper; run 'npm run build:helper' in the plugin directory",
+        path: missing,
+      });
     });
   });
 
