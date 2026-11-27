@@ -55,6 +55,12 @@ const checkpoint: Checkpoint = {
     sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   },
   via: "copy",
+  writing: { offset: "18446744073709551612", length: 3 },
+  cleanup: {
+    tempPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: ".staged" }] },
+    tempFingerprint: { size: "18446744073709551615", mtimeNs: "1732665600123456789" },
+  },
+  sourceHash: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   targetPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: "Копия" }] },
   expectTarget: { size: "12", mtimeNs: "1732665600000000000" },
   verified: { size: "18446744073709551615", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
@@ -184,7 +190,7 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
   await store.checkpoint(replacement);
   expect(db.prepare(`
     SELECT temp_path_json, target_path_json, expect_target_json, verified_json, committed_json,
-      temp_fingerprint_json, via
+      temp_fingerprint_json, via, writing_json, cleanup_json, source_hash
     FROM checkpoints WHERE item_index = 1
   `).get()).toEqual({
     temp_path_json: null,
@@ -194,6 +200,9 @@ test("reopens every checkpoint field and replaces nullable and optional fields o
     committed_json: null,
     temp_fingerprint_json: null,
     via: null,
+    writing_json: null,
+    cleanup_json: null,
+    source_hash: null,
   });
 
   db.close();
@@ -486,6 +495,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
       { id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 1, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 2, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 3, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     ]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
@@ -496,7 +506,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
   }
 });
 
-test.each([1, 2])("upgrades a v%i checkpoint without inventing recovery metadata", async (version) => {
+test.each([1, 2, 3])("upgrades a v%i checkpoint without inventing recovery metadata", async (version) => {
   const { createFakePluginHost } = await loadSdkTestHost();
   const { bb } = createFakePluginHost({ pluginId: "commander-s6-checkpoint-upgrade" });
   const legacyDb = new Database(join(directory, "v1.sqlite"));
@@ -511,7 +521,7 @@ test.each([1, 2])("upgrades a v%i checkpoint without inventing recovery metadata
     `).run(job.id, date, job.id, date);
 
     bb.storage.migrate(legacyDb, MIGRATIONS);
-    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2]);
+    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2, 3]);
     expect(journal.all(version)).toStrictEqual(originalEntries);
 
     const migrated = createSqliteJobStore(legacyDb);
