@@ -46,9 +46,13 @@ const secondId = "223e4567-e89b-42d3-a456-426614174001";
 const checkpoint: Checkpoint = {
   jobId: job.id,
   itemIndex: 0,
-  phase: "copying",
+  phase: "prepared",
   bytesDone: "18446744073709551615",
-  tempName: ".Копия.partial",
+  tempPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: ".Копия.partial" }] },
+  targetPath: { segments: [{ t: "Копии" }, { b: "/w==" }, { t: "Копия" }] },
+  expectTarget: { size: "12", mtimeNs: "1732665600000000000" },
+  verified: { size: "18446744073709551615", sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  committed: { size: "18446744073709551615", mtimeNs: "1732665600123456789" },
 };
 
 let directory: string;
@@ -153,23 +157,41 @@ test("returns a damaged job as unknown without hiding healthy jobs", async () =>
   expect(await store.update(job.id, { state: "running" }, "pending")).toBe(false);
 });
 
-test("stores the latest checkpoint per item and reopens both jobs and checkpoints", async () => {
+test("reopens every checkpoint field and replaces nullable and optional fields on upsert", async () => {
   await store.create(job);
   expect(await store.lastCheckpoint(job.id, 0)).toBeNull();
   await store.checkpoint(checkpoint);
-  expect(db.prepare("SELECT temp_path_json FROM checkpoints").pluck().get())
-    .toBe('{"segments":[{"t":".Копия.partial"}]}');
   await store.checkpoint({ ...checkpoint, itemIndex: 1 });
-  await store.checkpoint({ ...checkpoint, phase: "committed", tempName: null });
+
+  const replacement: Checkpoint = {
+    jobId: job.id,
+    itemIndex: 1,
+    phase: "committed",
+    bytesDone: "12",
+    tempPath: null,
+    targetPath: { segments: [{ t: "Копии" }, { b: "/w==" }] },
+    expectTarget: "absent",
+    verified: null,
+  };
+  await store.checkpoint(replacement);
+  expect(db.prepare(`
+    SELECT temp_path_json, target_path_json, expect_target_json, verified_json, committed_json
+    FROM checkpoints WHERE item_index = 1
+  `).get()).toEqual({
+    temp_path_json: null,
+    target_path_json: '{"segments":[{"t":"Копии"},{"b":"/w=="}]}',
+    expect_target_json: '"absent"',
+    verified_json: null,
+    committed_json: null,
+  });
 
   db.close();
   db = new Database(filename);
   store = createSqliteJobStore(db);
 
   expect(await store.get(job.id)).toStrictEqual(job);
-  expect(await store.lastCheckpoint(job.id, 0))
-    .toStrictEqual({ ...checkpoint, phase: "committed", tempName: null });
-  expect(await store.lastCheckpoint(job.id, 1)).toStrictEqual({ ...checkpoint, itemIndex: 1 });
+  expect(await store.lastCheckpoint(job.id, 0)).toStrictEqual(checkpoint);
+  expect(await store.lastCheckpoint(job.id, 1)).toStrictEqual(replacement);
 });
 
 function seedTerminalJobs(count: number, firstOffset: number): void {
@@ -397,12 +419,59 @@ test("the SDK creates tables in a clean database and the second migrate preserve
     await createSqliteJobStore(cleanDb).create(job);
     const journal = cleanDb.prepare("SELECT * FROM _bb_migrations ORDER BY id");
     const entries = journal.all();
-    expect(entries).toEqual([{ id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) }]);
+    expect(entries).toEqual([
+      { id: 0, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 1, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
     expect(journal.all()).toStrictEqual(entries);
     expect(await createSqliteJobStore(cleanDb).get(job.id)).toStrictEqual(job);
   } finally {
     cleanDb.close();
+  }
+});
+
+test("upgrades a v1 checkpoint without inventing target or verification metadata", async () => {
+  const { createFakePluginHost } = await loadSdkTestHost();
+  const { bb } = createFakePluginHost({ pluginId: "commander-s6-checkpoint-upgrade" });
+  const legacyDb = new Database(join(directory, "v1.sqlite"));
+  try {
+    bb.storage.migrate(legacyDb, MIGRATIONS.slice(0, 1));
+    const journal = legacyDb.prepare("SELECT * FROM _bb_migrations WHERE id = 0");
+    const migrationOne = journal.get();
+    legacyDb.prepare(`
+      INSERT INTO checkpoints (job_id, item_index, phase, bytes_done, temp_path_json, at)
+      VALUES (?, 0, 'copying', '18446744073709551615', '{"segments":[{"t":".Копия.partial"}]}', ?),
+             (?, 1, 'committed', '12', NULL, ?)
+    `).run(job.id, date, job.id, date);
+
+    bb.storage.migrate(legacyDb, MIGRATIONS);
+    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1]);
+    expect(journal.get()).toStrictEqual(migrationOne);
+
+    const migrated = createSqliteJobStore(legacyDb);
+    expect(await migrated.lastCheckpoint(job.id, 0)).toStrictEqual({
+      jobId: job.id,
+      itemIndex: 0,
+      phase: "copying",
+      bytesDone: "18446744073709551615",
+      tempPath: { segments: [{ t: ".Копия.partial" }] },
+      targetPath: null,
+      expectTarget: null,
+      verified: null,
+    });
+    expect(await migrated.lastCheckpoint(job.id, 1)).toStrictEqual({
+      jobId: job.id,
+      itemIndex: 1,
+      phase: "committed",
+      bytesDone: "12",
+      tempPath: null,
+      targetPath: null,
+      expectTarget: null,
+      verified: null,
+    });
+  } finally {
+    legacyDb.close();
   }
 });

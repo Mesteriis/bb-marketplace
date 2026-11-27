@@ -30,4 +30,10 @@ export const MIGRATIONS: string[] = [
       PRIMARY KEY (job_id, item_index)
     );
   `,
+  `
+    ALTER TABLE checkpoints ADD COLUMN target_path_json TEXT;
+    ALTER TABLE checkpoints ADD COLUMN expect_target_json TEXT;
+    ALTER TABLE checkpoints ADD COLUMN verified_json TEXT;
+    ALTER TABLE checkpoints ADD COLUMN committed_json TEXT;
+  `,
 ];

@@ -2,7 +2,7 @@ import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { CommanderError } from "../../core/errors.ts";
 import type { Checkpoint, JobStore } from "../../core/job-store.ts";
-import { Initiator, OperationJob, type OperationPlan } from "../../core/model.ts";
+import { Fingerprint, Initiator, OperationJob, type OperationPlan } from "../../core/model.ts";
 import { ResourcePath } from "../../core/path.ts";
 import { Size } from "../../core/size.ts";
 
@@ -31,16 +31,17 @@ const TERMINAL_LIMIT = 1000;
 
 const Timestamp = z.string().datetime();
 const JobId = z.string().uuid();
-const CheckpointFields = z.object({
+const CheckpointValue = z.strictObject({
   jobId: JobId,
   itemIndex: z.number().int().min(0),
-  phase: z.enum(["copying", "committed", "verified", "source_removed"]),
+  phase: z.enum(["prepared", "copying", "committed", "verified", "source_removed"]),
   bytesDone: Size,
+  tempPath: ResourcePath.nullable(),
+  targetPath: ResourcePath.nullable(),
+  expectTarget: z.union([Fingerprint, z.literal("absent")]).nullable(),
+  verified: Fingerprint.pick({ size: true, sha256: true }).nullable(),
+  committed: Fingerprint.optional(),
 });
-const TempPath = ResourcePath.refine(
-  ({ segments }) => segments.length === 1 && "t" in segments[0],
-  "Expected one text segment for the temporary name",
-);
 
 interface CheckpointRow {
   job_id: string;
@@ -48,6 +49,10 @@ interface CheckpointRow {
   phase: string;
   bytes_done: string;
   temp_path_json: string | null;
+  target_path_json: string | null;
+  expect_target_json: string | null;
+  verified_json: string | null;
+  committed_json: string | null;
   at: string;
 }
 
@@ -55,7 +60,7 @@ function decodeJson(value: string | null): unknown {
   return value === null ? null : JSON.parse(value);
 }
 
-function encodeJson(value: object | null): string | null {
+function encodeJson(value: object | string | null): string | null {
   return value === null ? null : JSON.stringify(value);
 }
 
@@ -188,10 +193,18 @@ export function createSqliteJobStore(db: Database): JobStore {
     WHERE id = @id AND state = @expected
   `);
   const writeCheckpoint = db.prepare(`
-    INSERT INTO checkpoints (job_id, item_index, phase, bytes_done, temp_path_json, at)
-    SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM jobs WHERE id = ?)
-    ON CONFLICT(job_id, item_index) DO UPDATE SET phase = excluded.phase,
-      bytes_done = excluded.bytes_done, temp_path_json = excluded.temp_path_json, at = excluded.at
+    INSERT INTO checkpoints (
+      job_id, item_index, phase, bytes_done, temp_path_json, target_path_json,
+      expect_target_json, verified_json, committed_json, at
+    )
+    SELECT @jobId, @itemIndex, @phase, @bytesDone, @tempPath, @targetPath,
+      @expectTarget, @verified, @committed, @at
+    WHERE EXISTS (SELECT 1 FROM jobs WHERE id = @jobId)
+    ON CONFLICT(job_id, item_index) DO UPDATE SET
+      phase = excluded.phase, bytes_done = excluded.bytes_done,
+      temp_path_json = excluded.temp_path_json, target_path_json = excluded.target_path_json,
+      expect_target_json = excluded.expect_target_json, verified_json = excluded.verified_json,
+      committed_json = excluded.committed_json, at = excluded.at
   `);
   const readCheckpoint = db.prepare<[string, number], CheckpointRow>(
     "SELECT * FROM checkpoints WHERE job_id = ? AND item_index = ?",
@@ -291,31 +304,37 @@ export function createSqliteJobStore(db: Database): JobStore {
       return update.immediate(id, patch, expected);
     },
     async checkpoint(input: Checkpoint) {
-      const { jobId, itemIndex, phase, bytesDone } = CheckpointFields.parse(input);
-      const path = input.tempName === null ? null : TempPath.parse({ segments: [{ t: input.tempName }] });
-      const { changes } = writeCheckpoint.run(
-        jobId, itemIndex, phase, bytesDone, encodeJson(path), new Date().toISOString(), jobId,
-      );
+      const checkpoint = CheckpointValue.parse(input);
+      const { changes } = writeCheckpoint.run({
+        ...checkpoint,
+        tempPath: encodeJson(checkpoint.tempPath),
+        targetPath: encodeJson(checkpoint.targetPath),
+        expectTarget: encodeJson(checkpoint.expectTarget),
+        verified: encodeJson(checkpoint.verified),
+        committed: encodeJson(checkpoint.committed ?? null),
+        at: new Date().toISOString(),
+      });
       if (changes !== 1) throw new CommanderError("not_found", "Job not found");
     },
     async lastCheckpoint(jobId, itemIndex) {
       const row = readCheckpoint.get(jobId, itemIndex);
       if (!row) return null;
       try {
-        const fields = CheckpointFields.parse({
+        Timestamp.parse(row.at);
+        return CheckpointValue.parse({
           jobId: row.job_id,
           itemIndex: row.item_index,
           phase: row.phase,
           bytesDone: row.bytes_done,
+          tempPath: decodeJson(row.temp_path_json),
+          targetPath: decodeJson(row.target_path_json),
+          expectTarget: decodeJson(row.expect_target_json),
+          verified: decodeJson(row.verified_json),
+          ...(row.committed_json === null ? {} : { committed: decodeJson(row.committed_json) }),
         });
-        Timestamp.parse(row.at);
-        if (row.temp_path_json === null) return { ...fields, tempName: null };
-        const [name] = TempPath.parse(decodeJson(row.temp_path_json)).segments;
-        if ("t" in name) return { ...fields, tempName: name.t };
       } catch {
         throw new CommanderError("internal", "Stored checkpoint is damaged");
       }
-      throw new CommanderError("internal", "Stored checkpoint is damaged");
     },
   };
 }
