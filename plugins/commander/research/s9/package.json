@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "@zip.js/zip.js": "2.25.0",
+    "diff": "9.0.0",
+    "playwright-core": "1.65.1",
+    "tar-stream": "3.3.0"
+  }
+}
