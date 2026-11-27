@@ -25,6 +25,10 @@ export function cloneUrl(account: Account, value: unknown): string {
   return url.href;
 }
 type Options = {method?: "POST" | "PATCH" | "PUT"; body?: unknown; accept?: string; raw?: boolean;
+  /** A POST that only reads (GraphQL queries): failures are not unknown write outcomes. */
+  read?: boolean;
+  /** Largest body accepted, in bytes; 768 KB by default. */
+  maxBytes?: number;
   /** 404 and 405 mean the server has no such operation (older self-hosted versions). */
   unsupported?: boolean};
 export type Http = (path: string, options?: Options) => Promise<{payload: unknown; headers: Headers}>;
@@ -41,7 +45,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
   return async (path, options = {}) => {
     const url = new URL(path, origin);
     if (url.origin !== origin) throw new Error("INVALID_INPUT");
-    const writing = options.method !== undefined;
+    const writing = options.method !== undefined && !options.read;
     try {
       const headers = new Headers({authorization:header, accept:options.accept ?? "application/json"});
       if (account.kind === "github") headers.set("X-GitHub-Api-Version", "2022-11-28");
@@ -68,7 +72,7 @@ export function client(account: Account, token: string, send: typeof fetch): Htt
             const {done,value} = await reader.read();
             if (done) break;
             bytes += value.length;
-            if (bytes > 768 * 1024) {
+            if (bytes > (options.maxBytes ?? 768 * 1024)) {
               await reader.cancel();
               throw new Error(writing ? "OUTCOME_UNKNOWN" : "GIT_OUTPUT_LIMIT");
             }
