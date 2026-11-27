@@ -14,6 +14,30 @@ const remoteId = "makosh-remote-hub";
 const bounded = (label: string) => label.slice(0, 200).toWellFormed();
 const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpMethods;
 
+/**
+ * The Remote Hub refusal code inside a failed `callRpc`, or null for a transport failure.
+ * BB 0.50.1 throws the SDK client's BbHttpError ("HTTP 403: host_key_unknown: …", code = the refusal
+ * class); newer SDKs throw experimental_PluginRpcCallError ("host_key_unknown: …"). Both carry the
+ * refusal class in `code`, which must match the class the contract gives that refusal.
+ */
+function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
+  let code: unknown;
+  let message: unknown;
+  if (error instanceof experimental_PluginRpcCallError) {
+    ({ code, message } = error);
+  } else if (error instanceof Error && error.name === "BbHttpError") {
+    code = Reflect.get(error, "code");
+    message = error.message.replace(/^HTTP \d{3}: /, "");
+  }
+  if (typeof code !== "string" || typeof message !== "string") return null;
+  // The refusal code is the text before the first ": "; without that exact separator it is not a refusal.
+  const end = message.indexOf(": ");
+  if (end <= 0) return null;
+  const key = message.slice(0, end);
+  if (!Object.hasOwn(SFTP_REFUSALS, key)) return null;
+  return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
+}
+
 export function createEndpoints(bb: BbPluginApi) {
   const hostFs = bb.hosts.experimental_client({ contract: HostFsContract });
   const remote: RemoteHubPort = {
@@ -23,10 +47,8 @@ export function createEndpoints(bb: BbPluginApi) {
           pluginId: remoteId, method, input, outputSchema: methods[method].output, signal,
         });
       } catch (error) {
-        if (error instanceof experimental_PluginRpcCallError) {
-          const key = error.message.split(":", 1)[0] as SftpRefusalCode;
-          if (Object.hasOwn(SFTP_REFUSALS, key) && SFTP_REFUSALS[key] === error.code) throw new SftpRefusal(key);
-        }
+        const refused = remoteHubRefusal(error);
+        if (refused !== null) throw new SftpRefusal(refused);
         throw new CommanderError("connection_failed", "Remote Hub request failed", true);
       }
     },
