@@ -4,7 +4,9 @@ Plugin ID and package name are both `bb-git-dashboard`; the display name is **Ma
 
 The Git sidebar groups projects by the parent directory of their default BB source. Search by project or folder name above the independently scrolling list. Projects without a source appear under «Без папки».
 
-The sidebar is the panel's one navigation: **My PRs**, **CI/CD**, **Reviews**, **Projects** and **Catalog** with their counts, the projects folder tree, **Connections** (the connected accounts, a new connection and the accounts' repositories) and the interface language. Press `/` to search. The language follows BB's (Russian for a Russian BB, English otherwise) until RU or EN is chosen in the sidebar or **Interface language** in the plugin settings; sections take the setting as they move to the new interface, the sidebar first.
+The sidebar is the panel's one navigation: **Overview**, **My PRs**, **CI/CD**, **Reviews**, **Projects** and **Catalog** with their counts, the projects folder tree, **Connections** (the connected accounts, a new connection and the accounts' repositories) and the interface language. Press `/` to search.
+
+**Overview** opens the panel: a list of what needs your action, what you can finish and what goes on without you, with the chosen item's details and the way to its action, or a board by stage (local, PR open, in review, ready, merged this week) with the runs going on now. It reads My PRs (open, review requested, merged), CI/CD and the status of up to 50 attached copies — nothing the plugin does not read already — and writes nothing; Refresh reads again. **Overview opens as** chooses list or board. The language follows BB's (Russian for a Russian BB, English otherwise) until RU or EN is chosen in the sidebar or **Interface language** in the plugin settings; sections take the setting as they move to the new interface, the sidebar first.
 
 ## Build and install
 

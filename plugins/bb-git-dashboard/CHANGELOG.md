@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1 — 2026-11-28
+
+The new interface, second slice: the overview.
+
+- **Overview** opens the Git panel. As a list it shows what needs your action (CI failed in your pull request, a review asked of you, a merge conflict, open threads), what you can finish (ready to merge, commits not pushed) and what goes on without you (CI running, a copy behind origin); the chosen item's details say what keeps it from merging and lead to the page where its action is. As a board it shows the same pull requests and copies by stage — local, PR open, in review, ready, merged this week — with the runs going on now. `j`/`k` move through the list, Enter opens the item.
+- It reads what My PRs, CI/CD and the attached copies' status already read (no new requests to the forges, up to 50 copies, kept for the session; Refresh reads again) and writes nothing itself. A source that does not answer is named and the rest is shown.
+- **Overview opens as** (List / Board) is a setting; the view chosen in the overview is kept. Projects moved to their own place in the sidebar.
+- The first line of a language's first diff is highlighted: each grammar is compiled once before its first line, which used to run out of its time and come plain.
+
 ## 0.14.0 — 2026-11-27
 
 The new interface, first slice: its system and the side column.
