@@ -1,0 +1,282 @@
+# Единый git-плагин на базе bb-git-dashboard — дизайн и план срезов
+
+Статус: утверждён владельцем 2026-11-27 (ответы — в §11).
+
+## 1. Зачем
+
+Владелец хочет один свой git-плагин вместо пяти чужих (`git-history`,
+`diff-review`, `github-actions`, `bb-github-pr-dashboard`, `gitea`) и
+отменённого GitWand. Плагин должен одинаково работать со всеми форджами,
+которые реально есть в `~/projects`: GitHub (два аккаунта), Gitea-совместимые
+`git.acme.example` и `git.dev.acme.example`, GitLab, Azure.
+
+Цели — девять функций из задания (граф, построчное ревью, CI/CD, входящие PR,
+Gitea PR/issues, GitLab, merge/rebase/конфликты, автоподключение форджа,
+каталог проектов).
+
+Не цели: встроенный терминал; Bitbucket; управление секретами форджа (значения
+не читаются и не пишутся); замена встроенного `bb--git`.
+
+Анти-цели (провал, даже если «работает»):
+- потеря токенов, аккаунтов или настроек текущей установки;
+- god-файлы вида `app.tsx` на 1700 строк, как у поглощаемых плагинов;
+- функции, которые есть только для GitHub, а у остальных форджей молча пусто
+  (каждое ограничение показывается явно: «у Azure этого нет»);
+- токены в логах, промптах агенту, URL или на диске вне Vault/секретов BB.
+
+## 2. Что есть сейчас (факты разведки)
+
+| Источник | Лицензия | Размер | Что берём |
+|---|---|---|---|
+| `bb-git-dashboard` 0.1.0 | MIT, Mesteriis | ~4,4k строк, 6 тестов | основа: проекты/копии, host-entry, провайдеры GitHub/Gitea/Azure, Vault, агентские инструменты, approval |
+| `git-history` 0.4.5 | MIT, Yusuf Akbulut | app.tsx 1672, host.ts 703, graph.ts 89 | чистые `graph.ts`, `ref-layout.ts`, `refresh-scheduler.ts`, парсеры `host.ts` (log/refs/status/patch) — как есть с тестами |
+| `diff-review` 0.5.1 | MIT, gpambrozio; части из diffity (MIT) | review.ts 1029, store.ts 928, тесты ~5k | `shared/*` (types, suggestion, anchors, mentions, patch-lines), `prompt.ts`; схема SQLite; схема отправки `threads.send` и ответов через CLI |
+| `github-actions` 0.1.1 | MIT, pers0na2dev | server 1119, app 1709, тестов нет | разбор `workflow_dispatch` inputs (`workflows.ts`), поиск строки ошибки, `settleFromJobs`, поллер, подписки репо→треды; логику переписываем с тестами |
+| `bb-github-pr-dashboard` 0.3.4 | MIT, Muhammad Ahsan | prs.ts 1156 (38 тестов), queries.ts 201 | `blockersOf`, `diffWatch`, GraphQL-запросы вкладок — чистые, с тестами |
+| `gitea` 1.1.3 | MIT, Nick Murphy | server 3836, через `tea api` | только как справку по REST v1; код не переносим (весь через `tea`, монолит) |
+| GitWand `gitwand/v0.2.0` | MIT, Mesteriis (+ GitWand MIT, Laurent Guitton) | repo-catalog.ts 227, repo-scan.ts 138, forge-cli.ts 100 — все с тестами | TS-ядро каталога и `forge-cli`; UI каталога был в Vue-патче — пишем заново на React |
+| WIP-резолвер GitWand (`/Users/owner/.bb/thread-storage/thr_w8p5uhzzyn/gitwand-forge-resolver-wip.patch`, в git его нет) | Mesteriis | forge-resolver 152, gh-accounts 113, chooseGhAccount | идеи и тесты; не подключён, опрашивает только первый base — дописываем |
+
+Текущая установка владельца (проверено `bb plugin config`):
+- id `bb-git-dashboard`, путевая установка из `.worktrees/git-workspace`;
+- настройка `accounts`: два GitHub-аккаунта (`Mesteriis`, `second-account`) с UUID;
+- секрет `tokens` — запасная копия; основная копия токенов в
+  `makosh-credential-vault` под ref `bb-git-dashboard:provider:v1:sha256(accountId)`;
+- состояние Vault-режима аккаунтов в `plugin_kv` (переживает `remove`).
+
+Найдено попутно:
+- в плагине нет `tests/architecture.test.ts`, которого требует `docs/architecture.md`;
+- `glab` в песочнице агента не может обновить OAuth-токен (keyring не принимает запись) —
+  на `glab` как единственный источник токена полагаться нельзя;
+- `az` не установлен, `tea` установлен, `gh` вошёл в оба аккаунта.
+
+## 3. Подходы
+
+**A. Растить `bb-git-dashboard` на месте (рекомендую).** Тот же id, те же
+настройки и Vault-ref. Новые функции — новые модули по ответственности;
+переносимый код поглощаемых плагинов копируется в свои модули с записью в
+`THIRD_PARTY_NOTICES.md`. Миграция установки сводится к обновлению кода, без
+переустановки.
+
+**B. Новый плагин `makosh-git` + перенос данных.** Чистое имя по соглашению
+`bb-plugin-makosh-*`, но новый id: секреты, `plugin_kv`, настройки и Vault-ref
+придётся переносить вручную; два плагина живут параллельно. Риск потери
+данных ради имени — не оправдан.
+
+**C. Встроить поглощаемые плагины целиком как подпакеты.** Быстро даёт
+паритет для GitHub, но тащит монолиты, GitHub-специфичные пути и UI без
+тестов; обобщение на форджи всё равно переписывать. Противоречит анти-целям.
+
+Отображаемое имя меняется на «Makosh Git» без смены id, CLI и имён инструментов (решение владельца).
+
+## 4. Архитектура
+
+Слои по `docs/architecture.md`; первым срезом добавляется
+`tests/architecture.test.ts`. Ниже — модули по ответственности. Ни один файл не
+собирает несколько функций; `server.ts`, `app.tsx`, `host.ts` — только композиция.
+
+```
+src/core/
+  workspace/        проекты, копии, операции (существующее, разнесённое)
+  git/              действия и чтения локального git (существующее)
+  history/          graph-layout, ref-layout, модели коммита/патча        ← git-history
+  review/           thread/comment/severity, anchors, suggestion, prompt  ← diff-review
+  forge/
+    model.ts        ForgeKind = github|gitlab|gitea|azure; Account; RepoRef; Capability
+    capabilities.ts матрица «что умеет форж», тексты ограничений
+    remote-url.ts   разбор remote (https, scp, ssh://, алиасы)
+    resolve.ts      ForgeResolver: алиас → hostname → известный/кэш/опрос (через порты)
+    account-pick.ts выбор аккаунта: GitHub по владельцу, GitLab/Gitea/Azure по хосту
+    ports.ts        порты по возможностям (см. ниже)
+  ci/               Run/Job/Step, нормализация статусов, settle, error-locator,
+                    inputs-form (GitHub/Gitea YAML, GitLab variables/inputs, Azure parameters)
+  pulls/            Pull, inbox-вкладки, blockers, watch-diff               ← pr-dashboard
+  issues/           Issue, комментарии
+  merge/            разбор конфликтных маркеров (diff3/zdiff3), модель решения, rebase-план
+  catalog/          объединение local+remote, отметка «клонирован», bulk-план  ← GitWand
+  delivery/         промпты для агента (CI-сбой, ревью), без токенов и URL с кредами
+src/adapters/bb/
+  forges/github/    repos.ts, pulls.ts, inbox-graphql.ts, actions.ts, logs.ts, issues.ts
+  forges/gitlab/    repos.ts, merge-requests.ts, pipelines.ts, jobs.ts, issues.ts
+  forges/gitea/     repos.ts, pulls.ts, actions.ts, issues.ts
+  forges/azure/     repos.ts, pulls.ts, builds.ts, logs.ts
+  forges/http.ts    общий клиент (существующий provider-http)
+  accounts/         Vault (существующий), источники токенов: vault | gh | glab
+  forge-probe.ts    GET /api/v1/version, /api/v4/version; таймаут, лимит тела, без кредов
+  ci-poller.ts      фоновый сервис опроса активных запусков
+  review-store.ts   SQLite (bb.storage.database + migrate)
+  agent-delivery.ts threads.send / threads.spawn, дедупликация в kv
+  cli.ts            `bb git-dashboard review reply|resolve|dismiss`, `ci list|rerun|cancel`
+host.ts + src/adapters/host/
+  history.ts, status.ts, merge.ts, conflicts.ts, scan.ts (корни), ssh-config.ts (`ssh -G`),
+  forge-cli.ts (список аккаунтов gh/glab), clone.ts
+src/ui/
+  shell/            навигация, вкладки репозитория
+  history/  review/  ci/  pulls/  issues/  merge/  catalog/  accounts/
+```
+
+Порты форджа разбиты по возможностям, а не одним интерфейсом на всё:
+`RepositoryCatalog`, `PullRequests`, `PullInbox`, `ReviewComments`,
+`Pipelines` (runs, jobs, log, dispatch, rerun, cancel), `Issues`. Адаптер
+форджа реализует только то, что умеет; UI берёт список из матрицы
+возможностей и показывает явное «не поддерживается этим форджем».
+
+## 5. Карта функций: откуда / заново
+
+| # | Функция | Перенос | Пишем заново |
+|---|---|---|---|
+| 1 | Граф истории, патчи, незакоммиченные | `graph.ts`, `ref-layout.ts`, парсеры `log/for-each-ref/status/diff` из git-history | UI графа (виртуализация) на React без монолита; host-методы в нашем `host.ts` |
+| 2 | Построчное ревью → агент | `shared/*` и `prompt.ts` diff-review, схема SQLite, протокол отправки/ответов | сервис ревью по нашим копиям (дифф из нашего host-entry, не из `bb--git`), UI панели; ревью PR форджа — через `ReviewComments` |
+| 3 | CI/CD всех форджей | `workflows.ts` (inputs YAML), error-locator, settle, подписки | адаптеры GitLab pipelines/jobs, Gitea Actions, Azure builds/logs; сводка; живой лог (GitLab и Azure отдают лог во время выполнения, GitHub — после завершения job: показываем это явно) |
+| 4 | Входящие PR и блокеры | `blockersOf`, `diffWatch`, GraphQL вкладок | эквиваленты вкладок для GitLab (`scope=…`, `reviewer_username`), Gitea (`/repos/issues/search`, `review_requested`), Azure (`searchCriteria.reviewerId`); блокеры по полям каждого форджа |
+| 5 | Gitea PR и issues | ничего из кода `gitea` (только справка по API) | на нашем `forges/gitea` |
+| 6 | GitLab | `forge-cli.ts` (glab) из GitWand как справка | весь адаптер REST v4 |
+| 7 | Merge, rebase, конфликты | — | host: merge/rebase/abort/continue с approval; редактор конфликтов (ours/theirs/base, построчный выбор, ручная правка) |
+| 8 | Автоподключение | WIP-резолвер, `chooseGhAccount`, `forge-cli.ts` | дописать: все probeBases, кэш в `plugin_kv`, GitLab по хосту |
+| 9 | Каталог проектов | `repo-catalog.ts`, `repo-scan.ts`, `git-remotes.ts` с тестами | Gitea/Azure в каталоге; React-UI; клон с выбором папки каждый раз; bulk статус/fetch/pull/PR |
+
+Каждый перенос — в том же коммите запись в `THIRD_PARTY_NOTICES.md` плагина
+(исходный путь, ревизия из `subtrees.json`, автор, MIT, что изменено), а
+diffity-notice переносится вместе с файлами diff-review.
+
+## 6. Форджи, аккаунты, токены
+
+Модель аккаунта расширяется совместимо: к существующим полям добавляются
+`kind: "gitlab"` и `tokenSource: "vault" | "gh" | "glab"` (по умолчанию
+`vault` — так читаются нынешние два аккаунта без изменений).
+
+- **vault** — PAT в Credential Vault по существующему механизму
+  `providerCredentials` (ref по id аккаунта, привязка binding, запасная копия в
+  секрете BB). Основной путь для GitLab, Gitea, Azure.
+- **gh / glab** — токен берётся командой CLI (`gh auth token --hostname H --user U`,
+  `glab config get token --host H`) только на машине BB-сервера, не на удалённых
+  хостах копий; держится в памяти backend, TTL 5 минут, уходит только в заголовок
+  запроса; внешние `GH_TOKEN` вычищаются. Ничего не сохраняется.
+- HTTP к форджам выполняет только backend; host-entry удалённого хоста токенов
+  форджа не получает (git-транспорт там идёт через его собственный Keychain, как сейчас).
+- `tea` как источник токена не используется: он хранит токен открытым текстом в
+  своём конфиге; для Gitea — PAT в Vault.
+- Аккаунты GitHub из `gh auth status --json hosts` предлагаются в мастере
+  подключения (не создаются молча).
+
+Резолвер по remote копии:
+1. Разбор URL; если хост — SSH-алиас (нет точки или нет в DNS-форме), `ssh -G alias`
+   на хосте копии, из вывода читается только `hostname`.
+2. Известные хосты (`github.com`, `gitlab.com`, `dev.azure.com`, `*.visualstudio.com`).
+3. Кэш в `plugin_kv`: найденный форж 30 дней, «неизвестно/недоступно» 1 день,
+   кнопка «Перепроверить».
+4. Опрос без кредов: параллельно `GET /api/v1/version` (Gitea/Forgejo) и
+   `/api/v4/version` (GitLab), redirect manual, таймаут 4 с, тело ≤ 64 KiB.
+   Ответ хоста — данные, не доверенный ввод.
+5. Аккаунт: GitHub — свой аккаунт владельца репозитория → член организации →
+   аккаунт, который видит репозиторий → явный выбор пользователя; GitLab, Gitea,
+   Azure — по совпадению origin хоста. Выбор запоминается на репозиторий.
+
+Ожидаемый результат на ваших 98 репозиториях: `github.com` и
+`github-office` → GitHub с выбором из двух аккаунтов; `git.acme.example` и
+`git.dev.acme.example` → Gitea; `gitlab.acme.example` → GitLab по имени со статусом
+«хост недоступен».
+
+## 7. Срезы выпуска
+
+Каждый срез: TDD (падающий тест → код → проверка), `npm run check`, `npm run build`,
+`node ../../scripts/check-manifests.mjs`, проверка на стенде, обновление
+`PLUGIN_OVERVIEW.md`, `bb.description`, `marketplace.json`, `CHANGELOG.md`
+только под реализованное.
+
+| Версия | Содержание | Проверки сверх базовых |
+|---|---|---|
+| 0.2.0 Фундамент | architecture-тест; разнос `server.ts`/`app.tsx` по модулям; модель форджа v2 с `gitlab` и `tokenSource`; матрица возможностей; резолвер (ssh -G, опрос, кэш, выбор аккаунта) | чтение нынешнего `accounts` без изменений; тесты резолвера на двойниках ssh/HTTP; на стенде — классификация копии реальных remote |
+| 0.4.0 CI GitHub/Gitea/Azure | сводка, активные/упавшие/все, dispatch с формой, логи на строке ошибки, rerun failed/all, cancel, Ask agent, Send to threads, подписки | HTTP-двойники API трёх форджей; стенд: тестовый репозиторий с упавшим workflow |
+| 0.3.0 История | граф по всем refs, патчи, незакоммиченные, живое обновление | перенесённые тесты graph/ref-layout; стенд: репозиторий с merge и тегами |
+| 0.5.0 GitLab | адаптер REST v4: репозитории, MR, pipelines/jobs/логи, retry/cancel, variables, issues; CI-раздел для GitLab | двойник API; живая проверка на gitlab.com под `mesteriis` только с вашего согласия |
+| 0.6.0 Входящие PR | вкладки Open / Review requested / Reviewed / Assigned / Merged / Closed, блокеры, уведомления | перенесённые 38 тестов blockers; таблица блокеров по форджам |
+| 0.7.0 PR и issues в глубину | комментарии, ревью, строчные комментарии, состояние, создание issue, merge PR — для Gitea, GitLab, GitHub, Azure по матрице | двойники; стенд на Gitea-контейнере |
+| 0.8.0 Построчное ревью | ревью локального диффа и PR, серьёзность, suggestion, отправка агенту, ответы по каждому комментарию (CLI + агентские инструменты) | перенесённые тесты shared/*; стенд: агентский тред отвечает на комментарий |
+| 0.9.0 Merge и конфликты | merge, rebase (обычный), abort/continue, редактор конфликтов; все записи через approval | тесты парсера маркеров; стенд: репозиторий с конфликтом |
+| 0.10.0 Каталог | локальные из корней, удалённые со всех аккаунтов, «клонирован», клон по клику с выбором папки, bulk статус/fetch/pull/PR | перенесённые тесты каталога; стенд с двойниками gh/glab |
+
+Живая проверка CI, PR и конфликтов — только в приватном `Mesteriis/makosh-git-sandbox`
+(workflow «CI» с inputs outcome/message/slow/environment, матрица shard 1/2,
+PR #1, конфликтный PR #2, issue #3). Запись (запуск, перезапуск, отмена,
+комментарии) разрешена только там; реальные проекты владельца — только чтение.
+Azure проверяется только двойниками, Gitea — Docker-Gitea и двойниками.
+
+Стенд: отдельный профиль BB (как в `CONTRACTS.md` — «clean profile») с путевой
+установкой из worktree, тестовыми репозиториями во временной папке и
+Gitea в Docker; HTTP-двойники форджей в тестах. Рабочий BB владельца не трогаем.
+
+## 8. Миграция установки владельца
+
+Утверждённый путь — без переустановки, после каждого среза; обновление выполняет
+родительский тред с согласия владельца:
+1. Срез сливается в `main` (локально) после проверок.
+2. С вашего согласия: в worktree `.worktrees/git-workspace` подтянуть `main`,
+   затем `bb plugin reload bb-git-dashboard` (или update путевой установки).
+   id, `plugin_kv`, настройки и секреты не меняются; Vault-ref те же.
+3. До этого — резервная копия: выгрузка `bb plugin config bb-git-dashboard`,
+   копия `~/.bb/plugins/bb-git-dashboard`.
+
+Переход на маркетплейс (если захотите, один раз в конце) — строго по
+`mem_sya7xkbuxv8`: выгрузить настройки → disable → копия каталога плагина →
+`remove` → вернуть `secrets/` → `install bb-git-dashboard@mesteriis` →
+`bb plugin config set` → проверка, что токены читаются из Vault. Откат —
+`install path:<старая папка>`.
+
+Данные поглощаемых плагинов (ревью diff-review, подписки github-actions,
+выбранный аккаунт pr-dashboard) не переносятся — решение владельца.
+
+## 9. Когда удалять поглощённые плагины
+
+Плагин удаляется, когда: (а) срез с его функциями выпущен и стоит у вас;
+(б) пройден чек-лист паритета на стенде; (в) вы подтвердили. Порядок:
+`git-history` после 0.3.0, `github-actions` после 0.4.0, `bb-github-pr-dashboard`
+после 0.6.0, `gitea` после 0.7.0 (не установлен — из каталога можно убрать
+раньше), `diff-review` после 0.8.0. Удаление из каталога (`plugins/<имя>`,
+`marketplace.json`, `.bb/plugins.json`, `subtrees.json`) — работа уровня
+репозитория, отдельный тред `repo: …`; удаление из вашего BB — только с вашего
+согласия через родительский тред. Форки Mesteriis — в архив, как GitWand.
+
+## 10. Решения, принятые мной (можно поправить)
+
+- Подход A, id `bb-git-dashboard` сохраняется.
+- GitLab по умолчанию через PAT в Vault; `glab` — дополнительный источник.
+- Живой лог GitHub — опрос; во время выполнения job GitHub лог не отдаёт, это видно в UI.
+- Rebase только обычный (без интерактивного): интерактивный rebase требует редактора todo, вне задания.
+- Порядок срезов — как в таблице §7.
+- «PR по выбранным» в каталоге — просмотр открытых PR выбранных репозиториев (как в GitWand), не массовое создание.
+- Уведомления входящих PR: бейдж в навигации и тост; системный push через `push-notifications`, если он установлен; включаются в настройках. Один фоновый опрос входящих на все аккаунты, интервал не чаще 2 минут, «просмотренное» в `plugin_kv`.
+- Имена агентских инструментов `git_dashboard_*`, CLI `bb git-dashboard …` и id не меняются при любом отображаемом имени.
+- Критерии приёмки — девять функций задания от 2026-11-27 в формулировке §5; чек-лист паритета каждого среза пишется по функциям поглощаемого плагина.
+
+## 11. Ответы владельца (2026-11-27)
+
+1. Порядок: фундамент 0.2 → CI 0.4 → история 0.3 → далее как в §7.
+2. Отображаемое имя — «Makosh Git»; id, CLI и инструменты не меняются.
+3. Установка обновляется после каждого среза (§8), силами родительского треда.
+4. Данные выключенных плагинов не переносятся.
+5. Только обычный rebase.
+6. Azure — двойники; Gitea — Docker-Gitea и двойники; GitHub — `makosh-git-sandbox`.
+
+## 12. Каталог проектов: правило «настоящих проектов»
+
+Настройка «Папка проектов», по умолчанию `/Users/owner/projects` (структура
+владельца: `OSS/`, `Personal/<проект>`, `Work/<группа>/<проект>`; `hass/` и
+`warp/` — сами репозитории, в `hass/distrib/*` — отдельные клоны).
+
+Классификация найденного при обходе:
+- каталог с `.git`-**каталогом** — проект;
+- `.git`-**файл** с `gitdir:` внутри `…/.git/worktrees/…` — связанный worktree,
+  показывается под родительским проектом, не отдельным проектом;
+- `.git`-файл с `gitdir:` внутри `…/.git/modules/…` — сабмодуль, часть родителя;
+- по умолчанию не заходить в скрытые каталоги (`.cache`, `.worktrees`, …),
+  `node_modules`, `vendor`, `references`; список исключений — в настройках;
+- внутрь найденного проекта обход продолжается (чтобы найти `hass/distrib/*`),
+  но с теми же исключениями;
+- рядом с настройкой — предпросмотр: сколько найдено и что отброшено с причиной.
+
+Окно клона предлагает папку внутри «Папки проектов» с выбором категории;
+папка спрашивается каждый раз.
+
+Срез 0.2.0 содержит ядро правила, сканер на хосте, настройки и RPC
+предпросмотра (это нужно автоподключению); UI каталога и окно клона — 0.10.0.
