@@ -9,7 +9,7 @@ import {
 import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./path.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
-  confirmVerified, fingerprint, matches, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
+  confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { fromBig, toBig } from "./size.ts";
@@ -37,10 +37,6 @@ const cancelledError = new CommanderError("cancelled", "Job cancelled");
 const sourceRetained = "Source changed; source retained";
 const moveCancelled = "Move cancelled; source retained";
 
-function plannedTarget(item: PlanItem): Checkpoint["expectTarget"] {
-  // S2 adds this field to the core schema when its branch is integrated.
-  return (item as PlanItem & { expectTarget?: Checkpoint["expectTarget"] }).expectTarget ?? null;
-}
 type Run = {
   controller: AbortController;
   done: Promise<void>;
@@ -119,25 +115,25 @@ export class JobRunner {
     const context = this.context(id, 0, new AbortController().signal);
     const checked = await this.deps.revalidate?.(plan, context.signal);
     if (checked && !checked.ok) throw new CommanderError("changed_since_plan", "Plan changed before approval");
-    const targetDirectory = (plan as OperationPlan & { targetDir?: ResourceRef | ResourcePath | null }).targetDir;
-    if (targetDirectory) {
-      const ref = "endpoint" in targetDirectory ? targetDirectory
-        : plan.targetEndpoint && { endpoint: plan.targetEndpoint, path: targetDirectory };
-      if (!ref || (await observe(this.location(ref), context))?.kind !== "dir") {
-        throw new CommanderError("changed_since_plan", "Plan target directory changed before approval");
-      }
-    }
-    let targetConflict: { index: number; conflict: ItemConflict } | undefined;
-    for (const [index, item] of plan.items.entries()) {
+    // Sources are checked before any target is touched.
+    const currents: (Awaited<ReturnType<typeof observe>>)[] = [];
+    for (const item of plan.items) {
       const current = item.source && await observe(this.location(item.source), context, Boolean(item.fingerprint?.sha256));
       if (item.source && (!current || current.kind !== item.kind || !matches(current, item.fingerprint))) {
         throw new CommanderError("changed_since_plan", "Plan source changed before approval");
       }
-      const expected = plannedTarget(item);
-      if (!targetConflict && item.target && expected !== null) {
+      currents.push(current);
+    }
+    if (plan.targetDir && (await observe(this.location(plan.targetDir), context))?.kind !== "dir") {
+      throw new CommanderError("changed_since_plan", "Plan target directory changed before approval");
+    }
+    let targetConflict: { index: number; conflict: ItemConflict } | undefined;
+    for (const [index, item] of plan.items.entries()) {
+      const expected = item.expectTarget;
+      if (!targetConflict && item.target && expected !== null && !this.isCaseOnlyRename(plan, item)) {
         const target = await observe(this.location(item.target), context, expected !== "absent" && Boolean(expected.sha256));
         if (!matchesTarget(target, expected)) {
-          targetConflict = { index, conflict: new ItemConflict("target_changed", fingerprint(current), fingerprint(target)) };
+          targetConflict = { index, conflict: new ItemConflict("target_changed", fingerprint(currents[index]), fingerprint(target)) };
         }
       }
     }
@@ -418,6 +414,11 @@ export class JobRunner {
     }
   }
 
+  private isCaseOnlyRename(plan: OperationPlan, item: PlanItem): boolean {
+    return plan.kind === "rename" && Boolean(item.source && item.target)
+      && isCaseOnlyPair(this.location(item.source!), this.location(item.target!));
+  }
+
   private expandedDirectory(job: OperationJob, index: number, source: Location | null): boolean {
     const item = job.plan.items[index];
     const following = job.plan.items[index + 1]?.source;
@@ -465,23 +466,25 @@ export class JobRunner {
     const saved = restore?.itemIndex === index ? restore : undefined;
     if (saved) this.restored.delete(job.id);
     let target = item.target && this.location({ ...item.target, path: saved?.targetPath ?? item.target.path });
-    const expectedTarget = saved?.expectTarget ?? plannedTarget(item);
+    const expectedTarget = saved?.expectTarget ?? item.expectTarget;
     const expectedSource = decision?.conflict.source ?? item.fingerprint;
     const { signal, mutate } = context;
     const expandedDirectory = this.expandedDirectory(job, index, source);
     if (target && (job.plan.kind === "copy" || job.plan.kind === "move") && this.blockedParent(job, index, target)) return "skipped";
     const oldSource = source && await observe(source, context, Boolean(expectedSource?.sha256));
-    const oldTarget = target && await observe(target, context, Boolean(
+    // A case-only rename names its own source: S2 plans it with an absent target, and it is no conflict.
+    const caseOnlyRename = job.plan.kind === "rename" && Boolean(source && target && isCaseOnlyPair(source, target));
+    const oldTarget = target && !caseOnlyRename ? await observe(target, context, Boolean(
       decision?.conflict.target?.sha256 || (expectedTarget && expectedTarget !== "absent" && expectedTarget.sha256),
-    ));
+    )) : null;
     const sourceFingerprint = fingerprint(oldSource);
     const targetFingerprint = fingerprint(oldTarget);
     const sameEndpoint = source && target && source.provider.endpoint.id === target.provider.endpoint.id;
-    if (source && target && sameEndpoint && isAncestorOrSelf(source.path, target.path, source.provider.endpoint.caseSensitive)) {
+    if (source && target && sameEndpoint && !caseOnlyRename && isAncestorOrSelf(source.path, target.path, source.provider.endpoint.caseSensitive)) {
       throw new CommanderError("invalid_path", "Destination overlaps source");
     }
     const sourceChanged = source && (!oldSource || oldSource.kind !== item.kind || !matches(sourceFingerprint, item.fingerprint));
-    const targetChanged = target && expectedTarget !== null && !matchesTarget(oldTarget, expectedTarget);
+    const targetChanged = target && !caseOnlyRename && expectedTarget !== null && !matchesTarget(oldTarget, expectedTarget);
     const reason = sourceChanged ? "source_changed" : targetChanged ? "target_changed"
       : oldTarget ? (oldTarget.kind === item.kind ? "exists" : "type_mismatch") : null;
     let replace = false;
@@ -516,11 +519,26 @@ export class JobRunner {
       replace = action === "overwrite" && targetFingerprint !== null;
     }
 
+    // Decided on the destination actually chosen: a conflict resolution or a restored
+    // checkpoint may have moved it off the planned case-only name.
+    const caseOnly = job.plan.kind === "rename" && Boolean(source && target && isCaseOnlyPair(source, target));
+    if (caseOnly && sourceFingerprint) {
+      // The entry at the target path is the source itself; the provider checks that version.
+      replace = true;
+      expectTarget = sourceFingerprint;
+    }
     if (source && !oldSource) throw new CommanderError("not_found", "Source is missing");
     if (oldSource && oldSource.kind !== item.kind) throw new CommanderError("changed_since_plan", "Source type changed");
     const destination = target;
     await context.mark("prepared", { targetPath: destination?.path ?? null, expectTarget: destination ? expectTarget : null });
-    const unchanged = (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
+    const unchanged = caseOnly && source && destination
+      ? async (proof: VerifyContext) => await nameSpelling(source, destination, proof) === "source"
+        && matches(fingerprint(await observe(source, proof)), sourceFingerprint)
+      : (proof: VerifyContext) => this.unchanged(source, sourceFingerprint, destination, expectTarget, proof);
+    const spelled = async () => {
+      const { jobId, itemIndex } = context.saved();
+      return nameSpelling(source!, destination!, this.context(jobId, itemIndex, new AbortController().signal)).catch(() => null);
+    };
 
     switch (job.plan.kind) {
       case "delete":
@@ -541,10 +559,20 @@ export class JobRunner {
             renamed = true;
           } catch (error) {
             const code = safeError(error).code;
-            if (code === "changed_since_plan" || code === "already_exists") {
-              throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
+            if (caseOnly && code === "outcome_unknown") {
+              // Only the listing tells whether the lost rename took effect.
+              renamed = await spelled() === "target";
+              if (!renamed) throw error;
+            } else {
+              if (caseOnly && code === "changed_since_plan") {
+                // The target is the source itself, so the version that changed is the source's.
+                throw new ItemConflict("source_changed", fingerprint(await observe(source, context, Boolean(sourceFingerprint?.sha256))), null);
+              }
+              if (code === "changed_since_plan" || code === "already_exists") {
+                throw new ItemConflict("target_changed", sourceFingerprint, fingerprint(await observe(destination, context)));
+              }
+              if (job.plan.kind !== "move" || code !== "unsupported") throw error;
             }
-            if (job.plan.kind !== "move" || code !== "unsupported") throw error;
           }
           if (renamed) {
             const probe = () => observe(destination, context, Boolean(sourceFingerprint.sha256));
@@ -554,7 +582,7 @@ export class JobRunner {
               const check = this.context(jobId, itemIndex, new AbortController().signal);
               return observe(destination, check, Boolean(sourceFingerprint.sha256)).catch(() => null);
             });
-            if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint)) {
+            if (entry?.kind !== item.kind || !matches(entry, sourceFingerprint) || (caseOnly && await spelled() !== "target")) {
               throw new CommanderError("outcome_unknown", "Renamed destination could not be confirmed");
             }
             await context.mark("verified", {

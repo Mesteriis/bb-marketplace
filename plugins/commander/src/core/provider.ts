@@ -75,6 +75,11 @@ export interface FileProvider {
   /**
    * Check the expected target version or absence immediately before renaming.
    * Report changed_since_plan on mismatch. Document any non-atomic check window.
+   * If from and to name one entry (they differ only in case on a case-insensitive
+   * endpoint), the caller passes replace: true and expectTarget = the source's
+   * fingerprint; the provider checks it as usual. With replace: true the provider
+   * does not emulate the replacement with a separate removal of the target: if
+   * there is no atomic rename over an existing target, it reports unsupported.
    */
   rename(
     from: ResourcePath,

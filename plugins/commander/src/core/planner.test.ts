@@ -864,6 +864,34 @@ describe("request limits and rename", () => {
   });
 });
 
+describe("rename that changes only the Unicode form", () => {
+  const request = (newName: string): PlanRequest => ({
+    kind: "rename", initiator: { kind: "owner" }, sources: [ref("host:x", "/d/\u00e4")], targetDir: null,
+    newName: { t: newName }, conflictPolicy: "ask", verify: "size",
+  });
+
+  it("is refused with invalid_name on a case-insensitive endpoint, and no plan is built", async () => {
+    const dir = new MemoryProvider(endpoint("host:x", false, false), [["/d", "dir", "0"], ["/d/\u00e4", "file", "1"]]);
+    await expect(buildPlan(request("a\u0308"), depsFor(treeProviders(dir)), signal())).rejects.toMatchObject({
+      code: "invalid_name", message: "The new name differs from the current name only in Unicode form",
+    });
+  });
+
+  it("stays a plain rename on a case-sensitive endpoint, where the two forms are different names", async () => {
+    const dir = new MemoryProvider(endpoint("host:x", false, true), [["/d", "dir", "0"], ["/d/\u00e4", "file", "1"]]);
+    const plan = await buildPlan(request("a\u0308"), depsFor(treeProviders(dir)), signal());
+    expect(plan.items.length).toBe(1);
+    expect(displayPath(plan.items[0].target!.path)).toBe("/d/a\u0308");
+    expect(plan.items[0].expectTarget).toBe("absent");
+  });
+
+  it("still accepts a case change combined with a form change on a case-insensitive endpoint", async () => {
+    const dir = new MemoryProvider(endpoint("host:x", false, false), [["/d", "dir", "0"], ["/d/\u00e4", "file", "1"]]);
+    const plan = await buildPlan(request("A\u0308"), depsFor(treeProviders(dir)), signal());
+    expect(displayPath(plan.items[0].target!.path)).toBe("/d/A\u0308");
+  });
+});
+
 describe("revalidate snapshot and target directory", () => {
   it("checks and returns one snapshot, so a caller's mutation during revalidate changes nothing", async () => {
     const src = srcTree();

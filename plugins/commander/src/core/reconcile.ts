@@ -2,7 +2,7 @@ import { CommanderError } from "./errors.ts";
 import type { Checkpoint } from "./job-store.ts";
 import type { Entry, Fingerprint, OperationPlan, PlanItem, ResourceRef } from "./model.ts";
 import { join, NameSegment, parent, samePath } from "./path.ts";
-import type { FileProvider } from "./provider.ts";
+import { LIST_PAGE_MAX, type FileProvider } from "./provider.ts";
 import { fromBig, toBig } from "./size.ts";
 
 export interface Location {
@@ -263,6 +263,80 @@ async function recoverTemp(
   await save({ ...checkpoint, phase: "prepared", tempFingerprint: undefined, writing: undefined, cleanup: undefined });
 }
 
+
+/** One entry named by two spellings that differ only in case on a case-insensitive endpoint. */
+export function isCaseOnlyPair(source: Location, target: Location): boolean {
+  const from = source.path.segments.at(-1);
+  const to = target.path.segments.at(-1);
+  return source.provider.endpoint.id === target.provider.endpoint.id
+    && samePath(source.path, target.path, source.provider.endpoint.caseSensitive)
+    && !samePath(source.path, target.path, true)
+    // A change of Unicode form alone is an ordinary rename: the listing cannot tell the spellings apart.
+    && from !== undefined && to !== undefined && nameKey(from) !== nameKey(to);
+}
+
+// Same spelling after NFC normalisation; case stays exact.
+function nameKey(name: NameSegment): string {
+  return "b" in name ? "b:" + name.b : "t:" + name.t.normalize("NFC");
+}
+
+/** Listing pages read when checking a spelling; a longer listing is treated as unreadable. */
+const SPELLING_PAGE_BUDGET = 1000;
+
+/**
+ * stat sees one entry under both spellings, so only the directory listing shows
+ * which spelling exists: "source" (not renamed yet), "target" (renamed) or null.
+ */
+export async function nameSpelling(
+  source: Location, target: Location, context: VerifyContext,
+): Promise<"source" | "target" | null> {
+  const dir = parent(target.path);
+  const from = source.path.segments.at(-1);
+  const to = target.path.segments.at(-1);
+  if (!dir || !from || !to) return null;
+  const fromKey = nameKey(from);
+  const toKey = nameKey(to);
+  let sawSource = false;
+  let sawTarget = false;
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let pages = 1;; pages++) {
+    context.signal.throwIfAborted();
+    const page: Awaited<ReturnType<FileProvider["list"]>> = await context.call(
+      () => target.provider.list(dir, { cursor, limit: LIST_PAGE_MAX }, context.signal));
+    // A page without entries but with a cursor, a repeated cursor or an endless listing proves nothing.
+    if (page.entries.length === 0 && page.cursor !== null) return null;
+    for (const { name } of page.entries) {
+      sawSource ||= nameKey(name) === fromKey;
+      sawTarget ||= nameKey(name) === toKey;
+    }
+    if (page.cursor === null) break;
+    if (pages >= SPELLING_PAGE_BUDGET || seenCursors.has(page.cursor)) return null;
+    seenCursors.add(page.cursor);
+    cursor = page.cursor;
+  }
+  return sawTarget && !sawSource ? "target" : sawSource && !sawTarget ? "source" : null;
+}
+
+async function reconcileCaseOnly(
+  checkpoint: Checkpoint, source: Location, target: Location, expected: Fingerprint, item: PlanItem,
+  context: VerifyContext, save: (checkpoint: Checkpoint) => Promise<void>,
+): Promise<"pending" | "done"> {
+  const unknown = () => new CommanderError("outcome_unknown", "Interrupted case-only rename could not be confirmed");
+  const state = await nameSpelling(source, target, context);
+  const entry = await observe(source, context, Boolean(expected.sha256));
+  if (state === null || entry?.kind !== item.kind || !matches(entry, expected)) throw unknown();
+  if (state === "source") {
+    if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") return "pending";
+    throw unknown();
+  }
+  await save({
+    ...checkpoint, phase: "verified", bytesDone: item.kind === "file" ? entry.size : "0", committed: fingerprint(entry)!,
+    verified: entry.sha256 ? { size: entry.size, sha256: entry.sha256 } : { size: entry.size },
+  });
+  return "done";
+}
+
 type Recovery = "pending" | "done" | "deferred_directory" | { verified: NonNullable<Checkpoint["verified"]> };
 
 export async function reconcileItem(
@@ -271,6 +345,9 @@ export async function reconcileItem(
 ): Promise<Recovery> {
   const unknown = () => new CommanderError("outcome_unknown", "Interrupted mutation could not be confirmed");
   const expected = item.fingerprint;
+  if (plan.kind === "rename" && source && target && expected && isCaseOnlyPair(source, target)) {
+    return reconcileCaseOnly(checkpoint, source, target, expected, item, context, save);
+  }
   if (checkpoint.phase === "prepared" || checkpoint.phase === "copying") {
     const expectTarget = checkpoint.expectTarget;
     const before = source && await observe(source, context, Boolean(expected?.sha256));
