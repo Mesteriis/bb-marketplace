@@ -614,7 +614,7 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
    место вне владения — стоп и вопрос.
 8. Мои дополнения к списку подкодов `reason` (§10): `too_many_open_archives`,
    `unsupported_format`, `unsupported_compression`, `archives_unavailable`;
-   итого 37.
+   итого 38.
 
 ## 10. Коды ошибок и подкоды (`reason`)
 
@@ -646,7 +646,7 @@ UI (снимки 1440×900 и 768×900): Enter на архиве → панел�
 | `unsupported` | `link_not_supported, link_escapes, encryption_unsupported, v7_tar, pax_size, unsupported_format, unsupported_compression, archives_unavailable` (три последних и `unsupported_format` добавлены мной: sparse/нестандартные типы, методы сжатия кроме Stored/Deflate, нет helper для платформы) |
 | `internal` | `helper_checksum_failed, helper_version_mismatch, helper_crashed, protocol_error` |
 
-Итого 37 подкодов. `link_not_supported`/`link_escapes` — `reason` ошибки,
+Итого 38 подкодов (17 + 7 + 2 + 8 + 4). `link_not_supported`/`link_escapes` — `reason` ошибки,
 когда операция над самой ссылкой запрошена напрямую (`read` ссылки через
 `ArchiveProvider`); при пакетной распаковке те же причины — поле элемента
 плана (`RefusedReason`, ниже), не ошибка.
@@ -829,3 +829,40 @@ SHA-256 цели совпал → `done`, второй `commit` не вызва�
 же размера и mtime с другими байтами → `unknown`; цели нет, temp совпал по
 отпечатку и SHA-256 → один повторный commit; temp изменён → `unknown`;
 чекпоинт без `commitIntent` читается.
+
+## 12. Что выяснено и отклонено при реализации (код)
+
+Факты проверок на macOS arm64 (Darwin 27, rustc 1.97) и решения, принятые по ходу:
+
+- **`RLIMIT_AS` не применяется:** `setrlimit` отказывает, helper сообщает `hello.rlimit_as: "failed"`. Защита —
+  ограниченные буферы, `RLIMIT_CPU` на запрос, таймаут 30 с и сторож RSS 512 МиБ в адаптере (§3).
+- **Открытие файла:** на macOS `O_NOFOLLOW` вместе с `O_NOFOLLOW_ANY` даёт `EINVAL`; helper использует один
+  `O_NOFOLLOW_ANY` (он запрещает ссылку в любом компоненте). Корень в `open` обязан быть канонизирован
+  (`realpath`): адаптер передаёт `realpath` каталога копии.
+- **SDK 0.6.132:** у `hosts.list()` нет признака «машина сервера»; путь без копии не включён вообще — любой архив
+  сначала копируется в приватный каталог сервера (§7). `experimental_spawnHostProcess` запускает helper;
+  каталог плагина — `bb.sdk.plugins.list()` → `rootDir`.
+- **Кадры:** `list` принимает поле `prefix` (base64 сырых байт); у синтетического каталога `id: null`; числа u64
+  в ответах — десятичные строки; запись `ArchiveEntry` может нести `refused` (отказ helper-а).
+- **Пароль:** helper обязан получить кадр `0x03` на каждый `need_password`. «Нет пароля» адаптер отвечает
+  однобайтовым заполнителем (NUL), результат сообщает как `auth_failed`+`password_required`. Пароль владельца,
+  введённый позже, принимается тем же процессом.
+- **TAR:** при создании длинные имена пишутся GNU `L`; GNU `L` с несколькими завершающими NUL отклоняется как
+  `scan_mismatch` (крейт `tar` читает такое имя иначе).
+- **Зависимости helper:** к списку добавлен `sha2` 0.10.9 (SHA-256 staging-файла); `flate2` — dev-зависимость тестов
+  и транзитивная `zip`. Полный список — в корневом `THIRD_PARTY_NOTICES.md`.
+- **Поле `files` в `package.json` не добавлялось:** у пакета его нет, `bin/` входит в сборку без него.
+- **Отказанные записи** показываются в списке как `other`/`symlink`, никогда как `file`/`dir`; чтение такой записи
+  — `unsupported` (`link_not_supported`/`link_escapes`) либо `invalid_path`/`invalid_name`.
+
+### Не сделано в этой ревизии кода (остаётся срезу)
+
+- Вид плана `pack`: схема модели и права есть (`OperationKind += pack`, `REQUIRED.pack`), но планировщик и
+  раннер для `pack` не реализованы; готовы `packToStaging` и `publishStaging` (`archive-writer.ts`) с тестами на
+  настоящем helper (ZIP, TAR, AES-256).
+- Права агента к `archive:` (tools/CLI): доступ агента к архивам не открыт (RPC только для клиента-владельца).
+- Одноразовая оценка объёма копии (`estimateId`) для агента — ждёт открытия доступа агенту.
+- Лимиты `ExtractLimits` проверяются helper-ом при `open` (`too_many_entries`, `total_bytes`, `ratio`); план-уровневая
+  проверка `checkExtractLimits` в планировщике не подключена.
+- Снимки интерфейса 1440×900 и 768×900 не сделаны.
+- Изменение существующего архива — `unsupported` (как в §1).
