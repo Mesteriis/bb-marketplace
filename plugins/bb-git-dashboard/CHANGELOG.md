@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.3 — 2026-11-28
+
+The new interface, fourth slice: My PRs and the pull request page.
+
+- **My PRs** has the head of every section (accounts and when it was read, search, the alert settings, Refresh), its tabs as tabs with their counts, new alerts in one line with Mark as seen, and chips that count CI failed, Conflict, Changes requested, Unanswered and Ready to merge and filter the rows by one of them — they replace the four tiles. Rows are grouped by repository with its forge, say their states in words beside a coloured edge, and show when they were updated.
+- **The pull request page** has a path back to My PRs, its place in the list, the title with its state, Open on the forge and ⋯, and the branches it merges. Overview: description and discussion, and beside them what keeps it from merging (CI with how many checks passed, the review with approvals and unanswered comments, conflicts), each line leading to its tab; reviewers; the merge, with what the forge may still hold it for in words (the button stays the forge's to refuse); Fix all with agent. Checks: a table, a failed check opened on its errors. Files: unified or split, wrap, the files beside the diffs. Commits: a table with the hash to copy and each commit's CI. Comments: open, resolved or all threads as rows; an agent's draft answer stands in the reply's place with Send (after the confirmation), Edit and Discard; your review (outcome, summary, the line comments it takes) and the participants' reviews beside them.
+- Projects: a copy's path ends with an ellipsis where it does not fit; Changes hides an empty Not staged.
+
 ## 0.14.2 — 2026-11-28
 
 The new interface, third slice: Projects and a copy's page.

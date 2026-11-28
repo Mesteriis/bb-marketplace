@@ -20,7 +20,7 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## My PRs
 
-**Мои PR** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab, each led by what blocks it, with tiles on Open. Search (on GitHub the whole merged or closed history), fold or hide repositories, j/k moves. Alerts on failing CI and new comments come as toasts, a count and Push notifications.
+**My PRs** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab and repository, each with its states in words, and chips that count and filter what blocks them. Search (on GitHub the whole merged or closed history), fold or hide repositories, j/k moves. Alerts on failing CI and new comments come as toasts, a count and Push notifications.
 
 ## Pull requests and issues
 
