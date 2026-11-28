@@ -129,6 +129,8 @@ export const errorText: Record<string, string> = {
   host_key_rejected: "Ключ хоста отклонён", auth_failed: "Вход отклонён", consent_required: "Требуется разрешение",
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
+  // S14
+  invalid_archive: "Архив повреждён или имеет неподдерживаемую структуру",
 };
 
 // S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.
