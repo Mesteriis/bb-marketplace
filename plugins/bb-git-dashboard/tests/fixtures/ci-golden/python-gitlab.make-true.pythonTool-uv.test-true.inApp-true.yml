@@ -1,0 +1,10 @@
+# Python CI from a Makosh Git template. Add deployment and secrets yourself.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+ci:
+  image: python:3.12
+  script:
+    - (cd src/backend && pip install uv==0.13.10 && uv sync --locked)
+    - make check

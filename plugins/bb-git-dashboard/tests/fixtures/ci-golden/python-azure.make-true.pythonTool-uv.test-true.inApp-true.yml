@@ -1,0 +1,15 @@
+# Python CI from a Makosh Git template. Add deployment and secrets yourself.
+trigger:
+  branches:
+    include: [main]
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "3.12"
+  - script: pip install uv==0.13.10 && uv sync --locked
+    displayName: Install
+    workingDirectory: src/backend
+  - script: make check
+    displayName: Check

@@ -1,0 +1,13 @@
+# Go CI from a Makosh Git template. Add deployment and secrets yourself.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+ci:
+  image: golang:1.23
+  script:
+    - make check WEB=0
+web:
+  image: node:24
+  script:
+    - make web-check
