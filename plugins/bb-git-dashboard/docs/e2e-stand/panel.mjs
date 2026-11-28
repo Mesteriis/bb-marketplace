@@ -28,6 +28,17 @@ const words = {
     unpin: "Открепить", pin: "Закрепить", pinnedCopy: "Закреплённая копия", pinnedPr: "Закреплённый PR", head: "Ревью изменений треда",
     more: "Другие действия с PR", pinTab: "Закрепить вкладкой", binary: "двоичный", uncommitted: "Незакоммиченные изменения"},
 };
+// The stand's own machine ids, read from BB: the place a copy shows must name none of them.
+const hostIds = () => {
+  const ids = [];
+  const walk = value => {
+    if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === "object") { if (typeof value.id === "string") ids.push(value.id); Object.values(value).forEach(walk); }
+  };
+  walk(JSON.parse(bb(["machine", "list", "--json"])));
+  return [...new Set(ids)];
+};
+const namesNoHost = (ids, text) => ids.every(id => !text.includes(id));
 // The widest thing inside the panel against the panel itself: nothing may scroll sideways.
 const overflow = (page, selector) => page.evaluate(selector => {
   const root = document.querySelector(selector);
@@ -42,6 +53,8 @@ try {
   const items = Array.isArray(threads) ? threads : threads.threads ?? threads.items ?? [];
   const thread = items.find(item => /^CI failed/.test(item.title ?? "")) ?? items[0];
   check("a thread works in stand-beta", Boolean(thread?.id), items.map(item => item.title));
+  const machines = hostIds();
+  check("BB lists the stand's machines", machines.length > 0, machines);
   for (const [theme, language] of [["light", "en"], ["dark", "en"], ["light", "ru"]]) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1024 } });
     await context.addInitScript(value => localStorage.setItem("bb.theme", value), theme);
@@ -119,7 +132,7 @@ try {
     check(tag + ": no raw patch is shown", !/^(diff --git|new file mode|index [0-9a-f]+|--- \/dev\/null|\+\+\+ b\/)/m.test(await panel.locator(".git-codeview").innerText()));
     const place = panel.locator(".git-code-place");
     const placeTitle = await place.getAttribute("title").catch(() => "");
-    check(tag + ": the copy's place names no host id", !/host_/.test((placeTitle ?? "") + (await place.innerText().catch(() => ""))), placeTitle);
+    check(tag + ": the copy's place names none of the stand's machine ids", namesNoHost(machines, (placeTitle ?? "") + (await place.getAttribute("aria-label").catch(() => "") ?? "") + (await place.innerText().catch(() => ""))), placeTitle);
     await shot("panel-changes-new-file");
     await panel.getByRole("button", { name: w.back }).click();
     // Changes: the copy's full Code in the panel.
@@ -139,7 +152,8 @@ try {
     const pageAdded = page.locator(".git-codeview .git-changes-line[data-type='+']", { hasText: "a line for the panel" }).first();
     const pageNumbered = await visible(pageAdded, 20000) ? await pageAdded.evaluate(row => [row.children[1]?.textContent ?? "", row.children[2]?.textContent ?? ""]) : null;
     check(tag + ": the copy's Changes shows the new file as a numbered diff", pageNumbered?.[0] === "1" && /a line for the panel/.test(pageNumbered?.[1] ?? ""), pageNumbered);
-    check(tag + ": the copy's place names no host id", !/host_/.test(await page.locator(".git-code-place").first().getAttribute("title").catch(() => "") ?? ""));
+    const pagePlace = page.locator(".git-code-place").first();
+    check(tag + ": the copy's place names none of the stand's machine ids", namesNoHost(machines, (await pagePlace.getAttribute("title").catch(() => "") ?? "") + (await pagePlace.innerText().catch(() => ""))));
     await shot("changes-new-file");
     await page.getByRole("button", { name: w.pin, exact: true }).first().click({ timeout: 30000 });
     const pinned = page.locator(".git-panel").filter({ has: page.locator(".git-panel-note", { hasText: w.pinnedCopy }) });

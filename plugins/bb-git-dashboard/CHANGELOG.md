@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.8 — 2026-11-28
+
+What R8 left: the writes through an account are checked on the stand and live; no new features.
+
+- A new stand probe, `account-write.mjs`, runs a copy's writes through its account: on a network origin, Push, Fetch and Create pull request open the server's preview and write only after Confirm, each reaching the Gitea stand-in exactly once; a push without the credential fails and only a new preview tries again; a copy not linked is told to link it and nothing is written; Connections lists the writes. The Gitea stand-in serves stand/beta over Git once that probe has made it.
+- The panel probe compares the copy's place with the stand's own machine ids from BB, not with a pattern.
+- A copy not linked to an account repository gets NO_ACCOUNT_LINK before anything is prepared: tested.
+- Link to thread in a pull request's ⋯ menu is in the interface language.
+
 ## 0.14.7 — 2026-11-28
 
 The new interface, eighth and last slice: the panel beside a thread.

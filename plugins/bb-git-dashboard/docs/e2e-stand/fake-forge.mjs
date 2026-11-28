@@ -2,7 +2,7 @@
 // Requests must carry the stand token. Every write is appended to $FORGE_LOG as one JSON line.
 // Usage: node fake-forge.mjs <cert.pem> <key.pem> <port> <log>
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { dirname, join } from "node:path";
 
@@ -60,6 +60,11 @@ function smartHttp(req, res, path) {
   });
   backend.on("close", () => res.end());
 }
+// stand/beta over Git once account-write.mjs has made its bare repository: until then (catalog.mjs) it serves no
+// Git transport. Its pushes and fetches are logged as writes, so a probe can count them.
+const betaBare = () => join(gitRoot, "stand", "beta.git");
+const betaServed = () => existsSync(betaBare());
+const betaBranch = name => { try { return execFileSync("git", ["-C", betaBare(), "rev-parse", "--verify", "--quiet", "refs/heads/" + name], {encoding: "utf8"}).trim() || null; } catch { return null; } };
 // Branches: main, and the ones a new file was committed to (ci-templates.mjs).
 const branches = {main: "a".repeat(40)};
 const json = (res, status, body) => { res.writeHead(status, {"content-type": "application/json"}); res.end(body === undefined ? "" : JSON.stringify(body)); };
@@ -69,13 +74,16 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   const path = url.pathname;
   if (path === "/api/v1/version") return json(res, 200, {version: "1.25.3"});
   const smart = /^\/stand\/([a-z0-9._-]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/.exec(path);
-  if (smart && made.has(smart[1])) {
+  if (smart && (made.has(smart[1]) || (smart[1] === "beta" && betaServed()))) {
     // A repository made through the API asks Git for the account's credential, as a real forge does: the first push
     // only goes through when the credential helper has the token for this exact repository.
     if (req.headers.authorization !== "Basic " + Buffer.from("stand:stand-token").toString("base64")) {
       res.writeHead(401, {"www-authenticate": 'Basic realm="stand"'});
       return res.end();
     }
+    // A push's receive-pack and a fetch's advertisement (a fetch with nothing new sends no upload-pack).
+    if (smart[1] === "beta" && (req.method === "POST" || url.searchParams.get("service") === "git-upload-pack"))
+      appendFileSync(log, JSON.stringify({method: req.method, path, git: req.method === "POST" ? smart[2] : "fetch-refs"}) + "\n");
     return smartHttp(req, res, path);
   }
   if (req.headers.authorization !== "token stand-token") return json(res, 401, {message: "token required"});
@@ -119,7 +127,7 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     const own = /^\/api\/v1\/repos\/stand\/([a-z0-9._-]+)$/.exec(path);
     if (own && made.has(own[1])) return json(res, 200, madeRepo(own[1]));
     const named = /^\/api\/v1\/repos\/stand\/beta\/branches\/(.+)$/.exec(path);
-    if (named) { const head = branches[decodeURIComponent(named[1])]; return head ? json(res, 200, {name: decodeURIComponent(named[1]), commit: {id: head}}) : json(res, 404, {message: "not found"}); }
+    if (named) { const head = branches[decodeURIComponent(named[1])] ?? (betaServed() ? betaBranch(decodeURIComponent(named[1])) : null); return head ? json(res, 200, {name: decodeURIComponent(named[1]), commit: {id: head}}) : json(res, 404, {message: "not found"}); }
     if (path === "/api/v1/repos/issues/search") {
       const flag = ["created", "review_requested", "reviewed", "assigned"].find(name => url.searchParams.get(name) === "true");
       const items = inbox[flag + "_" + url.searchParams.get("state")] ?? [];

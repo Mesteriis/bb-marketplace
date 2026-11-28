@@ -1,23 +1,11 @@
 import { useState } from "react";
-import type { Preview, RemoteAction, RemoteOutcome } from "../../core/publication.ts";
+import type { Preview, RemoteOutcome } from "../../core/publication.ts";
+import { prepareThroughAccount, type AccountSync } from "./account-write.ts";
+
+export { prepareThroughAccount, type AccountSync };
+const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 import { useT } from "../i18n/use-t.tsx";
 import { Dialog } from "../system/dialog.tsx";
-
-/** The account repository a copy is linked to, and the previewed writes through that account. */
-export type AccountSync = {
-  /** The copy's linked account repository; null when the copy is not linked. */
-  target(): Promise<{accountId: string; repoId: string} | null>;
-  prepare(target: {accountId: string; repoId: string}, action: RemoteAction): Promise<Preview>;
-  publish(previewId: string): Promise<RemoteOutcome>;
-};
-const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
-
-/** Asks the server for the write's preview through the copy's linked account; the caller shows it with AccountConfirm. */
-export async function prepareThroughAccount(sync: AccountSync, action: RemoteAction): Promise<Preview> {
-  const target = await sync.target();
-  if (!target) throw new Error("NO_ACCOUNT_LINK");
-  return sync.prepare(target, action);
-}
 
 /**
  * What the server will do through the account, line by line; Confirm runs it once and says how it ended. The server
@@ -48,7 +36,7 @@ export function AccountConfirm({title, preview, sync, onDone, onClose}: {title: 
   </>}>
     <p className="g-muted">{t("pg.account-what")}</p>
     <ul className="git-account-lines">{preview.lines.map((line, index) => <li key={index} className="g-mono">{line}</li>)}</ul>
-    {error && <p className="g-banner bad" role="alert">{error}{spent ? " " + t("pg.account-again") : ""}</p>}
+    {error && <p className="g-banner bad git-account-error" role="alert">{error}{spent ? " " + t("pg.account-again") : ""}</p>}
   </Dialog>;
 }
 

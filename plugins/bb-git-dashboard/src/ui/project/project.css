@@ -94,3 +94,5 @@
   font-size: 12px; overflow-wrap: anywhere; }
 .git-ws .git-account-form { display: grid; gap: 12px; }
 .git-ws .git-account-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }
+/* The failure under the preview lines, on their edges. */
+.git-ws .git-account-error { margin: 12px 0 0; }

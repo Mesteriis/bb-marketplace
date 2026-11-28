@@ -35,6 +35,7 @@ export function PrMenu({api, target, url, onRefresh, onNotice, onPin}: {api: Rev
 
 /** Link to thread: pick a thread (the PR's branch thread first) and send it the pull request as context. */
 function LinkDialog({api, target, onClose, onLinked}: {api: ReviewApi; target: PrRef; onClose(): void; onLinked(title: string): void}) {
+  const t = useT();
   const [threads, setThreads] = useState<{id: string; title: string; project: string}[]>();
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -52,15 +53,15 @@ function LinkDialog({api, target, onClose, onLinked}: {api: ReviewApi; target: P
     catch (cause) { setError(message(cause)); }
     finally { setPending(false); }
   };
-  return <div className="git-ci-threads git-stack" role="dialog" aria-label="Link to thread">
-    <input aria-label="Find a thread" autoFocus placeholder="Thread or project" value={query} onChange={event => setQuery(event.target.value)}
+  return <div className="git-ci-threads git-stack" role="dialog" aria-label={t("pr.ln.title")}>
+    <input aria-label={t("pr.ln.find")} autoFocus placeholder={t("pr.ln.placeholder")} value={query} onChange={event => setQuery(event.target.value)}
       onKeyDown={event => { if (event.key === "Escape") onClose(); }}/>
-    {!threads && !error && <p className="git-muted" role="status">Reading threads…</p>}
+    {!threads && !error && <p className="git-muted" role="status">{t("pr.ln.reading")}</p>}
     <ul className="git-stack">{shown.map(thread => <li key={thread.id}><button type="button" className="git-link" disabled={pending} onClick={() => void link(thread)}>
       {thread.title}</button> <span className="git-muted">{thread.project}</span></li>)}
-      {threads && !shown.length && <li className="git-muted">No thread matches.</li>}</ul>
-    <p className="git-muted">The thread gets the pull request as context; nothing is asked of it.</p>
-    <div className="git-row"><button type="button" onClick={onClose}>Cancel</button></div>
+      {threads && !shown.length && <li className="git-muted">{t("pr.ln.none")}</li>}</ul>
+    <p className="git-muted">{t("pr.ln.note")}</p>
+    <div className="git-row"><button type="button" onClick={onClose}>{t("common.cancel")}</button></div>
     {error && <p className="git-error" role="alert">{error}</p>}
   </div>;
 }

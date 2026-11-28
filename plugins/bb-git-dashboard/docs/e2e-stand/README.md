@@ -35,9 +35,16 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   folder with its files, git on main and one commit by the author, listed in the catalog; the same name again refused.
 - `panel.mjs` — after `ci.mjs`, last: the thread header's Review opens the one Git tab on its Review; back gives the
   summary; CI's Log, History and Changes open their screens in the panel and fit it; the panel's width as BB gives it and
-  no sideways scroll at 420, 520 and 640 px; a copy pinned from its page and a pull request pinned from Remote
-  repositories, each with Unpin — in light, dark and Russian. It leaves an uncommitted file in stand-beta while it runs
-  and removes it at the end.
+  no sideways scroll at 420, 520 and 640 px; a new file chosen in the summary shown in Code as a numbered diff and counted
+  in History; the copy's place naming none of the stand's machine ids (`bb machine list`); a copy pinned from its page
+  and a pull request pinned from its page's ⋯ (twice: one tab), each with Unpin — in light, dark and Russian. It leaves
+  an uncommitted file in stand-beta while it runs and removes it at the end.
+- `account-write.mjs` — last, after `panel.mjs`: makes the bare stand/beta.git the Gitea stand-in serves over Git from
+  then on, and a branch in stand-beta; Push on the copy's head opens the account's preview (account, repository, branch,
+  commit, the machine by name), and Confirm without the credential in the stand's helper fails with only Close left;
+  with the credential, a new preview pushes once; Fetch through the account brings origin's branches; Create pull
+  request previews head, base and title and asks the stand-in once; stand-alpha, not linked, is told to link it and
+  writes nothing; Connections lists the writes; the preview in dark, cancelled. It switches stand-beta back at the end.
 - `catalog-shots.mjs` — after `catalog.mjs` and `scaffolds.mjs`: the Catalog's two tables (the branch read on opening),
   the clone dialog (closed, nothing cloned), New project, Connections with Check of the Gitea account, the connection
   wizard's first and last step (the check only reads; nothing is saved) and the plugin's settings section, where the
