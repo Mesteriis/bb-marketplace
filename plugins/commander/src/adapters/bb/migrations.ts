@@ -67,4 +67,16 @@ export const MIGRATIONS: string[] = [
       job_json TEXT NOT NULL
     );
   `,
+  `
+    ALTER TABLE checkpoints ADD COLUMN commit_intent_json TEXT;
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS archives (
+      id TEXT PRIMARY KEY NOT NULL,
+      source_json TEXT NOT NULL,
+      fingerprint_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_referenced_at TEXT NOT NULL
+    );
+  `,
 ];

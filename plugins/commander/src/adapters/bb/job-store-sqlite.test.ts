@@ -494,7 +494,7 @@ test("the SDK creates tables in a clean database and the second migrate preserve
     expect(tables.all()).toStrictEqual([]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
-    expect(tables.all()).toStrictEqual(["_bb_migrations", "checkpoints", "commander_owner_approvals", "jobs", "scan_jobs"]);
+    expect(tables.all()).toStrictEqual(["_bb_migrations", "archives", "checkpoints", "commander_owner_approvals", "jobs", "scan_jobs"]);
     await createSqliteJobStore(cleanDb).create(job);
     const journal = cleanDb.prepare("SELECT * FROM _bb_migrations ORDER BY id");
     const entries = journal.all();
@@ -506,6 +506,8 @@ test("the SDK creates tables in a clean database and the second migrate preserve
       { id: 4, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 5, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
       { id: 6, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 7, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 8, applied_at: expect.any(Number), statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     ]);
 
     bb.storage.migrate(cleanDb, MIGRATIONS);
@@ -531,7 +533,7 @@ test.each([1, 2, 3])("upgrades a v%i checkpoint without inventing recovery metad
     `).run(job.id, date, job.id, date);
 
     bb.storage.migrate(legacyDb, MIGRATIONS);
-    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(legacyDb.prepare("SELECT id FROM _bb_migrations ORDER BY id").pluck().all()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     expect(journal.all(version)).toStrictEqual(originalEntries);
 
     const migrated = createSqliteJobStore(legacyDb);
@@ -558,6 +560,55 @@ test.each([1, 2, 3])("upgrades a v%i checkpoint without inventing recovery metad
   } finally {
     legacyDb.close();
   }
+});
+
+
+const intent = {
+  size: "42",
+  sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  tempFingerprint: { size: "42", mtimeNs: "1732665600123456789" },
+};
+
+test("keeps commitIntent across closing and reopening the database; a later write without it clears it", async () => {
+  await store.create(job);
+  await store.checkpoint({ ...checkpoint, commitIntent: intent });
+  expect(db.prepare("SELECT commit_intent_json FROM checkpoints WHERE item_index = 0").pluck().get())
+    .toBe(JSON.stringify(intent));
+  db.close();
+  db = new Database(filename);
+  store = createSqliteJobStore(db);
+  expect(await store.lastCheckpoint(job.id, 0)).toStrictEqual({ ...checkpoint, commitIntent: intent });
+  await store.checkpoint(checkpoint);
+  expect(db.prepare("SELECT commit_intent_json FROM checkpoints WHERE item_index = 0").pluck().get()).toBeNull();
+  expect(await store.lastCheckpoint(job.id, 0)).toStrictEqual(checkpoint);
+});
+
+test("a checkpoint row from before migration 8 reads without commitIntent", async () => {
+  await store.create(job);
+  db.prepare("INSERT INTO checkpoints (job_id, item_index, phase, bytes_done, at) VALUES (?, 5, 'prepared', '0', ?)")
+    .run(job.id, date);
+  const read = await store.lastCheckpoint(job.id, 5);
+  expect(read).not.toBeNull();
+  expect("commitIntent" in read!).toBe(false);
+});
+
+test("a damaged commit_intent_json is an error, not a silently dropped proof", async () => {
+  await store.create(job);
+  await store.checkpoint(checkpoint);
+  db.prepare("UPDATE checkpoints SET commit_intent_json = '{\"size\":1}'").run();
+  await expect(store.lastCheckpoint(job.id, 0)).rejects.toBeDefined();
+});
+
+test("the archives table has exactly the five agreed columns and no secret-like names", () => {
+  const columns = db.prepare("PRAGMA table_info(archives)").all() as Array<{ name: string; type: string; notnull: number; pk: number }>;
+  expect(columns.map((c) => [c.name, c.type, c.notnull, c.pk])).toEqual([
+    ["id", "TEXT", 1, 1],
+    ["source_json", "TEXT", 1, 0],
+    ["fingerprint_json", "TEXT", 1, 0],
+    ["created_at", "TEXT", 1, 0],
+    ["last_referenced_at", "TEXT", 1, 0],
+  ]);
+  for (const { name } of columns) expect(name).not.toMatch(/pass|secret|key|token|copy|temp|tmp|local/);
 });
 
 test("S13 preserves the signed synchronization plan through SQLite create and get", async () => {

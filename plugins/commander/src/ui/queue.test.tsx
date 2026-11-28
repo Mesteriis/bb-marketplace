@@ -146,3 +146,37 @@ test("a finished batch with pending items says they were returned, not renamed; 
   expect(returnedPendingNote(job("completed", ["done", "done"]))).toBe(false);
   expect(returnedPendingNote(job("failed", ["pending"], "rename", 1))).toBe(false);
 });
+
+// --- S14a: a job that waits for the owner to confirm the copy of its archive ---
+
+function archiveJob(state: string, withArchive = true): JobView {
+  const base = job(state, "323e4567-e89b-42d3-a456-426614174000") as OperationJob & JobView;
+  return {
+    ...base,
+    error: { code: "consent_required", reason: "archive_copy", message: "The archive must be estimated again", retryable: false },
+    plan: { ...base.plan, sourceEndpoint: withArchive ? "archive:123e4567-e89b-42d3-a456-426614174000" : "host:from" },
+  } as JobView;
+}
+const queueProps = { endpoints: [], error: null, loading: false, onInspect: vi.fn(), onSkip: vi.fn(), onCancel: vi.fn(), open: true, id: "q",
+  selection: { count: 0, size: "0 Б", destination: "", fullDestination: "" } };
+
+test("an interrupted or pending archive job says the copy needs confirming and offers the button", () => {
+  for (const state of ["interrupted", "pending"]) {
+    const onConfirmArchive = vi.fn();
+    const view = render(<Queue {...queueProps} jobs={[archiveJob(state)]} onConfirmArchive={onConfirmArchive} />);
+    expect(screen.getByText("Нужно подтверждение копии архива")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить копию" }));
+    expect(onConfirmArchive).toHaveBeenCalledTimes(1);
+    expect(onConfirmArchive.mock.calls[0]![0]).toMatchObject({ state });
+    view.unmount();
+  }
+});
+
+test("the confirm button is absent without the wiring, and for an ordinary job with another error", () => {
+  render(<Queue {...queueProps} jobs={[archiveJob("interrupted")]} />);
+  expect(screen.queryByRole("button", { name: "Подтвердить копию" })).toBeNull();
+  cleanup();
+  const failed = { ...job("failed", "423e4567-e89b-42d3-a456-426614174000"), error: { code: "internal", message: "x", retryable: false } } as JobView;
+  render(<Queue {...queueProps} jobs={[failed]} onConfirmArchive={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "Подтвердить копию" })).toBeNull();
+});

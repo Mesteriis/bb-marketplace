@@ -16,13 +16,19 @@
     "server": "./server.ts",
     "app": "./app.tsx",
     "host": "./host.ts",
-    "skills": ["skills"]
+    "skills": [
+      "skills"
+    ]
   },
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "build:helper": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/home/builder --remap-path-prefix=$PWD=/src $RUSTFLAGS\" cargo build --release --locked --target aarch64-apple-darwin --manifest-path helper/Cargo.toml && mkdir -p bin && cp helper/target/aarch64-apple-darwin/release/commander-archive-helper bin/commander-archive-helper && chmod +x bin/commander-archive-helper && node scripts/helper-sums.mjs",
+    "helper:sums": "node scripts/helper-sums.mjs",
+    "check:notices": "node scripts/check-notices.mjs",
+    "check:build": "node --experimental-strip-types scripts/check-build-output.mjs --release && node scripts/check-notices.mjs && node ../../scripts/check-manifests.mjs"
   },
   "dependencies": {
     "zod": "^4.6.5"

@@ -83,6 +83,8 @@ function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: Agent
 }
 
 function effectiveGrants(rows: AgentGrant[], endpoint: string): AgentGrant[] {
+  // S14a: archives are opened by the owner's dialog only; no grant, not even "*", reaches an archive: endpoint.
+  if (endpoint.startsWith("archive:")) return [];
   // SFTP lstat protects the final component only. An intermediate link may leave
   // a lexical subdirectory, so only a grant covering the whole remote root applies.
   return endpoint.startsWith("sftp:") ? rows.filter((row) => row.scope.segments.length === 0) : rows;
@@ -123,9 +125,11 @@ export function createOperations(deps: {
   ready(): Promise<void>;
   isManaged(id: string): boolean;
   scans: ScanRunner;
+  archives?: import("./archive-runtime.ts").ArchiveRuntime;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
+  const archiveEstimates = new Map<string, { request: string; version: { size: string; mtimeNs: string | null }; expires: number }>();
   const scanEstimates = new Map<string, {
     initiator: Initiator; request: string; snapshot: string; expires: number;
   }>();
@@ -425,6 +429,46 @@ export function createOperations(deps: {
     };
   }
 
+  // S14a: every archive is copied to the server, so every open needs the owner's confirmed, one-time estimate.
+  // (No source is treated as "the server's own machine" until that is proven; the estimate then costs one click.)
+  async function openArchive(
+    source: ResourceRef, input: { estimateOnly?: boolean | undefined; estimateId?: string | undefined }, initiator: Initiator,
+    signal: AbortSignal, resumeId: string | null,
+  ) {
+    const { estimateOnly, estimateId } = input;
+    if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+    if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
+    // The source's own endpoint is prepared first, so a resumed archive reads through a ready provider.
+    await endpoints.prepare([source.endpoint], signal);
+    const entry = await endpoints.provider(source.endpoint).stat(source.path, signal);
+    if (!entry) throw new CommanderError("not_found", "The archive file does not exist");
+    if (entry.kind !== "file") throw new CommanderError("invalid_path", "The archive must be a regular file");
+    const request = JSON.stringify({ source, resumeId });
+    if (estimateOnly) {
+      const now = Date.now();
+      for (const [id, item] of archiveEstimates) if (now >= item.expires) archiveEstimates.delete(id);
+      if (archiveEstimates.size >= 32) throw refusal("conflict", "Archive estimate pool is full");
+      const id = planner.uuid();
+      archiveEstimates.set(id, { request, version: { size: entry.size, mtimeNs: entry.mtimeNs }, expires: now + 600_000 });
+      return { estimateId: id, bytesPlanned: entry.size, source };
+    }
+    if (!estimateId) throw refusal("forbidden", "A remote archive requires a confirmed estimate");
+    const estimate = archiveEstimates.get(estimateId);
+    if (!estimate || Date.now() >= estimate.expires) {
+      archiveEstimates.delete(estimateId);
+      throw refusal("forbidden", "Archive estimate is missing or expired");
+    }
+    if (estimate.request !== request) throw refusal("forbidden", "Archive estimate does not match the request");
+    archiveEstimates.delete(estimateId);
+    if (estimate.version.size !== entry.size || estimate.version.mtimeNs !== entry.mtimeNs) {
+      throw refusal("conflict", "Archive changed; estimate again");
+    }
+    // The confirmed version travels into the copy and is checked there before the first byte is read.
+    const expect = estimate.version;
+    return resumeId ? deps.archives.manager.resume(resumeId, signal, { owner: true, expect })
+      : deps.archives.manager.open(source, signal, { owner: true, expect });
+  }
+
   function requireScanEstimate(id: string, initiator: Initiator, request: string) {
     const estimate = scanEstimates.get(id);
     if (!estimate || Date.now() >= estimate.expires) {
@@ -511,7 +555,8 @@ export function createOperations(deps: {
       const endpointsList = await endpoints.list(signal);
       if (initiator.kind === "owner") return { endpoints: endpointsList };
       const rows = await grants.forThread(initiator.threadId);
-      return { endpoints: endpointsList.filter(({ id }) => rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
+      // S14a: an agent never sees an archive endpoint or an archive's name, whatever its grants say.
+      return { endpoints: endpointsList.filter(({ id }) => !id.startsWith("archive:") && rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
     },
     async home(id: string, signal: AbortSignal) {
       await endpoints.prepare([id], signal);
@@ -547,6 +592,10 @@ export function createOperations(deps: {
       }
       const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
       const restricted = initiator.kind === "agent" && paths.some((ref) => !canObserve(rows, ref));
+      // S14a: an agent never plans over an archive, whatever its grants say; the answer is the usual planning refusal.
+      if (initiator.kind === "agent" && paths.some(({ endpoint }) => endpoint.startsWith("archive:"))) {
+        throw refusal("forbidden", "Commander planning failed outside the metadata grant");
+      }
       try {
         if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
         await endpoints.prepare(paths.map(({ endpoint }) => endpoint), signal);
@@ -785,6 +834,31 @@ export function createOperations(deps: {
         signal.removeEventListener("abort", cancel);
       }
     },
+    // S14: owner-only. An archive is opened as a read-only panel; its password comes from the owner's dialog.
+    async archiveOpen(input: RpcInput<"archive_open">, initiator: Initiator, signal: AbortSignal) {
+      return openArchive(input.source, input, initiator, signal, null);
+    },
+    async archiveResume(input: RpcInput<"archive_resume">, initiator: Initiator, signal: AbortSignal) {
+      if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+      if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
+      const source = deps.archives.manager.sourceOf(input.archiveId);
+      if (!source) throw new CommanderError("not_found", "Archive is no longer available");
+      const opened = await openArchive(source, input, initiator, signal, input.archiveId);
+      // Jobs that waited for this archive's copy go on from their checkpoints.
+      if ("endpoint" in opened) void runner.recover().catch(() => undefined);
+      return opened;
+    },
+    async archiveClose(archiveId: string) {
+      await deps.archives?.manager.close(archiveId);
+      return {};
+    },
+    archivePassword(archiveId: string, password: string) {
+      return { accepted: deps.archives?.gate.provide(archiveId, password) === "accepted" };
+    },
+    archivePasswordCancel(archiveId: string) {
+      deps.archives?.gate.cancel(archiveId);
+      return {};
+    },
     listGrants: grants.list,
     setGrant: (grant: AgentGrant) => changeGrants(grant.threadId, () => grants.set(grant)),
     revokeGrant: (key: GrantKey) => changeGrants(key.threadId, () => grants.revoke(key)),
@@ -897,6 +971,11 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     scan_start: (input, ctx) => ops.scanStart(input, owner, ctx.experimental_signal),
     scan_get: ({ scanId }) => ops.scanGet(scanId),
     scan_cancel: (input) => ops.scanCancel(input, owner),
+    archive_open: (input, ctx) => ops.archiveOpen(input, owner, ctx.experimental_signal),
+    archive_resume: (input, ctx) => ops.archiveResume(input, owner, ctx.experimental_signal),
+    archive_close: ({ archiveId }) => ops.archiveClose(archiveId),
+    archive_password: ({ archiveId, password }) => ops.archivePassword(archiveId, password),
+    archive_password_cancel: ({ archiveId }) => ops.archivePasswordCancel(archiveId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;

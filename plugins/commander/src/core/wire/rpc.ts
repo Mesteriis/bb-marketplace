@@ -273,6 +273,31 @@ export const rpcSchemas = {
     output: z.union([ScanEstimateView, ScanJobView]),
   },
   scan_get: { input: scanId, output: ScanGetView.nullable() },
+  // S14: archives open as read-only panels. The copy and the helper live on the server; the password of an
+  // encrypted archive comes only from the owner's dialog (archive_password) and is never returned.
+  archive_open: {
+    input: z.strictObject({ source: ResourceRef, estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
+    // A remote archive is copied to the server first: the first call (estimateOnly) answers how many bytes the
+    // copy reads, the second (with that estimateId) opens it. The id is one-time and bound to owner, ref and version.
+    output: z.union([
+      z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
+    ]),
+  },
+  // After a restart an archive tab names an archive id whose copy is gone: the owner estimates and confirms again.
+  archive_resume: {
+    input: z.strictObject({ archiveId: z.uuid(), estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
+    output: z.union([
+      z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
+    ]),
+  },
+  archive_close: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },
+  archive_password: {
+    input: z.strictObject({ archiveId: z.uuid(), password: z.string().min(1).max(256) }),
+    output: z.strictObject({ accepted: z.boolean() }),
+  },
+  archive_password_cancel: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },
   scan_cancel: { input: z.union([scanId, searchRequestId]), output: empty },
 };
 

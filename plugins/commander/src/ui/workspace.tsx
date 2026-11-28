@@ -1,9 +1,9 @@
 import { SearchPanel, type SearchActions } from "./search-panel.tsx";
 import type { SearchHit } from "../core/search.ts";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
+import type { ConflictAction, Endpoint, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
 import { displayPath, join, NameSegment, parent, parsePosix, samePath, type ResourcePath } from "../core/path.ts";
 import type { AgentGrant, SavedUiScan, UiState } from "../core/wire/rpc.ts";
 import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
@@ -12,7 +12,7 @@ import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { BatchRenameDialog } from "./batch-rename.tsx";
 import type { RenamePattern } from "../core/rename-pattern.ts";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
-import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
+import { activeTab, bytes, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
@@ -20,6 +20,9 @@ import { ru } from "./strings.ts";
 import { SyncDialog, type SyncActions } from "./sync-dialog.tsx";
 import { Viewer } from "./viewer.tsx";
 
+/** A question that waits for the owner: copy this archive to the server (S14a). Several can wait at once. */
+type ArchiveAsk = { pane: Side | null; ref: ResourceRef | null; source: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string };
+type EstimateReply = { estimateId: string; bytesPlanned: string; source?: ResourceRef };
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
@@ -69,6 +72,25 @@ export interface WorkspaceProps {
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
   onOpenPage: () => void;
+  /** S14: opens a ZIP or TAR as a read-only panel; absent where archives are unavailable. */
+  onOpenArchive?: (ref: ResourceRef, estimateId?: string) => Promise<{ endpoint: string } | EstimateReply>;
+  /** S14: the archive that asks the owner for its password, if any. The password goes only to onPassword. */
+  passwordFor?: string | null;
+  onPassword?: (archiveId: string, password: string) => Promise<unknown>;
+  onPasswordCancel?: (archiveId: string) => void;
+  /** S14a: reopens an archive tab whose copy is gone (after a restart) through a new estimate. */
+  onResumeArchive?: (archiveId: string, estimateId?: string) => Promise<{ endpoint: string } | EstimateReply>;
+}
+
+/** A file that changed after the estimate gets its own line; everything else is the usual problem. */
+function archiveProblem(error: unknown): Problem {
+  const problem = problemOf(error);
+  return problem.code === "changed_since_plan" ? { code: problem.code, message: ru.archive.changed } : problem;
+}
+
+/** Only plain ZIP and TAR: compressed tarballs are not read in this stage. */
+function isArchiveName(name: Entry["name"]): boolean {
+  return "t" in name && /\.(zip|tar)$/i.test(name.t);
 }
 
 const actions = [
@@ -135,6 +157,31 @@ export function Workspace(props: WorkspaceProps) {
   const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
   const [searchRoots, setSearchRoots] = useState<Partial<Record<Side, ResourceRef>>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [asks, setAsks] = useState<ArchiveAsk[]>([]);
+  // One question per archive at a time: while an estimate of an archive is requested or its question waits, the
+  // same archive (a second panel, a refresh, a job) does not ask again.
+  const waitingArchives = useRef(new Set<string>());
+  const ask = (next: ArchiveAsk) => setAsks((previous) => previous.some((item) => item.resumeId !== undefined && item.resumeId === next.resumeId) ? previous : [...previous, next]);
+  const dropAsk = () => setAsks((previous) => {
+    const [first, ...rest] = previous;
+    if (first?.resumeId) waitingArchives.current.delete(first.resumeId);
+    return rest;
+  });
+  function requestResume(pane: Side | null, resumeId: string) {
+    if (!props.onResumeArchive || waitingArchives.current.has(resumeId)) return;
+    waitingArchives.current.add(resumeId);
+    void props.onResumeArchive(resumeId).then((reply) => {
+      if ("estimateId" in reply) ask({ pane, ref: null, source: reply.source ?? null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+      else waitingArchives.current.delete(resumeId);
+    }).catch((error: unknown) => { waitingArchives.current.delete(resumeId); setProblem(archiveProblem(error)); });
+  }
+  // S14a: a job that waits for its archive's copy names the archive in its plan; the question is the same as a panel's.
+  const confirmArchive = (job: OperationJob) => {
+    const endpoint = [job.plan.sourceEndpoint, job.plan.targetEndpoint, ...job.plan.items.flatMap((item) => [item.source?.endpoint, item.target?.endpoint])]
+      .find((id): id is string => typeof id === "string" && id.startsWith("archive:"));
+    if (!endpoint) return;
+    requestResume(null, endpoint.slice("archive:".length));
+  };
   const [same, setSame] = useState(false);
   const [retryConflict, setRetryConflict] = useState<{ view: ConflictView; problem: Problem } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -155,6 +202,20 @@ export function Workspace(props: WorkspaceProps) {
   const side = state.activePane, opposite = otherSide(side);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
   const tabs = { left, right }, tab = tabs[side], destination = tabs[opposite];
+  // S14a: an archive tab whose copy is gone (the host answers consent_required) asks for a new estimate. An
+  // attempt is remembered with the directory it was made for: the same directory is not asked again (a cancel or a
+  // failure is not nagged about), a refreshed one is; a success forgets the archive.
+  const asked = useRef(new Map<string, unknown>());
+  useEffect(() => {
+    for (const pane of sides) {
+      const value = tabs[pane], directory = props.directories[pane];
+      if (!value || !value.endpoint.startsWith("archive:") || directory?.error?.code !== "consent_required" || !props.onResumeArchive) continue;
+      const key = pane + ":" + value.endpoint;
+      if (asked.current.has(key) && asked.current.get(key) === directory) continue;
+      asked.current.set(key, directory);
+      requestResume(pane, value.endpoint.slice("archive:".length));
+    }
+  });
   // S11: a search replaces only its source pane; the other pane remains the copy destination.
   const searchRoot = (pane: Side) => state.searchPanels?.[pane]?.root ?? searchRoots[pane];
   const inSearch = !!props.search && !!searchRoot(side);
@@ -322,14 +383,14 @@ export function Workspace(props: WorkspaceProps) {
     if (next.kind === "conflict") setSame(false);
     setDialog(next);
   };
-  async function perform(action: () => Promise<unknown>, completed?: () => void) {
+  async function perform(action: () => Promise<unknown>, completed?: () => void, describe: (error: unknown) => Problem = problemOf) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
     setProblem(null);
     setNotice(null);
     try { await action(); completed?.(); }
-    catch (error) { setProblem(problemOf(error)); }
+    catch (error) { setProblem(describe(error)); }
     finally { running.current = false; setBusy(false); }
   }
   function setPane(pane: Side) {
@@ -370,6 +431,20 @@ export function Workspace(props: WorkspaceProps) {
     if (entry === null) goUp(pane);
     else if (entry.kind === "dir") {
       try { navigate(pane, join(value.path, entry.name)); } catch (error) { setProblem(problemOf(error)); }
+    } else if (props.onOpenArchive && isArchiveName(entry.name)) {
+      const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
+      void perform(async () => {
+        let reply = await props.onOpenArchive!(ref);
+        // An estimate of zero bytes needs no question: the file is read in place. Anything else asks first.
+        if ("estimateId" in reply) {
+          if (reply.bytesPlanned !== "0") {
+            ask({ pane, ref, source: ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+            return;
+          }
+          reply = await props.onOpenArchive!(ref, reply.estimateId);
+        }
+        if ("endpoint" in reply) await props.onEndpoint(pane, reply.endpoint);
+      }, undefined, archiveProblem);
     } else view(value, entry);
   }
   function view(value: Tab, entry: Entry) {
@@ -585,6 +660,7 @@ export function Workspace(props: WorkspaceProps) {
     onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
     onCancel={(job) => open({ kind: "cancel", job })}
     onRetry={(job) => { void props.onRetry(job).catch((error: unknown) => setProblem(problemOf(error))); }}
+    {...(props.onResumeArchive ? { onConfirmArchive: confirmArchive } : {})}
     retryNotes={props.retryNotes} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
@@ -697,6 +773,9 @@ export function Workspace(props: WorkspaceProps) {
         <Icon name="Terminal" /><span>{compact ? ru.compactTerminal : ru.terminal}</span></Button>}
     </footer>
     {dialog?.kind === "text" && <TextDialog {...dialog} close={close} busy={busy} error={problem} />}
+    {props.passwordFor && props.onPassword && <TextDialog key={props.passwordFor} title={ru.archive.passwordTitle} label={ru.archive.password} secret
+      submit={(password) => void props.onPassword!(props.passwordFor!, password)}
+      close={() => props.onPasswordCancel?.(props.passwordFor!)} busy={false} error={null} />}
     {dialog?.kind === "batch-rename" && <BatchRenameDialog entries={dialog.entries} directory={entries}
       caseSensitive={dialog.caseSensitive} busy={busy} error={problem}
       submit={(pattern) => createBatchRename(dialog.sources, pattern)} close={close} />}
@@ -711,6 +790,24 @@ export function Workspace(props: WorkspaceProps) {
         open({ kind: "content", source: leftText, target: rightText, returnTo: dialog });
       })}
       cancel={() => open({ kind: "cancel", job: dialog.job, returnTo: dialog })} close={close} busy={busy} error={problem} />}
+    {!dialog && asks[0] && <Modal key={asks[0].estimateId} title={ru.archive.estimateTitle} description={ru.archive.estimateText(bytes(asks[0].bytes))}
+      close={() => { dropAsk(); setProblem(null); }} busy={busy}>
+      {asks[0].source && <ArchiveSource source={asks[0].source} endpoints={endpoints} />}
+      {problem && <ProblemLine problem={problem} />}
+      <div className="cm-actions">
+        <Button size="sm" disabled={busy} onClick={() => { const current = asks[0]!; void perform(async () => {
+          if (current.resumeId) {
+            await props.onResumeArchive!(current.resumeId, current.estimateId);
+            // Only the panels that show this archive are listed again: another cold panel keeps its own question.
+            for (const pane of sides) if (tabs[pane]?.endpoint === "archive:" + current.resumeId) props.onRefresh(pane);
+            return;
+          }
+          const reply = await props.onOpenArchive!(current.ref!, current.estimateId);
+          if ("endpoint" in reply && current.pane) await props.onEndpoint(current.pane, reply.endpoint);
+        }, dropAsk, archiveProblem); }}>{ru.archive.copyAndOpen}</Button>
+        <Button size="sm" variant="outline" onClick={() => { dropAsk(); setProblem(null); }} disabled={busy}>{ru.cancel}</Button>
+      </div>
+    </Modal>}
     {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} busy={busy}>
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
@@ -745,4 +842,12 @@ export function Workspace(props: WorkspaceProps) {
     </Modal>}
     </>}
   </div>;
+}
+
+// The dialog names the archive file and where it is read from, so two archives of one size cannot be mixed up.
+function ArchiveSource({ source, endpoints }: { source: ResourceRef; endpoints: Endpoint[] }) {
+  const last = source.path.segments[source.path.segments.length - 1];
+  const name = last ? displayPath({ segments: [last] }).replace(/^\//, "") : "";
+  const label = endpoints.find((item) => item.id === source.endpoint)?.label ?? source.endpoint;
+  return <p className="cm-meta cm-archive-source"><strong>{name}</strong> · {label} · <code>{displayPath(source.path)}</code></p>;
 }

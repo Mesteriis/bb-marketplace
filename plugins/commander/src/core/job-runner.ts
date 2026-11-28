@@ -164,6 +164,8 @@ export class JobRunner {
   }
 
   submit(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
+    // S14a: pack plans wait for S14b; a hand-built one never becomes a job.
+    if (plan.kind === "pack") return Promise.reject(new CommanderError("unsupported", "Creating archives is not available yet"));
     return this.accept(() => this.submitPlan(plan, opts));
   }
 
@@ -536,6 +538,12 @@ export class JobRunner {
       if (!job || this.active.has(id)) return;
       if (job.state === "pending") {
         if (job.awaitsOwner) return;
+        // S14a: a job over an archive whose copy is gone waits, still pending, until the owner confirms a new copy.
+        if (await this.holdForArchive(job)) return;
+        if (job.error?.reason === "archive_copy") {
+          await this.patch(job, { error: null }, "progress");
+          continue;
+        }
         if (await this.start(job)) return "resumed";
         continue;
       }
@@ -549,6 +557,16 @@ export class JobRunner {
       }
       if (job.state !== "interrupted") return;
       const cancelling = job.error?.code === "cancelled" && job.error.message === cancelledError.message;
+      // S14a: a job over an archive whose copy is gone waits, still interrupted and with its checkpoint, until the
+      // owner confirms a new copy; a later recovery pass goes on from the checkpoint. It is not an unknown outcome.
+      if (!cancelling) {
+        if (await this.holdForArchive(job)) return;
+        if (job.error?.reason === "archive_copy") {
+          // The copy is back: the wait's error does not stay on the job.
+          await this.patch(job, { error: null }, "progress");
+          continue;
+        }
+      }
       if (!cancelling && job.pendingConflict) {
         if (await this.change(job, "restore_conflict", { pendingConflict: job.pendingConflict }, "conflict")) return "resumed";
         continue;
@@ -594,6 +612,36 @@ export class JobRunner {
         return "resumed";
       }
     }
+  }
+
+  /** Marks the job as waiting for the owner's copy confirmation and reports whether it has to wait. */
+  private async holdForArchive(job: OperationJob): Promise<boolean> {
+    const waiting = this.archiveWait(job);
+    if (!waiting) return false;
+    if (job.error?.code !== waiting.code || job.error.reason !== waiting.reason) {
+      await this.patch(job, { error: waiting.toShape() }, "progress");
+    }
+    return true;
+  }
+
+  /** The refusal of a plan's archive endpoint that needs a new estimate, or null when none does. */
+  private archiveWait(job: OperationJob): CommanderError | null {
+    const endpoints = new Set<string>();
+    for (const endpoint of [job.plan.sourceEndpoint, job.plan.targetEndpoint]) if (endpoint) endpoints.add(endpoint);
+    for (const item of job.plan.items) {
+      if (item.source) endpoints.add(item.source.endpoint);
+      if (item.target) endpoints.add(item.target.endpoint);
+    }
+    for (const endpoint of endpoints) {
+      if (!endpoint.startsWith("archive:")) continue;
+      try {
+        this.deps.provider(endpoint as EndpointId);
+      } catch (error) {
+        if (isCommanderError(error) && error.code === "consent_required") return error;
+        // Anything else (an unknown archive) is left to the normal path, which reports it per item.
+      }
+    }
+    return null;
   }
 
   private async recoverStartedItem(
@@ -1537,7 +1585,9 @@ export class JobRunner {
       };
       try {
         await recordTemp("0");
-        const hash = verify === "sha256" ? new TransferHash() : null;
+        // Archive sources and pack always hash the transferred bytes: commitIntent needs them as proof (S14).
+        const proofNeeded = source.provider.endpoint.id.startsWith("archive:") || plan.kind === "pack";
+        const hash = verify === "sha256" || proofNeeded ? new TransferHash() : null;
         try {
           await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
             await mark("copying", { writing: { offset: fromBig(offset), length: bytes.length } });
@@ -1565,6 +1615,11 @@ export class JobRunner {
           throw new ItemConflict("source_changed", { ...expected, sha256: sourceHash }, expectTarget === "absent" ? null : expectTarget);
         }
         await confirmSource();
+        if (proofNeeded) {
+          const tempFingerprint = context.saved().tempFingerprint;
+          if (!tempFingerprint || !sourceHash) throw new CommanderError("outcome_unknown", "Temporary file proof is missing before commit");
+          await mark("copying", { commitIntent: { size: expected.size, sha256: sourceHash, tempFingerprint } });
+        }
         committed = await commitTarget(() => session.commit({ replace, expectTarget: expectTarget === "absent" ? null : expectTarget }, signal));
       } catch (error) {
         if (this.stopping.signal.aborted) throw shutdownError;
@@ -1579,7 +1634,7 @@ export class JobRunner {
     }
     try {
       await mark("committed", {
-        committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined,
+        committed, bytesDone: expected.size, tempPath: null, tempFingerprint: undefined, commitIntent: undefined,
         sourceHash: sourceHash ?? expected.sha256,
       });
       const verified = await verifyCopy(source, target, expected, verify, context, sourceHash ?? expected.sha256, committed);
