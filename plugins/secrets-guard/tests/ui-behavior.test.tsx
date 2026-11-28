@@ -213,3 +213,76 @@ describe("the popover on the composer button", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
+
+describe("where the popover is anchored", () => {
+  const SCOPE = { "data-bb-plugin": "makosh-secrets-guard", "data-bb-plugin-root": "" } as const;
+  const toggleElement = (
+    <GuardToggle view={closed} now={1000} busy={false} error={null} onOpen={() => {}} onClose={() => {}} scopeProps={SCOPE} />
+  );
+  const lock = () => screen.getByRole("button", { name: /^Секреты/ });
+
+  it("to the composer, not to the button, when the button sits in a composer", async () => {
+    render(
+      <main>
+        <div data-testid="composer">
+          <textarea aria-label="Сообщение" />
+          <div>
+            {toggleElement}
+            <button type="button">Отправить</button>
+          </div>
+        </div>
+      </main>,
+    );
+    const composer = screen.getByTestId("composer");
+    const measuredComposer = vi.spyOn(composer, "getBoundingClientRect");
+    const measuredLock = vi.spyOn(lock(), "getBoundingClientRect");
+    fireEvent.click(lock());
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("data-anchor")).toBe("composer");
+    // The popover library measures its anchor to place the window, a moment after opening.
+    await waitFor(() => expect(measuredComposer).toHaveBeenCalled());
+    expect(measuredLock).not.toHaveBeenCalled();
+  });
+  it("is never wider than the composer", () => {
+    render(
+      <div data-testid="composer">
+        <textarea aria-label="Сообщение" />
+        {toggleElement}
+      </div>,
+    );
+    fireEvent.click(lock());
+    expect(screen.getByRole("dialog").className).toContain(
+      "max-w-[min(var(--radix-popover-trigger-width),var(--radix-popover-content-available-width))]",
+    );
+  });
+  it("falls back to the button when there is no composer around it", async () => {
+    render(<div>{toggleElement}</div>);
+    const measuredLock = vi.spyOn(lock(), "getBoundingClientRect");
+    fireEvent.click(lock());
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("data-anchor")).toBe("button");
+    await waitFor(() => expect(measuredLock).toHaveBeenCalled());
+    expect(dialog.className).toContain("max-w-[var(--radix-popover-content-available-width)]");
+    expect(dialog.className).not.toContain("--radix-popover-trigger-width");
+  });
+  it("looks for the composer again each time it opens", () => {
+    const { rerender } = render(<div data-testid="wrap">{toggleElement}</div>);
+    fireEvent.click(lock());
+    expect(screen.getByRole("dialog").getAttribute("data-anchor")).toBe("button");
+    fireEvent.click(lock());
+    rerender(
+      <div data-testid="wrap">
+        <textarea aria-label="Сообщение" />
+        {toggleElement}
+      </div>,
+    );
+    fireEvent.click(lock());
+    expect(screen.getByRole("dialog").getAttribute("data-anchor")).toBe("composer");
+  });
+  it("keeps the lock highlighted while the window is open", () => {
+    render(<div>{toggleElement}</div>);
+    expect(lock().className).toContain("data-[state=open]:bg-accent");
+    fireEvent.click(lock());
+    expect(lock().getAttribute("data-state")).toBe("open");
+  });
+});
