@@ -2,7 +2,7 @@ import type { Run } from "../ci/model.ts";
 import type { InboxPr } from "../pulls/model.ts";
 
 /** What the overview knows of an attached copy, from git status without a fetch: its branch, upstream and distance to it. */
-export type CopyState = {copyId: string; name: string; branch: string | null; upstream: string | null; ahead: number; behind: number; at: string | null};
+export type CopyState = {copyId: string; name: string; branch: string | null; upstream: string | null; ahead: number; behind: number; files: number; at: string | null};
 export type RepositoryRuns = {copyId: string; repository: string; runs: Run[]};
 export type OverviewInput = {
   /** My open pull requests (My PRs, Open). */
@@ -64,7 +64,7 @@ export function reasonOf(pr: InboxPr): OverviewKind | null {
 }
 
 /** Work only this machine has: commits ahead of the upstream, or a branch never published. */
-export const isUnpushed = (copy: CopyState) => copy.ahead > 0 || (copy.branch !== null && copy.upstream === null);
+export const isUnpushed = (copy: Pick<CopyState, "ahead" | "branch" | "upstream">) => copy.ahead > 0 || (copy.branch !== null && copy.upstream === null);
 
 /** The newest run that has not finished, of each repository. */
 export function runningRuns(runs: RepositoryRuns[]): {copyId: string; repository: string; run: Run}[] {

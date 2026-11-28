@@ -19,7 +19,7 @@ const pr = (number: number, more: Partial<InboxPr> = {}): InboxPr => {
 const run = (id: string, state: Run["state"], createdAt: string, startedAt: string | null = null): Run => ({id, number: 1, workflow: "ci", workflowId: null,
   title: "build", branch: "main", sha: null, event: "push", state, attempt: 1, createdAt, updatedAt: null, url: null, actor: null, startedAt});
 const copy = (copyId: string, more: Partial<CopyState> = {}): CopyState =>
-  ({copyId, name: "web", branch: "main", upstream: "origin/main", ahead: 0, behind: 0, at: null, ...more});
+  ({copyId, name: "web", branch: "main", upstream: "origin/main", ahead: 0, behind: 0, files: 0, at: null, ...more});
 const empty: OverviewInput = {mine: [], requested: [], merged: [], runs: [], copies: [], now};
 const kinds = (input: OverviewInput) => overviewItems(input).map(item => [item.kind, item.pr?.number ?? item.copyId]);
 

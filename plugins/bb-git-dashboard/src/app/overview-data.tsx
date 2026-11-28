@@ -48,7 +48,7 @@ async function read(client: Client, copies: Copy[]): Promise<OverviewData> {
       if (!result?.ok) { copiesFailed++; return null; }
       const status = result.value;
       return {copyId: copy.id, name: copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root, branch: status.branch ?? null,
-        upstream: status.upstream ?? null, ahead: status.ahead ?? 0, behind: status.behind ?? 0, at: null};
+        upstream: status.upstream ?? null, ahead: status.ahead ?? 0, behind: status.behind ?? 0, files: status.files?.length ?? 0, at: null};
     });
     if (copiesFailed) failed.push("copies");
     return read.filter((state): state is CopyState => state !== null);
