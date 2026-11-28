@@ -1,5 +1,10 @@
 export const ru = {
-  archive: { passwordTitle: "Зашифрованный архив", password: "Пароль архива" },
+  archive: {
+    passwordTitle: "Зашифрованный архив", password: "Пароль архива",
+    estimateTitle: "Открыть архив с другого компьютера",
+    estimateText: (size: string) => "Архив сначала копируется на этот компьютер: будет прочитано " + size + ". Продолжить?",
+    copyAndOpen: "Копировать и открыть",
+  },
   // S11
   search: {
     title: "Поиск", virtual: "Результаты поиска", close: "Закрыть поиск",

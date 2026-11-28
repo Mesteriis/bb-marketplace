@@ -164,6 +164,8 @@ export class JobRunner {
   }
 
   submit(plan: OperationPlan, opts?: SubmitOptions): Promise<OperationJob> {
+    // S14a: pack plans wait for S14b; a hand-built one never becomes a job.
+    if (plan.kind === "pack") return Promise.reject(new CommanderError("unsupported", "Creating archives is not available yet"));
     return this.accept(() => this.submitPlan(plan, opts));
   }
 

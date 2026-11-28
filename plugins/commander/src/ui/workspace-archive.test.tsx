@@ -73,6 +73,42 @@ describe("Enter on an archive", () => {
   });
 });
 
+describe("a remote archive asks before it is copied", () => {
+  const ESTIMATE = "223e4567-e89b-42d3-a456-426614174000";
+  const remote = () => vi.fn(async (_ref: unknown, estimateId?: string) =>
+    estimateId ? { endpoint: ARCHIVE_ENDPOINT } : { estimateId: ESTIMATE, bytesPlanned: "5368709120" });
+
+  it("shows the size of the copy and opens only after the owner confirms, with the estimate id", async () => {
+    const onOpenArchive = remote();
+    const props = mount({ onOpenArchive } as never);
+    enterOn(/docs\.zip/);
+    expect(await screen.findByText(/5 ГБ/)).toBeTruthy();
+    expect(onOpenArchive).toHaveBeenCalledTimes(1);
+    expect(props.onEndpoint).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
+    await waitFor(() => expect(props.onEndpoint).toHaveBeenCalledWith("left", ARCHIVE_ENDPOINT));
+    expect(onOpenArchive).toHaveBeenLastCalledWith(expect.anything(), ESTIMATE);
+  });
+
+  it("cancel leaves the pane alone and never opens", async () => {
+    const onOpenArchive = remote();
+    const props = mount({ onOpenArchive } as never);
+    enterOn(/docs\.zip/);
+    await screen.findByText(/5 ГБ/);
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(onOpenArchive).toHaveBeenCalledTimes(1);
+    expect(props.onEndpoint).not.toHaveBeenCalled();
+  });
+
+  it("an estimate of zero bytes (a direct archive) opens without a question", async () => {
+    const onOpenArchive = vi.fn(async (_ref: unknown, estimateId?: string) =>
+      estimateId ? { endpoint: ARCHIVE_ENDPOINT } : { estimateId: ESTIMATE, bytesPlanned: "0" });
+    const props = mount({ onOpenArchive } as never);
+    enterOn(/docs\.zip/);
+    await waitFor(() => expect(props.onEndpoint).toHaveBeenCalledWith("left", ARCHIVE_ENDPOINT));
+  });
+});
+
 describe("the password dialog", () => {
   it("is a password field; the answer goes to onPassword with the archive id", async () => {
     const onPassword = vi.fn(async () => undefined);

@@ -411,10 +411,11 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
     retryNotes={retryNotes} onEndpoint={selectEndpoint} onRefresh={refresh}
-    onOpenArchive={async (source) => {
-      const opened = await rpc.call("archive_open", { source });
+    onOpenArchive={async (source, estimateId) => {
+      const reply = await rpc.call("archive_open", estimateId ? { source, estimateId } : { source, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
       await refreshEndpoints();
-      return { endpoint: opened.endpoint };
+      return { endpoint: reply.endpoint };
     }}
     passwordFor={passwordFor}
     onPassword={async (archiveId, password) => {

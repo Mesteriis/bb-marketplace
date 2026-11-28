@@ -12,7 +12,7 @@ import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { BatchRenameDialog } from "./batch-rename.tsx";
 import type { RenamePattern } from "../core/rename-pattern.ts";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
-import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
+import { activeTab, bytes, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
@@ -23,6 +23,7 @@ import { Viewer } from "./viewer.tsx";
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
+  | { kind: "archive-estimate"; pane: Side; ref: ResourceRef; estimateId: string; bytes: string }
   | ConflictView
   | { kind: "cancel"; job: OperationJob; returnTo?: ConflictView }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
@@ -70,7 +71,7 @@ export interface WorkspaceProps {
   onOpenThread: (threadId: string) => void;
   onOpenPage: () => void;
   /** S14: opens a ZIP or TAR as a read-only panel; absent where archives are unavailable. */
-  onOpenArchive?: (ref: ResourceRef) => Promise<{ endpoint: string }>;
+  onOpenArchive?: (ref: ResourceRef, estimateId?: string) => Promise<{ endpoint: string } | { estimateId: string; bytesPlanned: string }>;
   /** S14: the archive that asks the owner for its password, if any. The password goes only to onPassword. */
   passwordFor?: string | null;
   onPassword?: (archiveId: string, password: string) => Promise<unknown>;
@@ -384,8 +385,16 @@ export function Workspace(props: WorkspaceProps) {
     } else if (props.onOpenArchive && isArchiveName(entry.name)) {
       const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
       void perform(async () => {
-        const opened = await props.onOpenArchive!(ref);
-        await props.onEndpoint(pane, opened.endpoint);
+        let reply = await props.onOpenArchive!(ref);
+        // An estimate of zero bytes needs no question: the file is read in place. Anything else asks first.
+        if ("estimateId" in reply) {
+          if (reply.bytesPlanned !== "0") {
+            open({ kind: "archive-estimate", pane, ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+            return;
+          }
+          reply = await props.onOpenArchive!(ref, reply.estimateId);
+        }
+        if ("endpoint" in reply) await props.onEndpoint(pane, reply.endpoint);
       });
     } else view(value, entry);
   }
@@ -731,6 +740,16 @@ export function Workspace(props: WorkspaceProps) {
         open({ kind: "content", source: leftText, target: rightText, returnTo: dialog });
       })}
       cancel={() => open({ kind: "cancel", job: dialog.job, returnTo: dialog })} close={close} busy={busy} error={problem} />}
+    {dialog?.kind === "archive-estimate" && <Modal title={ru.archive.estimateTitle} description={ru.archive.estimateText(bytes(dialog.bytes))} close={close} busy={busy}>
+      {problem && <ProblemLine problem={problem} />}
+      <div className="cm-actions">
+        <Button size="sm" disabled={busy} onClick={() => void perform(async () => {
+          const reply = await props.onOpenArchive!(dialog.ref, dialog.estimateId);
+          if ("endpoint" in reply) await props.onEndpoint(dialog.pane, reply.endpoint);
+        }, close)}>{ru.archive.copyAndOpen}</Button>
+        <Button size="sm" variant="outline" onClick={close} disabled={busy}>{ru.cancel}</Button>
+      </div>
+    </Modal>}
     {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} busy={busy}>
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
