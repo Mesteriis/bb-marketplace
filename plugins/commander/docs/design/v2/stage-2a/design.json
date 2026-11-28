@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "title": "Commander — этап 2a",
+  "kind": "prototype",
+  "description": "Экраны этапа 2a в направлении v2: поиск и виртуальная панель, сравнение каталогов, переименование пачкой, план синхронизации (удаления — отдельный явный набор), архив как панель, распаковка с лимитами и паролем, просмотр F3, F4 «Записать обратно» с конфликтом.",
+  "artboards": [
+    {
+      "id": "search",
+      "title": "Поиск и виртуальная панель",
+      "file": "search.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "compare",
+      "title": "Сравнение каталогов",
+      "file": "compare.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "rename",
+      "title": "Переименование пачкой",
+      "file": "rename.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "sync",
+      "title": "План синхронизации",
+      "file": "sync.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "archive",
+      "title": "Архив как панель",
+      "file": "archive.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "extract",
+      "title": "Распаковка: лимиты и пароль",
+      "file": "extract.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "viewer",
+      "title": "Просмотр F3: hex",
+      "file": "viewer.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    },
+    {
+      "id": "writeback",
+      "title": "F4: «Записать обратно» с конфликтом",
+      "file": "writeback.html",
+      "width": 1440,
+      "height": 1024,
+      "group": "stage-2a"
+    }
+  ]
+}

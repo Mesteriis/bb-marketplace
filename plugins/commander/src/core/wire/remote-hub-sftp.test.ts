@@ -24,7 +24,7 @@ const P = "5b568675-f842-4a96-83e0-78ae53d96024";
 
 describe("contract id", () => {
   it("names the Remote Hub commit it mirrors", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@e1b0d502");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@271406d0");
     expect(SFTP_EVENTS_CHANNEL).toBe("remote-hub.sftp");
   });
 });
@@ -64,7 +64,7 @@ describe("limits", () => {
 describe("operations", () => {
   const ok = (op: object) => sftpOpInputSchema.safeParse({ channelId: CH, ...op }).success;
 
-  it("passes back an opaque list cursor of up to 1024 characters (remote-hub@e1b0d502)", () => {
+  it("passes back an opaque list cursor of up to 1024 characters (remote-hub@271406d0)", () => {
     expect(ok({ op: "list", path: { text: "/var" }, cursor: "c".repeat(1024) })).toBe(true);
     expect(ok({ op: "list", path: { text: "/var" }, cursor: "c".repeat(1025) })).toBe(false);
     expect(ok({ op: "list", path: { text: "/var" }, cursor: "" })).toBe(false);
@@ -159,6 +159,7 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("AAA=")).toBe(2);
     expect(base64Bytes("AA==")).toBe(1);
     expect(base64Bytes("")).toBe(0);
+    expect(base64Bytes("AB==")).toBe(1); // trailing bits are not checked
   });
 
   it("refuses text that is not canonical base64: a URL-alphabet character, a padding in the middle, a bad length", () => {
@@ -166,6 +167,35 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("AB=C")).toBeNull();
     expect(base64Bytes("A===")).toBeNull();
     expect(base64Bytes("AAA")).toBeNull();
+    expect(base64Bytes("AAAA\n")).toBeNull();
+    expect(base64Bytes("AA\nA")).toBeNull();
+    expect(base64Bytes("AA=A")).toBeNull();
+    expect(base64Bytes("====")).toBeNull();
+  });
+
+  it("agrees with the character-by-character rule for every character in every position of 4-character texts", () => {
+    const reference = (text: string): number | null => {
+      if (text.length % 4 !== 0) return null;
+      const pad = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+      const body = text.slice(0, text.length - pad);
+      return /^[A-Za-z0-9+/]*$/.test(body) ? (text.length / 4) * 3 - pad : null;
+    };
+    for (const base of ["AAAA", "AAA=", "AA==", "AAAAAAAA", "AAAAAAA=", "AAAAAA=="]) {
+      for (let at = 0; at < base.length; at++) {
+        for (let code = 0; code < 256; code++) {
+          const text = base.slice(0, at) + String.fromCharCode(code) + base.slice(at + 1);
+          expect(base64Bytes(text), JSON.stringify(text)).toBe(reference(text));
+        }
+        for (const char of ["\u0100", "\u2028", "\u00e9"]) {
+          const text = base.slice(0, at) + char + base.slice(at + 1);
+          expect(base64Bytes(text), JSON.stringify(text)).toBe(reference(text));
+        }
+      }
+    }
+  });
+
+  it("counts the bytes of a full 4 MiB chunk", () => {
+    expect(base64Bytes(encoded(4194304))).toBe(4194304);
   });
 
   it("accepts 4194303 and 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {

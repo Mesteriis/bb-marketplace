@@ -1,14 +1,24 @@
 import { z } from "zod";
 import {
   ConflictDecision, ConflictPolicy, Endpoint, EndpointId, Entry, Initiator, JobProgress, JobState,
-  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify,
+  OperationJob, OperationKind, OperationPlan, Permission, ResourceRef, Verify, Fingerprint,
 } from "../model.ts";
+import { CommanderErrorShape } from "../errors.ts";
 import { NameSegment, ResourcePath } from "../path.ts";
 import { LIST_PAGE_MAX } from "../provider.ts";
+import { RenamePattern } from "../rename-pattern.ts";
+import { IMAGE_MIMES, MAX_RESPONSE_BYTES, MAX_VIEW_BYTES, VIEW_KINDS } from "../preview.ts";
+import { Size } from "../size.ts";
 import { sftpMethods } from "./remote-hub-sftp.ts";
 
 const empty = z.strictObject({});
 const jobId = z.strictObject({ jobId: z.uuid() });
+// S17: файлы внутри каталога, чьё создание не подтверждено, в план не входят и считаются здесь.
+export const RetryResult = z.strictObject({
+  plan: OperationPlan.nullable(),
+  excluded: z.array(z.strictObject({ count: z.int().min(1), reason: z.literal("parent_unconfirmed") })),
+});
+export type RetryResult = z.infer<typeof RetryResult>;
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const threadId = z.string().min(1).max(64);
 export const GrantKey = z.strictObject({
@@ -31,6 +41,8 @@ export const PlanInput = z.strictObject({
   newName: NameSegment.nullable(),
   conflictPolicy: ConflictPolicy,
   verify: Verify,
+  // S12: a batch rename of every source by a pattern (rename only; newName is then null).
+  pattern: RenamePattern.nullable().optional(),
 });
 
 export const DamagedJob = z.strictObject({
@@ -54,19 +66,128 @@ const tab = z.strictObject({
 });
 const pane = z.strictObject({ tabs: z.array(tab).max(32), activeTab: z.int().min(0).max(31).nullable() })
   .refine(({ tabs, activeTab }) => tabs.length === 0 ? activeTab === null : activeTab !== null && activeTab < tabs.length);
+const scanBytes = z.string().regex(/^(0|[1-9]\d{0,25})$/);
+const scanId = z.strictObject({ scanId: z.uuid() });
+const searchRequestId = z.strictObject({ clientRequestId: z.uuid() });
+const scanControl = {
+  estimateOnly: z.boolean().optional(),
+  estimateId: z.uuid().optional(),
+};
+const ChecksumRequest = z.strictObject({ kind: z.literal("checksum"), ref: ResourceRef });
+const DirectoryScanRequest = z.strictObject({
+  kind: z.literal("dirs"), left: ResourceRef, right: ResourceRef,
+  by: z.enum(["size+mtime", "sha256"]), mtimeToleranceMs: z.int().min(0).max(86_400_000).default(2000),
+  limit: z.int().min(1).max(LIST_PAGE_MAX).default(100),
+});
+export const ChecksumScan = ChecksumRequest.extend(scanControl);
+export const CompareScan = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("files"), left: ResourceRef, right: ResourceRef,
+    mode: z.enum(["size", "sha256", "bytes"]), ...scanControl,
+  }),
+  DirectoryScanRequest.extend(scanControl),
+]);
+// S11: wire sizes are decimal strings; search uses bigint internally.
+export const SearchScan = z.strictObject({
+  clientRequestId: z.uuid().optional(),
+  kind: z.literal("search"),
+  root: ResourceRef,
+  name: z.union([z.strictObject({ glob: z.string().min(1).max(256) }),
+    z.strictObject({ regex: z.string().min(1).max(256) })]).optional(),
+  minSize: Size.optional(), maxSize: Size.optional(),
+  modifiedAfter: z.iso.datetime().optional(), modifiedBefore: z.iso.datetime().optional(),
+  content: z.strictObject({ text: z.string().min(1).max(1024).regex(/^[^\r\n]+$/), caseSensitive: z.boolean() }).optional(),
+  limits: z.strictObject({
+    maxDepth: z.int().min(1).max(32).default(32),
+    maxEntries: z.int().min(1).max(100_000).default(100_000),
+    maxBytesRead: Size.optional(),
+  }).prefault({}),
+  ...scanControl,
+});
+const searchResult = z.strictObject({
+  hits: z.array(z.strictObject({
+    ref: ResourceRef, entry: Entry,
+    line: z.strictObject({ number: z.int().min(1), text: z.string().max(400) }).optional(),
+  })).max(100_000),
+  partial: z.boolean(),
+});
+const savedChecksum = scanId.extend({ request: ChecksumRequest });
+const savedComparison = scanId.extend({ request: DirectoryScanRequest });
+export type SavedUiScan = { scanId: string; request: z.output<typeof ChecksumRequest> | z.output<typeof DirectoryScanRequest> };
+// S11: saved panels hold a scan reference; rows remain in the bounded ScanRunner cache.
+const savedSearch = scanId.extend({ root: ResourceRef });
+export type SavedSearch = z.output<typeof savedSearch>;
 export const UiState = z.strictObject({
   left: pane,
   right: pane,
   activePane: z.enum(["left", "right"]),
   layout: z.enum(["horizontal", "vertical"]),
   split: z.number().min(0.1).max(0.9),
+  lastChecksum: savedChecksum.optional(),
+  lastComparison: savedComparison.optional(),
+  searchPanels: z.strictObject({ left: savedSearch.optional(), right: savedSearch.optional() }).optional(),
   inspectorCollapsed: z.boolean().optional(),
 });
 export type UiState = z.infer<typeof UiState>;
 
 const uiScope = z.strictObject({ threadId: threadId.optional() });
 
+export const ScanJobView = z.strictObject({
+  id: z.uuid(),
+  kind: z.enum(["checksum", "compare", "search"]),
+  initiator: Initiator,
+  endpoints: z.array(EndpointId),
+  state: z.enum(["running", "done", "failed", "cancelled", "interrupted"]),
+  progress: z.strictObject({ items: z.int().nonnegative(), bytes: scanBytes, bytesPlanned: scanBytes.nullable() }),
+  partial: z.boolean(),
+  error: CommanderErrorShape.nullable(),
+});
+export type ScanJobView = z.infer<typeof ScanJobView>;
+const scanResult = z.union([
+  searchResult,
+  z.strictObject({ sha256: digest }),
+  z.strictObject({ comparison: z.enum(["same", "different"]) }),
+  z.strictObject({
+    onlyLeft: z.array(Entry).max(LIST_PAGE_MAX), onlyRight: z.array(Entry).max(LIST_PAGE_MAX),
+    differ: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX),
+    equal: z.array(z.tuple([Entry, Entry])).max(LIST_PAGE_MAX).optional(), same: z.int().nonnegative(), partial: z.boolean(),
+  }),
+]);
+export type ScanResult = z.infer<typeof scanResult>;
+
+export const ScanEstimateView = z.strictObject({
+  estimateId: z.uuid(), bytesPlanned: scanBytes,
+  bytesByEndpoint: z.array(z.strictObject({ endpoint: EndpointId, bytesPlanned: scanBytes })).min(1).max(2),
+});
+export type ScanEstimateView = z.infer<typeof ScanEstimateView>;
+export const ScanGetView = z.strictObject({
+  job: ScanJobView, result: scanResult.nullable(), reason: z.literal("result_expired").optional(),
+});
+export type ScanGetView = z.infer<typeof ScanGetView>;
+const FileVersion = Fingerprint.pick({ size: true, mtimeNs: true });
+
+// S13: an estimate ID is obtained from the S10 directory scan for remote SHA-256.
+export const SyncInput = z.strictObject({
+  left: ResourceRef, right: ResourceRef,
+  direction: z.enum(["left-to-right", "right-to-left", "both"]),
+  by: z.enum(["size+mtime", "sha256"]),
+  includeDeletes: z.boolean().default(false),
+  filters: z.strictObject({ exclude: z.array(z.string().min(1).max(1024)).max(LIST_PAGE_MAX) }).optional(),
+  estimateId: z.uuid().optional(),
+});
+export const SyncResult = z.strictObject({
+  id: z.uuid(),
+  copies: z.array(OperationPlan).max(2),
+  deletes: OperationPlan.nullable(),
+  conflicts: z.array(z.strictObject({ left: Entry, right: Entry, reason: z.enum(["target_newer", "differs"]) })).max(LIST_PAGE_MAX),
+});
+
+// S16: UI-only session and editor methods.
+import { editRpcSchemas } from "./edit.ts";
+
 export const rpcSchemas = {
+  ...editRpcSchemas,
+  sync_create: { input: SyncInput, output: SyncResult },
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
   endpoint_home: { input: z.strictObject({ endpoint: EndpointId }), output: z.strictObject({ path: ResourcePath }) },
   dir_list: {
@@ -74,6 +195,39 @@ export const rpcSchemas = {
     output: z.strictObject({ entries: z.array(Entry).max(LIST_PAGE_MAX), cursor: z.string().max(2048).nullable() }),
   },
   entry_stat: { input: z.strictObject({ ref: ResourceRef }), output: Entry.nullable() },
+  // Window of a file for F3 and the agent read tool. A reply is at most 1 MiB as JSON (the agent's
+  // tool result is measured with its text escaped). `modes` lists what the file offers; `mode` picks
+  // one. `expect` is the version of an earlier window, so chunks of one view share a version.
+  file_read: {
+    input: z.strictObject({
+      ref: ResourceRef,
+      offset: Size.default("0"),
+      length: z.int().min(1).max(MAX_VIEW_BYTES).default(MAX_VIEW_BYTES),
+      mode: z.enum(["auto", ...VIEW_KINDS]).default("auto"),
+      expect: FileVersion.optional(),
+    }),
+    output: z.strictObject({
+      version: FileVersion,
+      modes: z.array(z.enum(VIEW_KINDS)).min(1).max(3),
+      view: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("text"), text: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
+        z.strictObject({
+          kind: z.literal("image"),
+          mime: z.enum(IMAGE_MIMES),
+          base64: z.string().max(MAX_RESPONSE_BYTES),
+          truncated: z.boolean(),
+        }),
+        z.strictObject({
+          kind: z.literal("binary"),
+          lines: z.array(z.string().max(160)).max(MAX_RESPONSE_BYTES / 16),
+          truncated: z.boolean(),
+          shown: z.int().nonnegative().max(MAX_RESPONSE_BYTES),
+          total: Size,
+        }),
+        z.strictObject({ kind: z.literal("chunk"), offset: Size, base64: z.string().max(MAX_RESPONSE_BYTES), truncated: z.boolean() }),
+      ]),
+    }),
+  },
   plan_create: { input: PlanInput, output: OperationPlan },
   plan_run: { input: z.strictObject({ planId: z.uuid(), digest }), output: OperationJob },
   // Обычная выдача идёт по updated_at DESC (при равенстве по id ASC).
@@ -90,6 +244,8 @@ export const rpcSchemas = {
   job_get: { input: jobId, output: JobView.nullable() },
   job_decide: { input: ConflictDecision.extend(jobId.shape), output: empty },
   job_cancel: { input: jobId, output: empty },
+  // S17: план повтора failed и неподтверждённых unknown-элементов; запускается через plan_run.
+  job_retry: { input: jobId, output: RetryResult },
   // Read-only preflight for an owner client. Approval repeats validation against live metadata.
   plan_check: {
     input: jobId.extend({ digest }),
@@ -115,6 +271,38 @@ export const rpcSchemas = {
   },
   ui_state_get: { input: uiScope, output: z.strictObject({ state: UiState.nullable() }) },
   ui_state_set: { input: uiScope.extend({ state: UiState }), output: empty },
+  // Estimate with metadata only, then pass the issued estimate ID after confirmation.
+  scan_start: {
+    input: z.union([ChecksumScan, CompareScan, SearchScan]),
+    output: z.union([ScanEstimateView, ScanJobView]),
+  },
+  scan_get: { input: scanId, output: ScanGetView.nullable() },
+  // S14: archives open as read-only panels. The copy and the helper live on the server; the password of an
+  // encrypted archive comes only from the owner's dialog (archive_password) and is never returned.
+  archive_open: {
+    input: z.strictObject({ source: ResourceRef, estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
+    // A remote archive is copied to the server first: the first call (estimateOnly) answers how many bytes the
+    // copy reads, the second (with that estimateId) opens it. The id is one-time and bound to owner, ref and version.
+    output: z.union([
+      z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
+    ]),
+  },
+  // After a restart an archive tab names an archive id whose copy is gone: the owner estimates and confirms again.
+  archive_resume: {
+    input: z.strictObject({ archiveId: z.uuid(), estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
+    output: z.union([
+      z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
+    ]),
+  },
+  archive_close: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },
+  archive_password: {
+    input: z.strictObject({ archiveId: z.uuid(), password: z.string().min(1).max(256) }),
+    output: z.strictObject({ accepted: z.boolean() }),
+  },
+  archive_password_cancel: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },
+  scan_cancel: { input: z.union([scanId, searchRequestId]), output: empty },
 };
 
 export type RpcInput<M extends keyof typeof rpcSchemas> = z.output<(typeof rpcSchemas)[M]["input"]>;

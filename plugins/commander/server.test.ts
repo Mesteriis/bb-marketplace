@@ -1,3 +1,4 @@
+import { problemOf } from "./src/ui/model.ts";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { MIGRATIONS } from "./src/adapters/bb/migrations.ts";
@@ -10,7 +11,7 @@ import { FakeProvider } from "./src/core/testing/fake-provider.ts";
 import * as sqliteStore from "./src/adapters/bb/job-store-sqlite.ts";
 import { OperationJob, type EntryKind, type Fingerprint } from "./src/core/model.ts";
 import { RemoteHubMock } from "./src/adapters/bb/testing/remote-hub-mock.ts";
-import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName } from "./src/core/wire/remote-hub-sftp.ts";
+import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName, sftpOpInputSchema } from "./src/core/wire/remote-hub-sftp.ts";
 
 
 const client = { experimental_caller: { kind: "client" }, experimental_signal: new AbortController().signal };
@@ -84,12 +85,13 @@ async function backend(
     cli: { register: (cli: PluginCliRegistration) => { registration = cli; } },
   } as unknown as BbPluginApi);
   await new Promise<void>((resolve) => setImmediate(resolve));
+  const rawTool = (name: string, input: unknown, ctx = agent) => tools.get(name)!(input, ctx);
   return {
-    db, disk, events, kv, logError, startService,
+    rawTool, db, disk, events, kv, logError, startService,
     serviceResult: () => service,
     rpc: (name: string, input: unknown, ctx: unknown = client) => handlers[name](input, ctx),
     async tool(name: string, input: unknown, ctx = agent): Promise<unknown> {
-      return JSON.parse((await tools.get(name)!(input, ctx)).content[0].text);
+      return JSON.parse((await rawTool(name, input, ctx)).content[0].text);
     },
     cli: (argv: string[]) => registration!.run(argv, {} as Parameters<PluginCliRegistration["run"]>[1]),
     async dispose(close = true) {
@@ -468,6 +470,36 @@ for (const [label, message] of [
   });
 }
 
+const FIRST_OPEN_REFUSALS = [
+  ["agent_unavailable", "auth_failed", "Вход отклонён"], ["keychain_locked", "auth_failed", "Вход отклонён"],
+  ["keychain_unavailable", "auth_failed", "Вход отклонён"], ["keychain_needs_approval", "auth_failed", "Вход отклонён"],
+  ["credential_missing", "auth_failed", "Вход отклонён"], ["auth_failed", "auth_failed", "Вход отклонён"],
+  ["profile_needs_config", "unsupported", null], ["profile_not_found", "unsupported", null], ["profile_not_sftp", "unsupported", null],
+] as const;
+for (const refusalAs of ["sdk", "http"] as const) {
+  test.each(FIRST_OPEN_REFUSALS)(`reports %s at the first open as the provider does, without Keychain text (refusal as ${refusalAs})`, async (refusal, expected, line) => {
+    const fixture = remoteFixture({ refusalAs });
+    const bb = await backend(undefined, async (args) => {
+      if (args.method === "hub_sftp_open") {
+        const message = refusal + ": Keychain item commander-secret could not be read";
+        const refusalClass = SFTP_REFUSALS[refusal];
+        if (refusalAs === "http") throw new BbHttpErrorLike(REFUSAL_STATUS[refusalClass], refusalClass, message);
+        throw new experimental_PluginRpcCallError({ code: refusalClass, message });
+      }
+      return fixture.callRpc(args);
+    });
+    try {
+      const failure = await bb.rpc("endpoint_home", { endpoint: fixture.endpoint }).then(() => null, (error: unknown) => error);
+      const shape = JSON.parse((failure as Error).message) as { code: string; retryable: boolean };
+      expect(shape.code).toBe(expected);
+      expect(shape.retryable).toBe(false);
+      expect(String((failure as Error).message)).not.toMatch(/keychain|commander-secret/i);
+      expect(problemOf(failure).code).toBe(expected);
+      if (line !== null) expect(problemOf(failure).message).toBe(line);
+    } finally { await bb.dispose(); }
+  });
+}
+
 test("treats an HTTP failure whose class does not match the refusal as a transport failure", async () => {
   const fixture = remoteFixture({ refusalAs: "http" });
   const bb = await backend(undefined, async (args) => {
@@ -786,7 +818,7 @@ test("append-only migrations persist explicit approval in the job store across r
     const second = await submitAgent(bb, request);
     await bb.rpc("plan_approve", { jobId: first.jobId, digest: plan.digest });
     const reopened = sqliteStore.createSqliteJobStore(bb.db);
-    expect(MIGRATIONS).toHaveLength(6);
+    expect(MIGRATIONS).toHaveLength(10);
     expect(reopened.hasOwnerApproval(first.jobId)).toBe(true);
     expect(reopened.hasOwnerApproval(second.jobId)).toBe(false);
   } finally { await bb.dispose(); }
@@ -999,5 +1031,374 @@ test("keeps the Commander page and two thread layouts separate and reads the old
       activePane: "left", layout: "horizontal", split: 0.7, inspectorCollapsed: false,
     } });
     await expect(bb.rpc("ui_state_get", { threadId: "thread-c" })).resolves.toEqual({ state: null });
+  } finally { await bb.dispose(); }
+});
+
+const checksumRequest = { kind: "checksum", ref: ref("/data/a") };
+const scanTicket = z.object({ id: z.uuid() });
+const scanEstimate = z.object({ estimateId: z.uuid(), bytesPlanned: z.string() });
+
+test.each(["done", "running"] as const)("scan %s reports the correct state after plugin restart", async (state) => {
+  const bb = await backend();
+  let restarted: Awaited<ReturnType<typeof backend>> | undefined;
+  try {
+    bb.disk.enableChecksum();
+    if (state === "running") {
+      bb.disk.delay = async (op, _path, signal) => {
+        if (op !== "sha256") return;
+        if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      };
+    }
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", checksumRequest));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId })).toMatchObject({ job: { state } }));
+    await bb.dispose(false);
+    restarted = await backend(bb);
+    if (state === "done") {
+      await expect(restarted.rpc("scan_get", { scanId })).resolves.toMatchObject({
+        job: { state: "done", partial: false }, result: null, reason: "result_expired",
+      });
+    } else {
+      await expect(restarted.rpc("scan_get", { scanId })).resolves.toMatchObject({
+        job: { state: "interrupted", partial: true }, result: null,
+      });
+    }
+  } finally { await (restarted ?? bb).dispose(); }
+});
+
+test("scan_cancel marks a running scan cancelled and scan_get refuses a plugin caller", async () => {
+  const bb = await backend();
+  try {
+    bb.disk.enableChecksum();
+    bb.disk.delay = async (op, _path, signal) => {
+      if (op === "sha256" && !signal.aborted) {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+    };
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", checksumRequest));
+    await expect(bb.rpc("scan_get", { scanId }, { ...client, experimental_caller: { kind: "plugin", pluginId: "other" } }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Commander RPC requires an owner client" });
+    await expect(bb.rpc("scan_cancel", { scanId })).resolves.toEqual({});
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+  } finally { await bb.dispose(); }
+});
+
+test("SFTP estimate binds actor, request and metadata and can only start one scan", async () => {
+  const fixture = remoteFixture({});
+  const bb = await backend(undefined, fixture.callRpc);
+  const input = { kind: "checksum", ref: { endpoint: fixture.endpoint, path: parsePosix("/data/a") } };
+  const clock = vi.spyOn(Date, "now");
+  try {
+    const now = Date.now();
+    clock.mockReturnValue(now);
+    await expect(bb.rpc("scan_start", input))
+      .rejects.toMatchObject({ code: "forbidden", message: "A remote scan requires a confirmed estimate" });
+    await expect(bb.rpc("scan_start", { ...input, approvedBytes: "7" }))
+      .rejects.toMatchObject({ code: "invalid", message: "Invalid Commander request" });
+    const estimate = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    expect(estimate.bytesPlanned).toBe("7");
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+    await bb.rpc("agent_grants_set", { grant: {
+      threadId: "thread-a", endpoint: fixture.endpoint, scope: parsePosix("/"), permissions: ["read"],
+    } });
+    await expect(bb.tool("commander_checksum", { ref: input.ref, estimateId: estimate.estimateId }))
+      .resolves.toEqual({ code: "forbidden", message: "Commander refused the request" });
+    clock.mockReturnValue(now + 600_000);
+    await expect(bb.rpc("scan_start", { ...input, estimateId: estimate.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Scan estimate is missing or expired" });
+
+    const stale = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    fixture.remote.seedFile("/data/a", "changed snapshot");
+    await expect(bb.rpc("scan_start", { ...input, estimateId: stale.estimateId }))
+      .rejects.toMatchObject({ code: "conflict", message: "Scan metadata changed; estimate again" });
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+
+    const fresh = scanEstimate.parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    expect(fresh.bytesPlanned).toBe("16");
+    const { id: scanId } = scanTicket.parse(await bb.rpc("scan_start", { ...input, estimateId: fresh.estimateId }));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "done", progress: { items: 1, bytes: "16", bytesPlanned: "16" } } }));
+    await expect(bb.rpc("scan_start", { ...input, estimateId: fresh.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden", message: "Scan estimate is missing or expired" });
+  } finally {
+    clock.mockRestore();
+    await bb.dispose();
+  }
+});
+
+test("scan estimate returns planned bytes per endpoint and a total", async () => {
+  const fixture = remoteFixture({});
+  const bb = await backend(undefined, fixture.callRpc);
+  try {
+    await expect(bb.rpc("scan_start", {
+      kind: "dirs", by: "sha256", estimateOnly: true, left: ref("/data"),
+      right: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    })).resolves.toMatchObject({
+      bytesPlanned: "8",
+      bytesByEndpoint: [{ endpoint: "host:test", bytesPlanned: "1" }, { endpoint: fixture.endpoint, bytesPlanned: "7" }],
+    });
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+test("a seventeenth estimate on one agent thread is refused while another thread can estimate", async () => {
+  const bb = await backend();
+  try {
+    await bb.rpc("agent_grants_set", { grant: {
+      threadId: "*", endpoint: "host:test", scope: parsePosix("/"), permissions: ["read"],
+    } });
+    const input = { ref: ref("/data/a"), estimateOnly: true };
+    for (let i = 0; i < 16; i++) await expect(bb.tool("commander_checksum", input))
+      .resolves.toMatchObject({ bytesPlanned: "1", estimateId: expect.any(String) });
+    await expect(bb.tool("commander_checksum", input))
+      .resolves.toEqual({ code: "conflict", message: "Commander refused the request" });
+    await expect(bb.tool("commander_checksum", input, { ...agent, threadId: "thread-b" }))
+      .resolves.toMatchObject({ bytesPlanned: "1", estimateId: expect.any(String) });
+  } finally { await bb.dispose(); }
+});
+
+test("S11 RPC bounds SFTP content, binds the estimate, and restricts agent output", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "header\nneedle" + "z".repeat(250));
+  fixture.remote.seedFile("/data/b", "needle" + "x".repeat(450));
+  const bb = await backend(undefined, fixture.callRpc);
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const request = { kind: "search", root, content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "300" } };
+  try {
+    await expect(bb.rpc("scan_start", request)).rejects.toMatchObject({
+      code: "forbidden", message: expect.stringContaining("content_search_needs_consent"),
+    });
+    await expect(bb.tool("commander_search", { root })).resolves.toMatchObject({ code: "forbidden" });
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: fixture.endpoint,
+      scope: parsePosix("/"), permissions: ["read"] } });
+    await expect(bb.tool("commander_search", { root, content: request.content, limits: request.limits }))
+      .resolves.toMatchObject({ code: "content_search_needs_consent" });
+    const estimate = z.object({ estimateId: z.uuid(), bytesPlanned: z.string() })
+      .parse(await bb.rpc("scan_start", { ...request, estimateOnly: true }));
+    expect(estimate.bytesPlanned).toBe("263");
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+    await expect(bb.tool("commander_search", { root, content: request.content, limits: request.limits, estimateId: estimate.estimateId }))
+      .resolves.toMatchObject({ code: "forbidden" });
+    const { id } = z.object({ id: z.uuid() }).parse(await bb.rpc("scan_start", { ...request, estimateId: estimate.estimateId }));
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId: id })).toMatchObject({
+      job: { kind: "search", partial: true, state: "done", progress: { bytes: "263", bytesPlanned: "263" } },
+      result: { partial: true, hits: [{ ref: { endpoint: fixture.endpoint, path: parsePosix("/data/a") },
+        line: { number: 2, text: "needle" + "z".repeat(194) } }] },
+    }));
+    expect(fixture.remote.opCount("op:read")).toBe(1);
+    await expect(bb.rpc("scan_start", { ...request, estimateId: estimate.estimateId }))
+      .rejects.toMatchObject({ code: "forbidden" });
+    const agentInput = { root, content: request.content, limits: request.limits };
+    const ticket = z.object({ estimateId: z.uuid(), bytesPlanned: z.literal("263") })
+      .parse(await bb.tool("commander_search", { ...agentInput, estimateOnly: true }));
+    await expect(bb.tool("commander_search", { ...agentInput, estimateId: ticket.estimateId })).resolves.toMatchObject({
+      partial: true, hits: [{ line: { number: 2, text: "needle" + "z".repeat(194) } }],
+    });
+  } finally { await bb.dispose(); }
+});
+
+test("S11 RPC cancels remote read before another request", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "x".repeat(131_073));
+  let reads = 0;
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => { finish = resolve; });
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op" && (args.input as { op: string }).op === "read") {
+      reads++;
+      await waiting;
+    }
+    return fixture.callRpc(args);
+  });
+  const input = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "131073" } };
+  try {
+    const { estimateId } = z.object({ estimateId: z.uuid(), bytesPlanned: z.literal("131073") })
+      .parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    const { id: scanId } = z.object({ id: z.uuid() })
+      .parse(await bb.rpc("scan_start", { ...input, estimateId }));
+    await vi.waitFor(() => expect(reads).toBe(1));
+    await bb.rpc("scan_cancel", { scanId });
+    finish();
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+    expect(reads).toBe(1);
+  } finally { finish(); await bb.dispose(); }
+});
+
+test("S11 RPC caps the full serialized agent tool result at 1 MiB", async () => {
+  const bb = await backend();
+  try {
+    const root = { endpoint: "host:test", path: parsePosix("/data") };
+    for (let index = 0; index < 1150; index++) {
+      bb.disk.put(parsePosix("/data/" + String(index) + '"'.repeat(180)), new Uint8Array());
+    }
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: root.endpoint,
+      scope: root.path, permissions: ["read"] } });
+    const raw = await bb.rawTool("commander_search", { root });
+    expect(Buffer.byteLength(JSON.stringify(raw))).toBeLessThanOrEqual(1048576);
+    const result = JSON.parse(raw.content[0].text);
+    expect(result).toMatchObject({ partial: true, hits: expect.any(Array) });
+    expect((result as { hits: unknown[] }).hits.length).toBeGreaterThan(0);
+  } finally { await bb.dispose(); }
+});
+
+test.each(["estimate", "confirmed start"] as const)("S11 aborts %s after the first SFTP list request", async (phase) => {
+  const fixture = remoteFixture();
+  for (const name of ["a", "b"]) fixture.remote.seedFile("/data/out/" + name, "needle");
+  const controller = new AbortController();
+  let lists = 0;
+  let armed = false;
+  const bb = await backend(undefined, async (args) => {
+    if (armed && args.method === "hub_sftp_op" && (args.input as { op: string }).op === "list") {
+      lists++;
+      expect(args.signal.aborted).toBe(false);
+      const page = await fixture.callRpc(args);
+      controller.abort();
+      return page;
+    }
+    return fixture.callRpc(args);
+  });
+  const request = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "1024" } };
+  try {
+    const input = phase === "estimate" ? { ...request, estimateOnly: true } : {
+      ...request, ...z.object({ estimateId: z.uuid() }).parse(await bb.rpc("scan_start", { ...request, estimateOnly: true })),
+    };
+    armed = true;
+    await expect(bb.rpc("scan_start", input, { ...client, experimental_signal: controller.signal })).rejects.toBeDefined();
+    expect(lists).toBe(1);
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+// The second fixture adds one visible character beyond the response limit.
+const line200 = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+  + "abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij";
+test.each([
+  { length: 200, line: line200 },
+  { length: 201, line: line200 + "!" },
+])("S11 agent returns exactly 200 characters for a $length-character match", async ({ length, line }) => {
+  const fixture = remoteFixture();
+  expect(line).toHaveLength(length);
+  fixture.remote.seedFile("/data/a", line + "\n");
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const bb = await backend(undefined, fixture.callRpc);
+  try {
+    await bb.rpc("agent_grants_set", { grant: { threadId: "thread-a", endpoint: root.endpoint,
+      scope: parsePosix("/"), permissions: ["read"] } });
+    const input = { root, content: { text: "0123", caseSensitive: true }, limits: { maxBytesRead: "202" } };
+    const { estimateId } = z.object({ estimateId: z.uuid() })
+      .parse(await bb.tool("commander_search", { ...input, estimateOnly: true }));
+    await expect(bb.tool("commander_search", { ...input, estimateId }))
+      .resolves.toMatchObject({ partial: false, hits: [{ line: { number: 1, text: line200 } }] });
+  } finally { await bb.dispose(); }
+});
+
+test("S11 cancels a scan before its start response is delivered", async () => {
+  const fixture = remoteFixture();
+  fixture.remote.seedFile("/data/a", "x".repeat(131_073));
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const firstRead = deferred();
+  const resumeRead = deferred();
+  const response = deferred();
+  let reads = 0;
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op" && (args.input as { op: string }).op === "read") {
+      reads++;
+      firstRead.resolve();
+      await resumeRead.promise;
+    }
+    return fixture.callRpc(args);
+  });
+  const input = { kind: "search", root: { endpoint: fixture.endpoint, path: parsePosix("/data") },
+    content: { text: "needle", caseSensitive: true }, limits: { maxBytesRead: "131073" } };
+  const clientRequestId = "00000000-0000-4000-8000-000000000011";
+  try {
+    const { estimateId } = z.object({ estimateId: z.uuid() })
+      .parse(await bb.rpc("scan_start", { ...input, estimateOnly: true }));
+    const controller = new AbortController();
+    const started = bb.rpc("scan_start", { ...input, estimateId, clientRequestId }, { ...client, experimental_signal: controller.signal });
+    const { id: expectedId } = z.object({ id: z.uuid() }).parse(await started);
+    const delivered = response.promise.then(() => started);
+    // Keep the simulated HTTP reply blocked even after the first read begins.
+    await firstRead.promise;
+    const replay = await bb.rpc("scan_start", { ...input, estimateId, clientRequestId });
+    expect(replay).toMatchObject({ id: expectedId });
+    await expect(bb.rpc("scan_start", { ...input, estimateId, clientRequestId, limits: { maxBytesRead: "131072" } }))
+      .rejects.toMatchObject({ code: "conflict" });
+    controller.abort();
+    await expect(bb.rpc("scan_cancel", { clientRequestId })).resolves.toEqual({});
+    resumeRead.resolve();
+    response.resolve();
+    const { id: scanId } = z.object({ id: z.literal(expectedId) }).parse(await delivered);
+    await vi.waitFor(async () => expect(await bb.rpc("scan_get", { scanId }))
+      .toMatchObject({ job: { state: "cancelled", partial: true }, result: null }));
+    expect(reads).toBe(1);
+  } finally { resumeRead.resolve(); response.resolve(); await bb.dispose(); }
+});
+
+test("S11 a cancellation that arrives first prevents remote traversal", async () => {
+  const fixture = remoteFixture();
+  const bb = await backend(undefined, fixture.callRpc);
+  const root = { endpoint: fixture.endpoint, path: parsePosix("/data") };
+  const clientRequestId = "00000000-0000-4000-8000-000000000012";
+  try {
+    await expect(bb.rpc("scan_cancel", { clientRequestId })).resolves.toEqual({});
+    await expect(bb.rpc("scan_start", { kind: "search", root, clientRequestId, estimateOnly: true,
+      content: { text: "needle", caseSensitive: true } })).rejects.toMatchObject({ message: expect.stringContaining("cancelled") });
+    expect(fixture.remote.opCount("op:list")).toBe(0);
+    expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+test.each(["channel_closed", "outcome_unknown"] as const)("copy handles %s on the SFTP data write", async (fault) => {
+  const fixture = remoteFixture();
+  const source = { endpoint: fixture.endpoint, path: parsePosix("/data/a") };
+  let disconnected = false;
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op") {
+      const input = sftpOpInputSchema.parse(args.input);
+      if (input.op === "write" && input.create === "existing" && !disconnected) {
+        disconnected = true;
+        if (fault === "channel_closed") fixture.remote.expireChannels();
+        else fixture.remote.dieNext("write");
+      }
+    }
+    return fixture.callRpc(args);
+  });
+  try {
+    const plan = ticket.parse(await bb.rpc("plan_create", {
+      ...request, sources: [source], targetDir: { endpoint: fixture.endpoint, path: parsePosix("/data/out") },
+    }));
+    const { id: jobId } = OperationJob.parse(await bb.rpc("plan_run", { planId: plan.id, digest: plan.digest }));
+    if (fault === "channel_closed") {
+      await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId })).toMatchObject({ state: "completed" }));
+      expect(fixture.remote.opCount("op:write")).toBe(3);
+      expect(fixture.remote.appliedCount("write")).toBe(2);
+      expect(fixture.remote.bytesAt("/data/out/a")).toEqual(new TextEncoder().encode("fixture"));
+      return;
+    }
+
+    await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId })).toMatchObject({
+      state: "unknown", error: { code: "outcome_unknown" },
+    }));
+    expect(fixture.remote.opCount("op:write")).toBe(2);
+    expect(fixture.remote.bytesAt("/data/out/a")).toBeUndefined();
+    const temp = `/data/out/.commander-${jobId}-0.part`;
+    expect(fixture.remote.bytesAt(temp)).toEqual(new TextEncoder().encode("fixture"));
+
+    const retry = await bb.rpc("job_retry", { jobId });
+    expect(retry).toMatchObject({ plan: { items: [{ source }] } });
+    expect(fixture.remote.bytesAt(temp)).toBeUndefined();
+    const next = ticket.parse((retry as { plan: unknown }).plan);
+    const { id: nextId } = OperationJob.parse(await bb.rpc("plan_run", { planId: next.id, digest: next.digest }));
+    await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId: nextId })).toMatchObject({ state: "completed" }));
+    expect(fixture.remote.bytesAt("/data/out/a")).toEqual(new TextEncoder().encode("fixture"));
+    expect(fixture.remote.opCount("op:rename")).toBe(1);
   } finally { await bb.dispose(); }
 });

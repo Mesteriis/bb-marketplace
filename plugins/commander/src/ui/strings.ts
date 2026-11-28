@@ -1,6 +1,46 @@
 export const ru = {
+  // S16
+  editFlow: {
+    save: "Сохранить копию", writeBack: "Записать обратно", close: "Завершить правку",
+    saved: "Копия сохранена", queued: "Запись поставлена в очередь", closed: "Сеанс завершён — откройте файл снова",
+    changed: "Оригинал изменился", deleted: "Оригинал удалён", copy: "Сохранённая копия", original: "На сервере",
+    compare: "Сравнить", overwrite: "Перезаписать", beside: "Сохранить рядом", defer: "Не записывать",
+    remote: "Открыть файл с сервера для правки", download: "Прочитать и открыть", unavailable: "Редактор BB недоступен",
+    fallback: "Открыть копию в BB", tooLarge: "Файл слишком большой для правки (до 16 МиБ)",
+    compareUnavailable: "Текущая версия недоступна для текстового просмотра",
+    editorHostUnavailable: "Хост редактора BB недоступен", nonText: "Файл не текстовый — правка недоступна",
+    waitForSave: "Дождитесь сохранения", quota: "Исчерпана квота правки (1 ГиБ)",
+    remoteChanged: "Файл изменился — подтвердите новую оценку",
+    revisionChanged: "Редакция изменилась — перечитайте копию", previousWrite: "Предыдущая запись ещё выполняется",
+    base: "Исходная версия", recheck: "«Перезаписать» ещё раз сверит версию. Commander записывает файл через временную копию.",
+  },
+  archive: {
+    kind: "Архив",
+    passwordTitle: "Зашифрованный архив", password: "Пароль архива",
+    estimateTitle: "Скопировать архив для открытия",
+    confirmCopy: "Подтвердить копию",
+    estimateText: (size: string) => "Архив сначала копируется на этот компьютер: будет прочитано " + size + ". Продолжить?",
+    copyAndOpen: "Копировать и открыть",
+    changed: "Файл изменился — оцените снова",
+  },
+  // S11
+  search: {
+    title: "Поиск", virtual: "Результаты поиска", close: "Закрыть поиск",
+    name: "Имя или маска", content: "Содержимое", filters: "Фильтры", regex: "Регулярное выражение",
+    caseSensitive: "Учитывать регистр содержимого", min: "Размер от, байт", max: "Размер до, байт",
+    after: "Изменён с", before: "Изменён по", depth: "Глубина", entries: "Лимит записей",
+    budget: "Лимит чтения, байт", estimate: "Оценить чтение", start: "Найти",
+    remoteRead: "Чтение по сети до", perRun: "подтверждается для каждого запуска",
+    confirm: "Подтвердить и искать", results: "Найденные файлы", directory: "Каталог",
+    found: "найдено", visited: "записей просмотрено", partial: "Неполный результат",
+    cancel: "Отменить поиск", cancelled: "Поиск отменён", interrupted: "Поиск прерван",
+    unsafeRegex: "Используйте выражение без групп и альтернатив, с одним квантификатором.",
+    preparing: "Подготовка поиска", progress: "Идёт поиск", expired: "Результаты устарели. Запустите поиск снова.",
+    openFolder: "Открыть каталог", preview: "Просмотр F3", copy: "Копировать найденное", save: "Сохранить как панель",
+  },
+
   left: "Левая панель", right: "Правая панель", path: "Путь", filter: "Фильтр", up: "Вверх",
-  loading: "Загрузка каталога", empty: "Каталог пуст", noResults: "Нет совпадений",
+  loading: "Загрузка каталога", loadedCount: (count: number) => `Загружено ${count} записей…`, empty: "Каталог пуст", noResults: "Нет совпадений",
   noEndpoint: "Нет доступного источника", readOnly: "Только чтение", writable: "Чтение и запись",
   local: "Локально", sftp: "SFTP", refresh: "Обновить", swap: "Поменять", compare: "Сравнить каталоги",
   queue: "Очередь", collapseQueue: "Свернуть очередь", emptyQueue: "Очередь пуста", damaged: "Задание повреждено, план недоступен",
@@ -13,6 +53,10 @@ export const ru = {
   compareLimit: "Сравнение доступно для двух текстовых файлов до 128 КБ", allItems: "Список объектов",
   cancel: "Отмена", cancelJob: "Отменить задание", run: "Запустить", next: "Далее",
   retryConflict: "Проверить снова",
+  retryUnfinished: "Повторить невыполненное",
+  retryNothing: "Повторять нечего",
+  // S17: по-русски число задаёт форму слова (1 элемент, 2 элемента, 5 элементов).
+  retryWaitsForCheck: (count: number) => count + " " + ({ one: "элемент ждёт", few: "элемента ждут", many: "элементов ждут", other: "элементов ждут" } as Record<string, string>)[new Intl.PluralRules("ru").select(count)] + " сверки каталога",
   conflictEnded: "Конфликт больше не ожидает решения",
   conflictExists: (file: string) => file + " уже есть в назначении",
   conflictForFile: (file: string, reason: string) => file + " · " + reason,
@@ -42,9 +86,45 @@ export const ru = {
   unknownError: "Не удалось выполнить операцию", noThreadEndpoint: "Источник окружения недоступен",
   busy: "Загрузка…", cancelConfirm: "Остановить задание? Уже выполненные действия сохранятся.",
   bytes: "Б", kib: "КБ", mib: "МБ", gib: "ГБ", tib: "ТБ", items: "Объектов",
+  scanTitle: "Сравнение каталогов", scanChecksum: "Хеш выбранного файла", scanDifference: "Отличие",
+  scanMetadata: "Сравнить по размеру и времени", scanMetadataShort: "Размер + время", scanHashes: "Сверить по SHA-256", scanCalculate: "Вычислить SHA-256",
+  scanToleranceShort: "допуск 2 с", scanAnd: " и ",
+  scanReadBreakdown: (details: string) => "Прочитает до " + details,
+  scanLocalBytes: (size: string) => size + " локально",
+  scanRemoteBytes: (size: string, endpoint: string) => size + " с «" + endpoint + "»",
+  scanEstimate: (size: string) => "Объём чтения: до " + size, scanConfirm: "Подтвердить чтение",
+  scanProgress: (items: number, size: string) => "Объектов: " + items + " · Прочитано: " + size,
+  scanProgressLabel: "Прогресс сканирования", scanCancel: "Отменить сканирование", scanRetry: "Повторить",
+  scanInterrupted: "Сканирование прервано", scanExpired: "Результат недоступен",
+  scanHideEqual: "Скрыть одинаковые", scanTolerance: "По размеру и времени изменения, допуск 2 с",
+  scanPartial: "Результат неполный: достигнут предел записей",
   nameSort: "Имя", sizeSort: "Размер", dateSort: "Изменён",
+  sync: {
+    action: "Синхронизация", title: "План синхронизации", direction: "Направление",
+    directions: { "left-to-right": "Слева → направо", "right-to-left": "Справа → налево", both: "В обе стороны" },
+    compareHash: "Сравнить по SHA-256", planDeletes: "Рассчитать отдельный план удалений",
+    estimate: (size: string) => "Чтение для сравнения по SHA-256 · " + size,
+    files: (count: number) => "Показать список (" + count + ")",
+    update: "Обновить изменённые", copy: "Копировать новые", queued: "В очереди",
+    unchanged: (count: number) => "Оставить без изменений (" + count + ")",
+    reasons: { target_newer: "Файл в назначении новее", differs: "Версии различаются" },
+    deletes: "Удаления — отдельный набор", deletesQueued: "Удаления в очереди.",
+    selectDeletes: (count: number) => "Выбрать удаления (" + count + ")",
+    deletePermission: "Требуется право на удаление.", confirmDeletes: "Подтвердить удаления",
+    nothingToDelete: "Файлов для удаления нет.", deletesOff: "По умолчанию выключены.",
+    recheck: "Перед запуском файлы сверяются повторно. Изменившийся файл потребует решения.",
+    summary: (count: number, size: string) => count + " действий · " + size + " по сети",
+    confirmPlan: "Подтвердить план", confirmRead: "Подтвердить чтение",
+    preparing: "Сравнение…", build: "Построить план", estimateFailed: "Не удалось оценить объём чтения",
+    units: ["Б", "КБ", "МБ", "ГБ"],
+  },
+  view: {
+    truncated: "Показана только первая часть файла", changed: "Файл изменился во время просмотра", group: "Режим просмотра",
+    text: "Текст", hex: "Hex", image: "Изображение",
+    shown: (shown: number, total: string) => "Показано " + shown + " из " + total + " байт",
+  },
 };
-export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
+export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление", pack: "Создание архива" };
 export const stateText = {
   pending: "В очереди", running: "Выполняется", awaiting_decision: "Ждёт решения",
   completed: "Готово", failed: "Ошибка", cancel_requested: "Отмена запрошена",
@@ -56,6 +136,8 @@ export const reasonText = {
 };
 export const approvalState = "Ждёт разрешения";
 export const errorText: Record<string, string> = {
+  // S11
+  content_search_needs_consent: "Подтвердите оценку чтения по сети.",
   invalid: "Запрос отклонён", forbidden: "Доступ запрещён", conflict: "Данные изменились или действие недоступно",
   invalid_path: "Недопустимый путь", invalid_name: ru.invalidName, not_found: "Объект не найден",
   already_exists: reasonText.exists, not_a_directory: "Путь ведёт не к каталогу",
@@ -65,4 +147,38 @@ export const errorText: Record<string, string> = {
   host_key_rejected: "Ключ хоста отклонён", auth_failed: "Вход отклонён", consent_required: "Требуется разрешение",
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
+  // S14
+  invalid_archive: "Архив повреждён или имеет неподдерживаемую структуру",
+};
+
+// S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.
+export const batchRenameText = {
+  title: "Переименовать пачку",
+  description: "Шаблон, поиск и замена, регистр и счётчик; проверка — до создания плана",
+  template: "Шаблон имени",
+  templateHint: "[N] — имя без расширения, [E] — расширение, [C] — счётчик, [C:3] — счётчик из 3 знаков, [N1-3] — срез имени",
+  find: "Найти", replace: "Заменить на", regex: "регулярное выражение",
+  counterStart: "Счётчик с", counterStep: "Шаг", counterWidth: "Знаков",
+  caseMode: "Регистр", caseKeep: "как есть", caseLower: "нижний", caseUpper: "ВЕРХНИЙ", caseTitle: "Заглавные слова",
+  preview: "Предпросмотр переименования", from: "Было", to: "Станет", state: "Состояние", ok: "Готово",
+  makePlan: "Создать план", pendingPlan: "План создаётся",
+  summary: (changed: number, conflicts: number) =>
+    changed + " к переименованию · " + conflicts + (conflicts === 1 ? " конфликт" : " конфликтов") + " · расширения сохраняются",
+  // Core messages (English, shown to the agent too) mapped to the owner text by exact match.
+  coreMessages: {
+    "Batch rename retry is not available: check the job": "Повтор пакетного переименования недоступен: сверьте задание",
+    "Batch rename cancel is unavailable: the second phase is running": "Отмена недоступна: идёт вторая фаза переименования",
+  } as Record<string, string>,
+  // A pending item of a finished batch was returned to its place, not renamed.
+  returnedPending: "Ожидающие элементы не переименованы",
+  tempNames: (paths: string[]) => "Файлы могли остаться под временными именами: " + paths.join(", ")
+    + ". Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
+  problems: {
+    empty: "Имя станет пустым",
+    invalid_name: "Недопустимое имя",
+    duplicate: "Совпадает с именем другого файла пачки",
+    exists: "Имя уже есть в каталоге и не входит в пачку",
+    invalid_regex: "Регулярное выражение не разобрано",
+    unsafe_regex: "Регулярное выражение отклонено: допустим плоский вид с одним повтором без групп и альтернатив",
+  } as Record<string, string>,
 };

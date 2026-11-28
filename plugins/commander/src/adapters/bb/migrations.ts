@@ -1,3 +1,5 @@
+import { EDIT_MIGRATION } from "./edit-store.ts";
+
 // Append only. BB identifies each migration by its position and SQL hash.
 export const MIGRATIONS: string[] = [
   `
@@ -60,4 +62,25 @@ export const MIGRATIONS: string[] = [
       WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent';
     CREATE INDEX IF NOT EXISTS jobs_agent_thread_scan ON jobs (thread_id) WHERE initiator_kind = 'agent';
   `,
+  `
+    CREATE TABLE IF NOT EXISTS scan_jobs (
+      id TEXT PRIMARY KEY NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('running', 'done', 'failed', 'cancelled', 'interrupted')),
+      job_json TEXT NOT NULL
+    );
+  `,
+  `
+    ALTER TABLE checkpoints ADD COLUMN commit_intent_json TEXT;
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS archives (
+      id TEXT PRIMARY KEY NOT NULL,
+      source_json TEXT NOT NULL,
+      fingerprint_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_referenced_at TEXT NOT NULL
+    );
+  `,
+  // S16
+  EDIT_MIGRATION,
 ];

@@ -8,6 +8,7 @@
 //   a second channel_closed is connection_failed;
 // - outcome_unknown from Remote Hub, or any other failure of a mutation after it was sent: never repeated;
 // - a cancelled read is cancelled.
+import { sftpFastMethods } from "./sftp-fast-wire.ts";
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
 import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
@@ -16,7 +17,6 @@ import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider, type WriteSession } f
 import {
   SFTP_LIMITS,
   SftpRefusal,
-  sftpMethods,
   type RemoteHubPort,
   type SftpAttrs,
   type SftpInput,
@@ -66,6 +66,7 @@ const ERROR_CODE: Record<SftpRefusalCode, ErrorCode> = {
   profile_needs_config: "unsupported",
   agent_unavailable: "auth_failed",
   keychain_locked: "auth_failed",
+  keychain_unavailable: "auth_failed",
   keychain_needs_approval: "auth_failed",
   credential_missing: "auth_failed",
   auth_failed: "auth_failed",
@@ -97,6 +98,7 @@ const DEFINITIVE: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
   "profile_needs_config",
   "agent_unavailable",
   "keychain_locked",
+  "keychain_unavailable",
   "keychain_needs_approval",
   "credential_missing",
   "auth_failed",
@@ -163,6 +165,7 @@ function narrow<K extends SftpOpOutput["op"]>(output: SftpOpOutput, op: K): Extr
 }
 
 function concat(parts: Uint8Array[]): Uint8Array {
+  if (parts.length === 1) return parts[0]!;
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
   let offset = 0;
   for (const part of parts) {
@@ -261,7 +264,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
   let opening: Promise<string> | null = null;
 
   function callPort<M extends SftpMethodName>(method: M, input: SftpInput<M>, signal: AbortSignal): Promise<SftpOutput<M>> {
-    return port.call(method, input, signal).then((raw) => sftpMethods[method].output.parse(raw) as SftpOutput<M>);
+    return port.call(method, input, signal).then((raw) => sftpFastMethods[method].output.parse(raw) as SftpOutput<M>);
   }
 
   /** Losing a channel also withdraws what was declared on it: atomicReplace belongs to a channel. */
@@ -632,7 +635,8 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
             ),
             "read",
           );
-          const chunk = new Uint8Array(Buffer.from(out.data, "base64"));
+          const decoded = Buffer.from(out.data, "base64");
+          const chunk = new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.length);
           if (chunk.length > want) throw commanderError("internal");
           if (chunk.length === 0 && !out.eof) throw commanderError("internal");
           parts.push(chunk);

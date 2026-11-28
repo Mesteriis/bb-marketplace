@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -57,9 +57,9 @@ function Breadcrumbs({ segments }: { segments: ResourcePath["segments"] }) {
   </span>;
 }
 
-function Address({ tab, onPath, onFilter, onParent, onRefresh }: {
+function Address({ tab, onPath, onFilter, onParent, onRefresh, onSearch }: {
   tab: Tab; onPath: (input: string) => void; onFilter: (value: string) => void;
-  onParent: () => void; onRefresh: () => void;
+  onParent: () => void; onRefresh: () => void; onSearch?: () => void;
 }) {
   const [path, setPath] = useState(nativePath(tab.path) ?? displayPath(tab.path));
   return <div className="cm-address">
@@ -70,6 +70,8 @@ function Address({ tab, onPath, onFilter, onParent, onRefresh }: {
     </form>
     <Input type="search" className="cm-filter" aria-label={ru.filter} placeholder={ru.filter} value={tab.filter}
       maxLength={1024} onChange={(event) => onFilter(event.currentTarget.value)} />
+    {onSearch && <Button type="button" size="sm" variant="ghost" aria-label={ru.search.title}
+      onClick={onSearch}><Icon name="Search" /></Button>}
     <Button size="sm" variant="ghost" aria-label={ru.refresh} onClick={onRefresh}><Icon name="ArrowReloadHorizontal" /></Button>
   </div>;
 }
@@ -100,6 +102,7 @@ export interface PaneProps {
   onOpen: (entry: Entry | null) => void;
   onRefresh: () => void;
   onAccess: () => void;
+  onSearch?: () => void;
 }
 
 export function Pane(props: PaneProps) {
@@ -115,6 +118,28 @@ export function Pane(props: PaneProps) {
     setTop(node.scrollTop);
   // A refresh of the same directory must leave its scroll position alone.
   }, [grid, location, directory?.loading]);
+  // While pages of a long listing are merged into the rows, the anchor row (the cursor, else the row at the top of
+  // the view) keeps its place on screen: rows that arrive above it move the scroll position by their height.
+  const indexByKey = useMemo(() => new Map(entries.map((entry, index) => [keyOf(entry.name), index])), [entries]);
+  const shownRows = useRef({ entries, indexByKey, location, partial: !!directory?.partial });
+  useLayoutEffect(() => {
+    const before = shownRows.current;
+    shownRows.current = { entries, indexByKey, location, partial: !!directory?.partial };
+    const node = grid.current;
+    if (!node || before.location !== location || before.entries === entries || before.entries.length === 0) return;
+    if (!before.partial && !directory?.partial) return;
+    const lead = tab && parent(tab.path) ? 1 : 0;
+    let anchor = cursor !== null && cursor !== upKey && before.indexByKey.has(cursor) ? cursor : null;
+    if (anchor === null && node.scrollTop > 0) {
+      const row = before.entries[Math.floor(node.scrollTop / rowHeight) - lead];
+      anchor = row ? keyOf(row.name) : null;
+    }
+    if (anchor === null) return;
+    const now = indexByKey.get(anchor), was = before.indexByKey.get(anchor);
+    if (now === undefined || was === undefined || now === was) return;
+    node.scrollTop += (now - was) * rowHeight;
+    setTop(node.scrollTop);
+  }, [entries, location, directory?.partial]);
   useLayoutEffect(() => {
     const node = grid.current;
     if (!node || typeof ResizeObserver === "undefined") return;
@@ -137,11 +162,11 @@ export function Pane(props: PaneProps) {
   const end = Math.min(total, first + Math.min(199, Math.ceil(height / rowHeight) + overscan * 2));
   const selected = new Set(tab?.selection.map(keyOf));
   const info = selectionInfo(directory?.entries ?? [], tab?.selection ?? []);
-  const cursorIndex = cursor === upKey && above ? 0 : entries.findIndex((entry) => keyOf(entry.name) === cursor) + offset;
+  const cursorIndex = cursor === upKey && above ? 0 : (cursor === null ? -1 : indexByKey.get(cursor) ?? -1) + offset;
   const renderedCursor = cursor !== null && cursorIndex >= first && cursorIndex < end
     && (cursor === upKey || cursorIndex >= offset);
   const sources = props.endpoints.map((source) => <option key={source.id} value={source.id}>{source.label}</option>);
-  const provider = endpoint?.provider === "sftp" ? ru.sftp : ru.local;
+  const provider = endpoint?.provider === "sftp" ? ru.sftp : endpoint?.provider === "archive" ? ru.archive.kind : ru.local;
   const access = endpoint?.readOnly ? ru.readOnly : ru.writable;
   const sortCells = [
     { by: "name", label: ru.nameSort }, { by: "size", label: ru.sizeSort }, { by: "mtime", label: ru.dateSort },
@@ -178,9 +203,9 @@ export function Pane(props: PaneProps) {
       {props.tabs.length > 1 && <Button size="sm" variant="ghost" aria-label={ru.closeTab} onClick={props.onCloseTab}><Icon name="X" /></Button>}
     </div>
     {tab && <Address key={location} tab={tab} onPath={props.onPath} onFilter={props.onFilter}
-      onParent={() => { if (above) props.onNavigate(above); }} onRefresh={props.onRefresh} />}
+      onParent={() => { if (above) props.onNavigate(above); }} onRefresh={props.onRefresh} onSearch={props.onSearch} />}
     <div className="cm-grid" ref={grid} role="grid" tabIndex={0} aria-label={ru[props.side]} aria-multiselectable="true"
-      aria-busy={!!directory?.loading} aria-rowcount={total + 1 + Number(!!status)}
+      aria-busy={!!directory?.loading || !!directory?.partial} aria-rowcount={total + 1 + Number(!!status)}
       aria-activedescendant={renderedCursor ? uid + "-" + cursorIndex : undefined}
       onScroll={(event) => { const value = event.currentTarget.scrollTop; setTop(value); if (!directory?.loading) props.onScroll(value); }}>
       <div className="cm-row cm-columns" role="row" aria-rowindex={1}>
@@ -207,6 +232,7 @@ export function Pane(props: PaneProps) {
         </div>}
       {status && <div role="row" aria-rowindex={total + 2}><div role="gridcell" aria-colspan={3}>{status}</div></div>}
     </div>
-    <div className="cm-summary">{info.count} {ru.outOf} {directory?.entries.length ?? 0} {ru.selected} · {info.size}</div>
+    <div className="cm-summary" role={directory?.partial ? "status" : undefined}>
+      {directory?.partial && <>{ru.loadedCount(directory.entries.length)} · </>}{info.count} {ru.outOf} {directory?.entries.length ?? 0} {ru.selected} · {info.size}</div>
   </section>;
 }

@@ -1,3 +1,5 @@
+// S16
+import type { WriteBackRequest } from "../../core/edit-session.ts";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { CommanderError } from "../../core/errors.ts";
@@ -47,6 +49,9 @@ const CheckpointValue = z.strictObject({
   committed: Fingerprint.optional(),
   writing: z.strictObject({ offset: Size, length: z.number().int().nonnegative() }).optional(),
   cleanup: z.strictObject({ tempPath: ResourcePath, tempFingerprint: Fingerprint }).optional(),
+  commitIntent: z.strictObject({
+    size: Size, sha256: z.string().regex(/^[0-9a-f]{64}$/), tempFingerprint: Fingerprint,
+  }).optional(),
   sourceHash: Fingerprint.shape.sha256,
 });
 
@@ -64,6 +69,7 @@ interface CheckpointRow {
   committed_json: string | null;
   writing_json: string | null;
   cleanup_json: string | null;
+  commit_intent_json?: string | null;
   source_hash: string | null;
   at: string;
 }
@@ -175,7 +181,9 @@ function unreadableJob(row: JobRow, id: string): OperationJob {
   });
 }
 
-export function createSqliteJobStore(db: Database): AgentJobStore {
+export function createSqliteJobStore(db: Database, edit?: {
+  record(input: WriteBackRequest, jobId: string, createdAt: string): void;
+}): AgentJobStore {
   const insert = db.prepare(`
     INSERT INTO jobs (
       id, plan_json, state, progress_json, current_item, pending_conflict_json,
@@ -214,6 +222,9 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
   const approvalRecorded = db.prepare<[string], number>(
     "SELECT 1 FROM commander_owner_approvals WHERE job_id = ?",
   ).pluck();
+  const recordPausedApproval = db.prepare<[string]>(
+    "INSERT OR IGNORE INTO commander_owner_approvals (job_id) VALUES (?)",
+  );
   const countApprovals = db.prepare<[string], { thread: number; total: number }>(`
     SELECT count(CASE WHEN thread_id = ? THEN 1 END) AS thread, count(*) AS total
     FROM jobs WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent'
@@ -238,14 +249,16 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       awaits_owner = @awaits_owner
     WHERE id = @id AND state = @expected
   `);
-  const writeCheckpoint = db.prepare(`
+  // Prepared on first use: a store opened over a database that has not reached migration 8 yet must still work for jobs.
+  let writeCheckpointStatement: ReturnType<typeof db.prepare> | null = null;
+  const writeCheckpointSql = `
     INSERT INTO checkpoints (
       job_id, item_index, phase, bytes_done, temp_path_json, temp_fingerprint_json, via,
       target_path_json, expect_target_json, verified_json, committed_json,
-      writing_json, cleanup_json, source_hash, at
+      writing_json, cleanup_json, commit_intent_json, source_hash, at
     )
     SELECT @jobId, @itemIndex, @phase, @bytesDone, @tempPath, @tempFingerprint, @via,
-      @targetPath, @expectTarget, @verified, @committed, @writing, @cleanup, @sourceHash, @at
+      @targetPath, @expectTarget, @verified, @committed, @writing, @cleanup, @commitIntent, @sourceHash, @at
     WHERE EXISTS (SELECT 1 FROM jobs WHERE id = @jobId)
     ON CONFLICT(job_id, item_index) DO UPDATE SET
       phase = excluded.phase, bytes_done = excluded.bytes_done,
@@ -255,8 +268,10 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       expect_target_json = excluded.expect_target_json, verified_json = excluded.verified_json,
       committed_json = excluded.committed_json,
       writing_json = excluded.writing_json, cleanup_json = excluded.cleanup_json,
+      commit_intent_json = excluded.commit_intent_json,
       source_hash = excluded.source_hash, at = excluded.at
-  `);
+  `;
+  const writeCheckpoint = { run: (params: Record<string, unknown>) => (writeCheckpointStatement ??= db.prepare(writeCheckpointSql)).run(params) };
   const readCheckpoint = db.prepare<[string, number], CheckpointRow>(
     "SELECT * FROM checkpoints WHERE job_id = ? AND item_index = ?",
   );
@@ -274,7 +289,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
     return unreadableJob(row, id);
   }
 
-  const create = db.transaction((input: OperationJob) => {
+  const create = db.transaction((input: OperationJob, editWriteBack?: WriteBackRequest) => {
     const job = OperationJob.parse(input);
     // Alias IDs are reserved even when their row does not exist.
     // Normal job IDs come from randomUUID(), which produces UUIDv4.
@@ -289,6 +304,11 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       thread_id: initiator.kind === "agent" ? initiator.threadId : null,
     });
     if (changes !== 1) throw new CommanderError("already_exists", "Job already exists");
+    // S16: aborting the receipt write also rolls back the job insert.
+    if (editWriteBack) {
+      if (!edit) throw new CommanderError("internal", "Writeback persistence is unavailable");
+      edit.record(editWriteBack, job.id, normalizeTimestamp(job.createdAt));
+    }
     if (!beyondRetentionLimit.get(TERMINAL_LIMIT)) return;
 
     const storedTerminalCount = countStoredTerminal.get() ?? 0;
@@ -318,14 +338,19 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
     if (job.state === "pending" && next.state !== "pending" && patch.awaitsOwner === undefined) {
       next.awaitsOwner = false;
     }
-    return updateJob.run({ ...mutableColumns(OperationJob.parse(next)), id, expected }).changes === 1;
+    const updated = updateJob.run({ ...mutableColumns(OperationJob.parse(next)), id, expected }).changes === 1;
+    // S13: the running trigger covers ordinary approval. Record a direct pause in the same transaction.
+    if (updated && job.state === "pending" && job.awaitsOwner && next.state === "awaiting_decision") {
+      recordPausedApproval.run(id);
+    }
+    return updated;
   });
 
   return {
     hasOwnerApproval: (id) => approvalRecorded.get(id) === 1,
     approvalQueueSize: (threadId) => countApprovals.get(threadId)!,
-    async create(job) {
-      create.immediate(job);
+    async create(job, editWriteBack) {
+      create.immediate(job, editWriteBack);
     },
     async get(id) {
       const row = byId.get(id);
@@ -385,6 +410,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
         verified: encodeJson(checkpoint.verified),
         committed: encodeJson(checkpoint.committed ?? null),
         writing: encodeJson(checkpoint.writing ?? null),
+        commitIntent: encodeJson(checkpoint.commitIntent ?? null),
         cleanup: encodeJson(checkpoint.cleanup ?? null),
         sourceHash: checkpoint.sourceHash ?? null,
         at: new Date().toISOString(),
@@ -410,6 +436,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
           ...(row.committed_json === null ? {} : { committed: decodeJson(row.committed_json) }),
           ...(row.writing_json === null ? {} : { writing: decodeJson(row.writing_json) }),
           ...(row.cleanup_json === null ? {} : { cleanup: decodeJson(row.cleanup_json) }),
+          ...(row.commit_intent_json == null ? {} : { commitIntent: decodeJson(row.commit_intent_json) }),
           ...(row.source_hash === null ? {} : { sourceHash: row.source_hash }),
         });
       } catch {

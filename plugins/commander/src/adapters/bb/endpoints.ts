@@ -1,18 +1,22 @@
+// S16
+import { EDIT_SNAPSHOT_ENDPOINT } from "../../core/edit-session.ts";
 import { experimental_PluginRpcCallError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { CommanderError } from "../../core/errors.ts";
 import { EndpointId, type Endpoint } from "../../core/model.ts";
 import { NameSegment, ResourcePath } from "../../core/path.ts";
 import type { FileProvider } from "../../core/provider.ts";
 import { HostFsContract } from "../../core/wire/host-fs.ts";
-import { SFTP_REFUSALS, SftpRefusal, sftpMethods, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
+import { sftpFastMethods } from "./sftp-fast-wire.ts";
+import { SFTP_REFUSALS, SftpRefusal, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
 import type { EndpointView } from "../../core/wire/rpc.ts";
-import { createLocalProvider } from "./local-provider.ts";
+import { createLocalProvider, translateHostFsError } from "./local-provider.ts";
 import { createSftpProvider, type SftpProvider } from "./sftp-provider.ts";
+import type { ArchiveManager } from "./archive-manager.ts";
 import { z } from "zod";
 
 const remoteId = "makosh-remote-hub";
 const bounded = (label: string) => label.slice(0, 200).toWellFormed();
-const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpMethods;
+const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpFastMethods;
 
 /**
  * The Remote Hub refusal code inside a failed `callRpc`, or null for a transport failure.
@@ -20,7 +24,7 @@ const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } =
  * class); newer SDKs throw experimental_PluginRpcCallError ("host_key_unknown: …"). Both carry the
  * refusal class in `code`, which must match the class the contract gives that refusal.
  */
-function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
+export function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   let code: unknown;
   let message: unknown;
   if (error instanceof experimental_PluginRpcCallError) {
@@ -38,7 +42,11 @@ function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
 }
 
-export function createEndpoints(bb: BbPluginApi) {
+const SIGN_IN_REFUSALS: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
+  "agent_unavailable", "keychain_locked", "keychain_unavailable", "keychain_needs_approval", "credential_missing", "auth_failed",
+]);
+
+export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager | null = () => null) {
   const hostFs = bb.hosts.experimental_client({ contract: HostFsContract });
   const remote: RemoteHubPort = {
     async call<M extends SftpMethodName>(method: M, input: SftpInput<M>, signal: AbortSignal) {
@@ -69,7 +77,7 @@ export function createEndpoints(bb: BbPluginApi) {
     const endpoints: z.infer<typeof EndpointView>[] = [];
     for (const host of machines) {
       const id = "host:" + host.id;
-      if (!EndpointId.safeParse(id).success) continue;
+      if (id === EDIT_SNAPSHOT_ENDPOINT || !EndpointId.safeParse(id).success) continue;
       const name = bounded(host.name);
       endpoints.push({
         id, provider: "local", hostId: host.id, label: name, machine: name, readOnly: false,
@@ -83,11 +91,21 @@ export function createEndpoints(bb: BbPluginApi) {
         caseSensitive: true, consent: profile.consent,
       });
     }
+    for (const endpoint of archives()?.views() ?? []) endpoints.push({ ...endpoint });
     return endpoints;
   }
 
   async function prepare(ids: Iterable<string>, signal: AbortSignal) {
     const wanted = new Set(ids);
+    if (!wanted.size) return;
+    // An archive that is not open is never copied by a plain request: the owner estimates and confirms first
+    // (archive_resume). The refusal names the element, it is not swallowed.
+    for (const id of [...wanted].filter((item) => item.startsWith("archive:"))) {
+      wanted.delete(id);
+      const manager = archives();
+      if (!manager) throw new CommanderError("not_found", "Archives are unavailable");
+      manager.provider(id.slice("archive:".length));
+    }
     if (!wanted.size) return;
     const endpoints = await list(signal);
     await Promise.all([...wanted].map(async (id) => {
@@ -103,8 +121,8 @@ export function createEndpoints(bb: BbPluginApi) {
       let home;
       try {
         home = await hostFs.call("home", {}, { hostId: endpoint.hostId!, signal });
-      } catch {
-        throw new CommanderError("connection_failed", "Host filesystem is unavailable", true);
+      } catch (error) {
+        throw translateHostFsError("home", error, signal);
       }
       hosts.set(id, { home: home.path, provider: createLocalProvider({ ...endpoint, caseSensitive: home.caseSensitive }, hostFs) });
     }));
@@ -156,6 +174,14 @@ export function createEndpoints(bb: BbPluginApi) {
         if (error.code === "permission_denied" || error.code === "consent_revoked" || error.code === "consent_required") {
           throw new CommanderError("consent_required", "Remote Hub did not grant access");
         }
+        // The same refusals the provider reports as a failed sign-in; the server or the Keychain said no, retrying will not help.
+        // The profile cannot be used as an SFTP endpoint (unfinished, gone, or not SFTP): the provider calls this unsupported, final.
+        if (error.code === "profile_needs_config" || error.code === "profile_not_found" || error.code === "profile_not_sftp") {
+          throw new CommanderError("unsupported", "The server cannot do this operation");
+        }
+        if (SIGN_IN_REFUSALS.has(error.code)) {
+          throw new CommanderError("auth_failed", "Sign-in to the SFTP server failed");
+        }
       }
       throw new CommanderError("connection_failed", "SFTP home directory is unavailable", true);
     }
@@ -167,12 +193,16 @@ export function createEndpoints(bb: BbPluginApi) {
 
   return {
     list, prepare, remote,
-    home: (id: string): ResourcePath => (hosts.get(id) ?? sftp.get(id))!.home,
+    home: (id: string): ResourcePath => id.startsWith("archive:") ? { segments: [] } : (hosts.get(id) ?? sftp.get(id))!.home,
     protectedPathsFor: (id: string) => {
+      if (id.startsWith("archive:")) return [];
       const host = hosts.get(id) ?? sftp.get(id);
       return host ? [host.home] : null;
     },
     provider(id: string): FileProvider {
+      if (id.startsWith("archive:")) return archives()?.provider(id.slice("archive:".length)) ?? (() => {
+        throw new CommanderError("not_found", "Archive is not open");
+      })();
       const provider = hosts.get(id)?.provider ?? sftp.get(id)?.provider;
       if (!provider) throw new CommanderError("not_found", "Endpoint is unavailable");
       return provider;

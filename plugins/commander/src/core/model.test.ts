@@ -31,6 +31,14 @@ it("accepts host and SFTP endpoint IDs", () => {
     .toBe("sftp:123e4567-e89b-42d3-a456-426614174000");
 });
 
+it("accepts an archive endpoint ID and rejects malformed ones", () => {
+  expect(EndpointId.parse("archive:123e4567-e89b-42d3-a456-426614174000"))
+    .toBe("archive:123e4567-e89b-42d3-a456-426614174000");
+  for (const bad of ["archive:../x", "archive:", "archive:123e4567", "archive:123E4567-E89B-42D3-A456-426614174000"]) {
+    expect(EndpointId.safeParse(bad).success, bad).toBe(false);
+  }
+});
+
 it("rejects an SFTP ID containing a relative path", () => {
   expect(EndpointId.safeParse("sftp:../x").success).toBe(false);
 });
@@ -275,5 +283,22 @@ describe("OperationPlan item targets for copy, move and mkdir", () => {
       ...copyPlan,
       items: [{ ...item, target: null, expectTarget: null }],
     }).success).toBe(false);
+  });
+});
+
+describe("S13 synchronization identity", () => {
+  const syncId = "123e4567-e89b-42d3-a456-426614174001";
+
+  it("accepts the existing stage 1 fixture and retains its literal digest", async () => {
+    const legacy = OperationPlan.parse({ ...plan, digest });
+    expect(legacy).not.toHaveProperty("syncId");
+    expect(await planDigest(legacy)).toBe("204af016dbd3b54a5992205737c80f46dcc4d79a75d30e390218b28f4766dc04");
+  });
+
+  it("binds syncId to the signed plan", async () => {
+    const signed = OperationPlan.parse({ ...plan, syncId, digest: "c87cd1024b739b1381dbf5e0cfac7c4c2b59a48995a7d02910009450cf1a28d7" });
+    expect(await planDigest(signed)).toBe(signed.digest);
+    const tampered = { ...signed, syncId: "123e4567-e89b-42d3-a456-426614174002" };
+    expect(await planDigest(tampered)).toBe("393731e47dbeb4a12cdbe279ef7e3171256659c6afe0be9ce508a5349c1bb73b");
   });
 });

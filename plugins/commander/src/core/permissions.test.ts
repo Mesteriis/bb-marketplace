@@ -54,6 +54,7 @@ it("lists the required permissions per operation kind", () => {
     rename: ["write"],
     mkdir: ["write"],
     delete: ["delete"],
+    pack: ["read", "write"],
   });
 });
 

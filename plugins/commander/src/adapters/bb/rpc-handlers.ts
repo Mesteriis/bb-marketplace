@@ -1,15 +1,29 @@
+// S16
+import { checkEditSize } from "../../core/edit-source.ts";
+import { EDIT_SNAPSHOT_ENDPOINT } from "../../core/edit-session.ts";
+import type { EditOperations } from "./edit-operations.ts";
+import { search, searchCandidates, SearchConsentError, type SearchContext, type SearchHit, type SearchQuery } from "../../core/search.ts";
+import { MAX_RESPONSE_BYTES } from "../../core/preview.ts";
+import { createHash } from "node:crypto";
 import { experimental_PluginRpcRefusal, type ExperimentalPluginRpcHandlersWithContext, type PluginKvStorage } from "@get-bb/plugin-sdk";
+import { checksum, compareDirs, compareFiles, estimateRead, scanDir, scanFile } from "../../core/compare.ts";
 import { CommanderError, isCommanderError } from "../../core/errors.ts";
 import type { JobRunner } from "../../core/job-runner.ts";
 import type { AgentJobStore } from "../../core/job-store.ts";
-import type { Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { Entry, Initiator, JobState, OperationJob, OperationPlan, ResourceRef } from "../../core/model.ts";
+import type { ScanContext, ScanRunner } from "../../core/scan-job.ts";
+import { entryName, readForView, replyFor } from "../../core/preview.ts";
 import { parent } from "../../core/path.ts";
+import { toBig } from "../../core/size.ts";
 import { authorize, REQUIRED } from "../../core/permissions.ts";
 import { buildPlan, revalidate, type PlannerDeps } from "../../core/planner.ts";
-import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput } from "../../core/wire/rpc.ts";
+import { LIST_PAGE_MAX } from "../../core/provider.ts";
+import { buildSyncPlan } from "../../core/sync.ts";
+import { UiState, rpcSchemas, type AgentGrant, type DamagedJob, type GrantKey, type RpcInput, type ScanEstimateView, type ScanJobView, type ScanResult } from "../../core/wire/rpc.ts";
 import { SFTP_REFUSALS, SftpRefusal } from "../../core/wire/remote-hub-sftp.ts";
 import { covers, type createAgentGrants } from "./agent-grants.ts";
 import type { Endpoints } from "./endpoints.ts";
+import { scanJobView } from "./scan-store-sqlite.ts";
 
 const owner = { kind: "owner" } as const;
 const stateKey = (threadId?: string) => threadId === undefined ? "ui-state" : "ui-state:thread:" + threadId;
@@ -28,9 +42,16 @@ export function refusal(code: experimental_PluginRpcRefusal["code"], message: st
 }
 
 export function publicError(error: unknown) {
+  if (error instanceof SearchConsentError) return refusal("forbidden", JSON.stringify({
+    code: error.code, message: error.message,
+  }));
   if (error instanceof experimental_PluginRpcRefusal) return error;
   if (error instanceof SftpRefusal) return refusal(SFTP_REFUSALS[error.code], error.code);
   if (!isCommanderError(error)) return refusal("invalid", "Commander operation failed");
+  // S16
+  if (error.code === "permission_denied" && error.message === "Path is outside the agent's grant") {
+    return refusal("forbidden", error.message);
+  }
   const code = error.code === "permission_denied" || error.code === "read_only" || error.code === "consent_required"
     || error.code === "host_key_rejected" ? "forbidden"
     : error.code === "not_found" ? "not_found"
@@ -50,7 +71,10 @@ function ownedBy(initiator: Initiator, jobInitiator: Initiator) {
 }
 
 function refs(plan: OperationPlan): string[] {
-  return [plan.sourceEndpoint, plan.targetEndpoint].filter((id) => id !== null);
+  // S13: deletion does not write to the opposite endpoint, but still needs its absence proof.
+  return [...new Set([plan.sourceEndpoint, plan.targetEndpoint, ...plan.items.flatMap(
+    ({ requireAbsent }) => requireAbsent ? [requireAbsent.endpoint] : [],
+  )].filter((id): id is string => id !== null && id !== EDIT_SNAPSHOT_ENDPOINT))];
 }
 
 function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: AgentGrant[]) {
@@ -67,9 +91,24 @@ function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: Agent
 }
 
 function effectiveGrants(rows: AgentGrant[], endpoint: string): AgentGrant[] {
+  // S14a: archives are opened by the owner's dialog only; no grant, not even "*", reaches an archive: endpoint.
+  if (endpoint.startsWith("archive:")) return [];
   // SFTP lstat protects the final component only. An intermediate link may leave
   // a lexical subdirectory, so only a grant covering the whole remote root applies.
   return endpoint.startsWith("sftp:") ? rows.filter((row) => row.scope.segments.length === 0) : rows;
+}
+
+/**
+ * Reconciling an unknown item may remove a temporary file beside its target, so the agent
+ * needs write on that directory, as an automatic run does. Without it nothing is reconciled.
+ */
+function unknownTargetsWritable(rows: AgentGrant[], job: OperationJob) {
+  return job.items.every(({ outcome }, index) => {
+    const target = job.plan.items[index].target;
+    if (outcome !== "unknown" || !target) return true;
+    const directory = parent(target.path);
+    return directory !== null && covers(rows, { endpoint: target.endpoint, path: directory }, "write");
+  });
 }
 
 function operationGrants(rows: AgentGrant[], plan: OperationPlan): AgentGrant[] {
@@ -93,9 +132,46 @@ export function createOperations(deps: {
   publish(kind: "job" | "dir" | "endpoints", id: string): void;
   ready(): Promise<void>;
   isManaged(id: string): boolean;
+  scans: ScanRunner;
+  archives?: import("./archive-runtime.ts").ArchiveRuntime;
+  // S16
+  edit?: EditOperations;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
+  const archiveEstimates = new Map<string, { request: string; version: { size: string; mtimeNs: string | null }; expires: number }>();
+  const scanEstimates = new Map<string, {
+    initiator: Initiator; request: string; snapshot: string; expires: number;
+  }>();
+  // S11: a client can cancel even before receiving the scan id. Terminal
+  // receipts and early cancellations survive request reordering for ten minutes.
+  type SearchRequest = {
+    controller: AbortController;
+    digest?: string;
+    attempt?: Promise<ScanEstimateView | ScanJobView>;
+    pending: boolean;
+    scanId?: string;
+    expires: number;
+  };
+  const searchRequests = new Map<string, SearchRequest>();
+  const searchReceiptLifetime = 600_000;
+  const searchReceiptLimit = 256;
+  const cancelledSearch = () => new CommanderError("cancelled", "Search cancelled");
+
+  function searchRequest(id: string, initiator: Initiator): SearchRequest {
+    const key = JSON.stringify([initiator.kind, initiator.kind === "agent" ? initiator.threadId : null, id]);
+    const now = Date.now();
+    for (const [key, item] of searchRequests) {
+      if (now >= item.expires && !item.pending &&
+          (!item.scanId || deps.scans.get(item.scanId)?.state !== "running")) searchRequests.delete(key);
+    }
+    const found = searchRequests.get(key);
+    if (found) return found;
+    if (searchRequests.size >= searchReceiptLimit) throw refusal("conflict", "Search request pool is full");
+    const entry: SearchRequest = { controller: new AbortController(), pending: false, expires: now + searchReceiptLifetime };
+    searchRequests.set(key, entry);
+    return entry;
+  }
   let accessQueue: Promise<unknown> = Promise.resolve();
 
   function serializeAccess<T>(action: () => Promise<T>): Promise<T> {
@@ -104,8 +180,11 @@ export function createOperations(deps: {
     return result;
   }
 
-  function remember(plan: OperationPlan) {
-    const bytes = Buffer.byteLength(JSON.stringify(plan));
+  // S13: reserve the whole batch so a sync preview never returns an evicted ticket.
+  function remember(plan: OperationPlan, ...batch: OperationPlan[]) {
+    const additions = [plan, ...batch].map((plan) => ({ plan, bytes: Buffer.byteLength(JSON.stringify(plan)) }));
+    const bytes = additions.reduce((total, entry) => total + entry.bytes, 0);
+    const countAdded = additions.length;
     const initiator = plan.initiator;
     const agent = initiator.kind === "agent";
     const actorLimit = agent ? maxThreadPlans : maxPlans;
@@ -123,24 +202,28 @@ export function createOperations(deps: {
         otherBytes += entry.bytes;
       }
     }
-    if (otherCount >= maxPlans || otherBytes + bytes > maxPlanBytes) {
+    if (otherCount + countAdded > maxPlans || otherBytes + bytes > maxPlanBytes) {
       throw refusal("conflict", "Agent plan pool is full");
     }
     let ownBytes = own.reduce((total, [, size]) => total + size, 0);
     for (let index = 0; index < own.length; index++) {
       const count = own.length - index;
-      if (count < actorLimit && ownBytes + bytes <= actorBytesLimit
-        && otherCount + count < maxPlans && otherBytes + ownBytes + bytes <= maxPlanBytes) break;
+      if (count + countAdded <= actorLimit && ownBytes + bytes <= actorBytesLimit
+        && otherCount + count + countAdded <= maxPlans && otherBytes + ownBytes + bytes <= maxPlanBytes) break;
       const [id, size] = own[index];
       plans.delete(id);
       ownBytes -= size;
     }
-    plans.set(plan.id, { plan: structuredClone(plan), bytes, created: now });
+    for (const { plan, bytes } of additions) {
+      plans.set(plan.id, { plan: structuredClone(plan), bytes, created: now });
+    }
   }
 
   async function requireJob(id: string, initiator?: Initiator) {
     const job = await store.get(id);
-    if (!job) throw refusal("not_found", "Job not found");
+    if (!job || initiator?.kind === "agent" && job.plan.sourceEndpoint === EDIT_SNAPSHOT_ENDPOINT) {
+      throw refusal("not_found", "Job not found");
+    }
     if (initiator && !ownedBy(initiator, job.plan.initiator)) throw refusal("forbidden", "Job belongs to another initiator");
     if (damaged(job)) throw refusal("invalid", "Stored job is damaged");
     return job;
@@ -151,6 +234,12 @@ export function createOperations(deps: {
     if (job.plan.digest !== digest) throw refusal("conflict", "Plan digest does not match");
     if (!job.awaitsOwner || job.state !== "pending") throw refusal("conflict", "Job is no longer awaiting approval");
     return job;
+  }
+
+  async function checkRead(initiator: Initiator, ref: ResourceRef) {
+    if (initiator.kind === "owner") return;
+    const rows = effectiveGrants(await grants.forThread(initiator.threadId), ref.endpoint);
+    if (!covers(rows, ref, "read")) throw refusal("forbidden", "Path is outside the agent's grant");
   }
 
   async function checkMetadata(initiator: Initiator, ref: ResourceRef) {
@@ -176,11 +265,31 @@ export function createOperations(deps: {
     return uncovered;
   }
 
+  async function recoverLocalCopies(endpoint: string, signal: AbortSignal) {
+    if (!endpoint.startsWith("host:")) return;
+    // The startup service owns the initial recovery pass.
+    if (!await deps.ready().then(() => true, () => false)) return;
+    await serializeAccess(async () => {
+      signal.throwIfAborted();
+      const jobs = (await store.list({ states: ["interrupted"], limit: Number.MAX_SAFE_INTEGER })).filter(({ plan }) =>
+        (plan.kind === "copy" || plan.kind === "move") && plan.sourceEndpoint === endpoint && plan.targetEndpoint === endpoint);
+      if (!jobs.length) return;
+      const uncovered = new Set((await uncoveredJobs(jobs)).map(({ id }) => id));
+      signal.throwIfAborted();
+      const ids = jobs.filter(({ id }) => !uncovered.has(id)).map(({ id }) => id);
+      if (ids.length) await runner.recover(ids);
+    });
+  }
+
   const cancellable: ReadonlySet<JobState> = new Set(activeStates);
   async function requestCancel(job: OperationJob) {
     let current: OperationJob | null = job;
     while (current && cancellable.has(current.state)) {
-      if (current.state === "pending" || deps.isManaged(current.id)) {
+      // S13: an owner deletion can be created already paused, with no running transition
+      // to register it as live. A paused delete has no staging to reconcile before cancellation.
+      const pausedSyncDelete = current.state === "awaiting_decision" && current.plan.kind === "delete"
+        && current.plan.initiator.kind === "owner" && current.plan.syncId !== undefined;
+      if (current.state === "pending" || deps.isManaged(current.id) || pausedSyncDelete) {
         await runner.cancel(current.id);
         return;
       }
@@ -204,6 +313,7 @@ export function createOperations(deps: {
   async function changeGrants(threadId: string, update: () => Promise<void>) {
     const cancellations = await serializeAccess(async () => {
       await update();
+      deps.scans.cancelAgent(threadId);
       const active = await store.list({ states: [...activeStates],
         threadId, limit: Number.MAX_SAFE_INTEGER });
       return uncoveredJobs(active);
@@ -220,27 +330,308 @@ export function createOperations(deps: {
     return { jobs: await store.list({ states, limit, threadId }) };
   }
 
+  // S11: use the same metadata digest and single-use estimate as S10.
+  async function prepareSearch(input: RpcInput<"scan_start"> & { kind: "search" }, signal: AbortSignal) {
+    const provider = endpoints.provider(input.root.endpoint);
+    const remote = input.root.endpoint.startsWith("sftp:");
+    const query: SearchQuery = {
+      ...input,
+      minSize: input.minSize === undefined ? undefined : toBig(input.minSize),
+      maxSize: input.maxSize === undefined ? undefined : toBig(input.maxSize),
+      limits: { ...input.limits, maxBytesRead: toBig(input.limits.maxBytesRead ?? (remote ? "0" : "1073741824")) },
+    };
+    let partial = false, visited = 0, planned = 0n;
+    const candidates: SearchHit[] = [];
+    const digest = createHash("sha256");
+    if (remote && query.content) {
+      let snapshotBytes = 0;
+      const ctx: ScanContext = {
+        signal, progress: ({ items = 0 }) => { visited += items; }, markPartial: () => { partial = true; },
+      };
+      for await (const hit of searchCandidates(query, provider, ctx)) {
+        const size = estimateRead([hit.entry]);
+        if (planned + size > query.limits.maxBytesRead) {
+          partial = true;
+          continue;
+        }
+        const serialized = JSON.stringify(hit);
+        snapshotBytes += Buffer.byteLength(serialized);
+        if (snapshotBytes > 8 * 1024 * 1024) {
+          partial = true;
+          break;
+        }
+        digest.update(serialized);
+        planned += size;
+        candidates.push(hit);
+      }
+    }
+    return {
+      planned: [planned],
+      snapshot: [digest.digest("hex"), visited, partial],
+      async work(ctx: ScanContext, initiator: Initiator): Promise<ScanResult> {
+        let incomplete = partial, pending = 0;
+        const remoteContent = remote && !!query.content;
+        if (visited) ctx.progress({ items: visited });
+        const searchCtx: SearchContext = {
+          signal: ctx.signal, remoteConsent: remoteContent && !!input.estimateId,
+          matchContent: matchSearchContent,
+          progress({ items = 0, bytes }) {
+            pending += items;
+            if (pending >= 128 || bytes !== undefined) {
+              ctx.progress({ items: pending, bytes });
+              pending = 0;
+            }
+          },
+          markPartial() { incomplete = true; },
+        };
+        const hits: SearchHit[] = [];
+        const agent = initiator.kind === "agent";
+        const limit = agent ? MAX_RESPONSE_BYTES : 4 * MAX_RESPONSE_BYTES;
+        let used = 256; // Fixed JSON envelope, status and separators.
+        for await (const hit of search(query, () => provider, searchCtx, remoteContent ? candidates : undefined)) {
+          hit.entry = { ...hit.entry, linkTarget: null };
+          const json = JSON.stringify(hit);
+          used += (agent ? Buffer.byteLength(JSON.stringify(json)) - 2 : Buffer.byteLength(json)) + 1;
+          if (used > limit) {
+            incomplete = true;
+            break;
+          }
+          hits.push(hit);
+        }
+        if (pending) ctx.progress({ items: pending });
+        if (incomplete) ctx.markPartial("Search limit reached");
+        return { hits, partial: incomplete };
+      },
+    };
+  }
+
+  // Scan preflight uses metadata only. Work uses the same snapshots so a fresh
+  // listing or stat cannot silently raise a remote read budget after approval.
+  async function prepareScan(input: RpcInput<"scan_start">, signal: AbortSignal) {
+    if (input.kind === "search") return prepareSearch(input, signal);
+    const location = (ref: ResourceRef) => ({ provider: endpoints.provider(ref.endpoint), path: ref.path });
+    if (input.kind === "checksum") {
+      const { provider, path } = location(input.ref);
+      const expected = await scanFile({ provider, path }, signal);
+      return {
+        planned: [estimateRead([expected])],
+        snapshot: [expected],
+        async work(ctx: ScanContext): Promise<ScanResult> {
+          const sha256 = await checksum(provider, path, ctx.signal, { ...scanHash(ctx), expected });
+          ctx.progress({ items: 1 });
+          return { sha256 };
+        },
+      };
+    }
+
+    const left = location(input.left);
+    const right = location(input.right);
+    if (input.kind === "files") {
+      const a = await scanFile(left, signal);
+      const b = await scanFile(right, signal);
+      return {
+        planned: input.mode === "size" || a.size !== b.size ? [0n, 0n] : [estimateRead([a]), estimateRead([b])],
+        snapshot: [a, b],
+        async work(ctx: ScanContext): Promise<ScanResult> {
+          const comparison = await compareFiles(left, right, input.mode, ctx.signal, { ...scanHash(ctx), expected: [a, b] });
+          ctx.progress({ items: 1 });
+          return { comparison };
+        },
+      };
+    }
+
+    const a = await scanDir(left, input.limit, signal);
+    const b = await scanDir(right, input.limit, signal);
+    return {
+      planned: input.by === "sha256" ? [estimateRead(a.entries), estimateRead(b.entries)] : [0n, 0n],
+      snapshot: [a, b],
+      async work(ctx: ScanContext): Promise<ScanResult> {
+        const equal: [Entry, Entry][] = [];
+        const diff = await compareDirs(left, right, input, ctx.signal, {
+          ...scanHash(ctx), listings: [a, b], onItem: () => ctx.progress({ items: 1 }),
+          onEqual: (left, right) => equal.push([left, right]),
+        });
+        if (diff.partial) ctx.markPartial("Directory entry limit reached");
+        return { ...diff, equal };
+      },
+    };
+  }
+
+  // S14a: every archive is copied to the server, so every open needs the owner's confirmed, one-time estimate.
+  // (No source is treated as "the server's own machine" until that is proven; the estimate then costs one click.)
+  async function openArchive(
+    source: ResourceRef, input: { estimateOnly?: boolean | undefined; estimateId?: string | undefined }, initiator: Initiator,
+    signal: AbortSignal, resumeId: string | null,
+  ) {
+    const { estimateOnly, estimateId } = input;
+    if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+    if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
+    // The source's own endpoint is prepared first, so a resumed archive reads through a ready provider.
+    await endpoints.prepare([source.endpoint], signal);
+    const entry = await endpoints.provider(source.endpoint).stat(source.path, signal);
+    if (!entry) throw new CommanderError("not_found", "The archive file does not exist");
+    if (entry.kind !== "file") throw new CommanderError("invalid_path", "The archive must be a regular file");
+    const request = JSON.stringify({ source, resumeId });
+    if (estimateOnly) {
+      const now = Date.now();
+      for (const [id, item] of archiveEstimates) if (now >= item.expires) archiveEstimates.delete(id);
+      if (archiveEstimates.size >= 32) throw refusal("conflict", "Archive estimate pool is full");
+      const id = planner.uuid();
+      archiveEstimates.set(id, { request, version: { size: entry.size, mtimeNs: entry.mtimeNs }, expires: now + 600_000 });
+      return { estimateId: id, bytesPlanned: entry.size, source };
+    }
+    if (!estimateId) throw refusal("forbidden", "A remote archive requires a confirmed estimate");
+    const estimate = archiveEstimates.get(estimateId);
+    if (!estimate || Date.now() >= estimate.expires) {
+      archiveEstimates.delete(estimateId);
+      throw refusal("forbidden", "Archive estimate is missing or expired");
+    }
+    if (estimate.request !== request) throw refusal("forbidden", "Archive estimate does not match the request");
+    archiveEstimates.delete(estimateId);
+    if (estimate.version.size !== entry.size || estimate.version.mtimeNs !== entry.mtimeNs) {
+      throw refusal("conflict", "Archive changed; estimate again");
+    }
+    // The confirmed version travels into the copy and is checked there before the first byte is read.
+    const expect = estimate.version;
+    return resumeId ? deps.archives.manager.resume(resumeId, signal, { owner: true, expect })
+      : deps.archives.manager.open(source, signal, { owner: true, expect });
+  }
+
+  function requireScanEstimate(id: string, initiator: Initiator, request: string) {
+    const estimate = scanEstimates.get(id);
+    if (!estimate || Date.now() >= estimate.expires) {
+      scanEstimates.delete(id);
+      throw refusal("forbidden", "Scan estimate is missing or expired");
+    }
+    if (!ownedBy(initiator, estimate.initiator) || estimate.request !== request) {
+      throw refusal("forbidden", "Scan estimate does not match the request");
+    }
+    return estimate;
+  }
+
+  async function checkScanRead(initiator: Initiator, paths: ResourceRef[]) {
+    if (initiator.kind === "owner") return;
+    const rows = await grants.forThread(initiator.threadId);
+    if (paths.some((ref) => !covers(effectiveGrants(rows, ref.endpoint), ref, "read"))) {
+      throw refusal("forbidden", "Path is outside the agent's grant");
+    }
+  }
+
+  async function startScan(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal,
+    onStarted?: (id: string) => void, estimateScope?: "edit") {
+    signal.throwIfAborted();
+    const paths = input.kind === "search" ? [input.root]
+      : input.kind === "checksum" ? [input.ref] : [input.left, input.right];
+    const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
+    await checkScanRead(initiator, paths);
+    await deps.ready();
+    const remote = ids.some((id) => id.startsWith("sftp:"));
+    const { estimateId, estimateOnly, ...scan } = input;
+    const request = JSON.stringify(estimateScope ? { scope: estimateScope, scan } : scan);
+    if (!estimateOnly && remote && !estimateId && input.kind === "search" && input.content) {
+      throw new SearchConsentError();
+    }
+    if (!estimateOnly && remote && !estimateId && input.kind !== "search") {
+      throw refusal("forbidden", "A remote scan requires a confirmed estimate");
+    }
+    if (!estimateOnly && estimateId) requireScanEstimate(estimateId, initiator, request);
+    await endpoints.prepare(ids, signal);
+    const { planned, snapshot, work } = await prepareScan(input, signal);
+    const bytes = planned.reduce((total, count) => total + count, 0n);
+    // S16: the checksum preflight only measures the prospective editor copy.
+    if (estimateScope === "edit") checkEditSize(bytes.toString());
+    const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+    return serializeAccess(async () => {
+      await checkScanRead(initiator, paths);
+      await deps.ready();
+      signal.throwIfAborted();
+      if (estimateOnly) {
+        const now = Date.now();
+        for (const [id, estimate] of scanEstimates) {
+          if (now >= estimate.expires) scanEstimates.delete(id);
+        }
+        // Keep estimate issuance bounded and prevent agents from evicting owner estimates.
+        const ownPool = [...scanEstimates].filter(([, item]) => item.initiator.kind === initiator.kind);
+        const poolLimit = initiator.kind === "owner" ? 32 : 64;
+        if (ownPool.length >= poolLimit) throw refusal("conflict", "Scan estimate pool is full");
+        if (initiator.kind === "agent" && ownPool.filter(([, item]) => ownedBy(initiator, item.initiator)).length >= 16) {
+          throw refusal("conflict", "Thread scan estimate pool is full");
+        }
+        const id = planner.uuid();
+        scanEstimates.set(id, { initiator, request, snapshot: snapshotDigest, expires: now + 600_000 });
+        const byEndpoint = new Map<string, bigint>();
+        paths.forEach(({ endpoint }, index) => {
+          byEndpoint.set(endpoint, (byEndpoint.get(endpoint) ?? 0n) + planned[index]);
+        });
+        return { estimateId: id, bytesPlanned: bytes.toString(),
+          bytesByEndpoint: [...byEndpoint].map(([endpoint, count]) => ({ endpoint, bytesPlanned: count.toString() })) };
+      }
+      if (estimateId) {
+        const estimate = requireScanEstimate(estimateId, initiator, request);
+        scanEstimates.delete(estimateId);
+        if (estimate.snapshot !== snapshotDigest) throw refusal("conflict", "Scan metadata changed; estimate again");
+      }
+      const job = deps.scans.start({
+        kind: input.kind === "search" ? "search" : input.kind === "checksum" ? "checksum" : "compare",
+        initiator, endpoints: ids, bytesPlanned: input.kind === "search" && !(remote && input.content) ? null : bytes,
+      }, (ctx) => work(ctx, initiator));
+      onStarted?.(job.id);
+      return scanJobView(job);
+    });
+  }
+
   return {
+    // S16
+    async edit() {
+      await deps.ready();
+      if (!deps.edit) throw refusal("not_found", "Commander editor is unavailable");
+      return deps.edit;
+    },
+    async editEstimate({ ref }: RpcInput<"edit_estimate">, signal: AbortSignal) {
+      const quote = await startScan({ kind: "checksum", ref, estimateOnly: true }, owner, signal, undefined, "edit");
+      if (!("estimateId" in quote)) throw refusal("conflict", "Commander could not estimate the copy");
+      return { estimateId: quote.estimateId, endpoint: ref.endpoint, bytesPlanned: quote.bytesPlanned };
+    },
+    async editOpen(input: RpcInput<"edit_open">, signal: AbortSignal) {
+      return (await this.edit()).open(input, signal, (id, ref, entry) => {
+        const request = JSON.stringify({ scope: "edit", scan: { kind: "checksum", ref } });
+        const estimate = requireScanEstimate(id, owner, request);
+        scanEstimates.delete(id);
+        const actual = createHash("sha256").update(JSON.stringify([entry])).digest("hex");
+        if (estimate.snapshot !== actual) throw refusal("conflict", "Файл изменился — подтвердите новую оценку");
+      });
+    },
     async endpointsList(initiator: Initiator, signal: AbortSignal) {
       const endpointsList = await endpoints.list(signal);
       if (initiator.kind === "owner") return { endpoints: endpointsList };
       const rows = await grants.forThread(initiator.threadId);
-      return { endpoints: endpointsList.filter(({ id }) => rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
+      // S14a: an agent never sees an archive endpoint or an archive's name, whatever its grants say.
+      return { endpoints: endpointsList.filter(({ id }) => !id.startsWith("archive:") && rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
     },
     async home(id: string, signal: AbortSignal) {
       await endpoints.prepare([id], signal);
+      await recoverLocalCopies(id, signal);
       return { path: endpoints.home(id) };
     },
     async list(input: RpcInput<"dir_list">, initiator: Initiator, signal: AbortSignal) {
       const { ref, cursor, limit } = input;
       await checkMetadata(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
+      if (initiator.kind === "owner" && cursor === null) await recoverLocalCopies(ref.endpoint, signal);
       return endpoints.provider(ref.endpoint).list(ref.path, { cursor, limit }, signal);
     },
     async stat(ref: ResourceRef, initiator: Initiator, signal: AbortSignal) {
       await checkMetadata(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
       return endpoints.provider(ref.endpoint).stat(ref.path, signal);
+    },
+    async read(input: RpcInput<"file_read">, initiator: Initiator, signal: AbortSignal) {
+      const { ref, offset, length, mode, expect } = input;
+      await checkRead(initiator, ref);
+      await endpoints.prepare([ref.endpoint], signal);
+      const window = await readForView(endpoints.provider(ref.endpoint), ref.path,
+        { offset: toBig(offset), length, ...(expect ? { expect } : {}) }, signal);
+      return replyFor(window, mode, initiator.kind === "agent" ? "agent" : "owner");
     },
     async createPlan(input: RpcInput<"plan_create">, initiator: Initiator, signal: AbortSignal) {
       const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
@@ -253,6 +644,10 @@ export function createOperations(deps: {
       }
       const rows = initiator.kind === "agent" ? await grants.forThread(initiator.threadId) : [];
       const restricted = initiator.kind === "agent" && paths.some((ref) => !canObserve(rows, ref));
+      // S14a: an agent never plans over an archive, whatever its grants say; the answer is the usual planning refusal.
+      if (initiator.kind === "agent" && paths.some(({ endpoint }) => endpoint.startsWith("archive:"))) {
+        throw refusal("forbidden", "Commander planning failed outside the metadata grant");
+      }
       try {
         if (input.sources.length > limits.maxItems) throw refusal("invalid", "Selection exceeds the plan item limit");
         await endpoints.prepare(paths.map(({ endpoint }) => endpoint), signal);
@@ -263,6 +658,33 @@ export function createOperations(deps: {
         if (restricted) throw refusal("forbidden", "Commander planning failed outside the metadata grant");
         throw error;
       }
+    },
+    // S13: use the same bounded scan and estimate as directory comparison when remote bytes are needed.
+    async createSync(input: RpcInput<"sync_create">, initiator: Initiator, signal: AbortSignal) {
+      const { estimateId, ...request } = input;
+      const paths = [request.left, request.right];
+      const ids = [...new Set(paths.map(({ endpoint }) => endpoint))];
+      await checkScanRead(initiator, paths);
+      await deps.ready();
+      await endpoints.prepare(ids, signal);
+      const compared = request.by === "sha256" && ids.some((id) => id.startsWith("sftp:"))
+        ? await this.scanTool({
+          kind: "dirs", left: request.left, right: request.right, by: request.by,
+          mtimeToleranceMs: 0, limit: LIST_PAGE_MAX, estimateId,
+        }, initiator, signal)
+        : undefined;
+      if (compared !== undefined && (!compared || !("onlyLeft" in compared))) {
+        throw refusal("conflict", "Directory comparison is unavailable");
+      }
+      const limits = initiator.kind === "agent" ? { ...planner.limits, maxItems: maxAgentPlanItems } : planner.limits;
+      const sync = await buildSyncPlan(request, { ...planner, initiator, limits, compared }, signal);
+      return serializeAccess(async () => {
+        await checkScanRead(initiator, paths);
+        signal.throwIfAborted();
+        const [first, ...rest] = [...sync.copies, ...(sync.deletes ? [sync.deletes] : [])];
+        if (first) remember(first, ...rest);
+        return sync;
+      });
     },
     async runPlan({ planId, digest }: RpcInput<"plan_run">, initiator: Initiator, signal: AbortSignal) {
       await deps.ready();
@@ -284,10 +706,14 @@ export function createOperations(deps: {
             throw new CommanderError("limit_exceeded", "Commander approval queue is full");
           }
         }
+        // S13: record a stale deletion plan as a conflict before the runner can
+        // remove even an unrelated item. Copies keep the runner's per-item checks.
+        const checked = plan.syncId && !awaitsOwner ? await revalidate(plan, planner, signal) : undefined;
+        const syncDeleteConflict = plan.kind === "delete" && checked?.ok === false ? checked.changed[0] : undefined;
         signal.throwIfAborted();
         if (plans.get(planId) !== entry) throw refusal("conflict", "Plan is no longer available");
         plans.delete(planId);
-        return runner.submit(plan, { awaitsOwner });
+        return runner.submit(plan, { awaitsOwner, syncDeleteConflict });
       });
     },
     async jobs(input: RpcInput<"job_list">) {
@@ -307,6 +733,28 @@ export function createOperations(deps: {
       const job = await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
       await requestCancel(job);
       return {};
+    },
+    // S17: план повтора принадлежит запрашивающему, поэтому plan_run проверит его гранты.
+    async retry(id: string, initiator: Initiator, signal: AbortSignal) {
+      await deps.ready();
+      const job = await requireJob(id, initiator.kind === "agent" ? initiator : undefined);
+      if (initiator.kind === "agent") {
+        // S13: retry revalidates the counterpart, so read access must still cover it.
+        await checkScanRead(initiator, job.plan.items.flatMap(({ requireAbsent }) => requireAbsent ? [requireAbsent] : []));
+        // Grants are checked on the job's own items before reconciliation may write anything.
+        const rows = await grants.forThread(initiator.threadId);
+        if (!authorize(initiator, job.plan, operationGrants(rows, job.plan)).ok || !unknownTargetsWritable(rows, job)) {
+          throw refusal("forbidden", "Commander planning failed outside the metadata grant");
+        }
+      }
+      signal.throwIfAborted();
+      if (job.plan.sourceEndpoint === EDIT_SNAPSHOT_ENDPOINT) {
+        throw refusal("conflict", "Откройте сеанс правки, чтобы записать актуальную редакцию");
+      }
+      const retry = await runner.retryJob(id, initiator, signal);
+      signal.throwIfAborted();
+      if (retry.plan) remember(retry.plan);
+      return { plan: retry.plan, excluded: retry.excluded };
     },
     async decide({ jobId, ...decision }: RpcInput<"job_decide">, signal: AbortSignal) {
       await deps.ready();
@@ -368,6 +816,104 @@ export function createOperations(deps: {
         await requestCancel(job);
       }
     },
+    async scanStart(raw: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
+      if (raw.kind !== "search" || !raw.clientRequestId) return startScan(raw, initiator, signal);
+      const { clientRequestId, ...input } = raw;
+      const receipt = searchRequest(clientRequestId, initiator);
+      receipt.controller.signal.throwIfAborted();
+      const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      if (receipt.digest !== undefined && receipt.digest !== digest) {
+        throw refusal("conflict", "Search request id does not match the request");
+      }
+      receipt.digest = digest;
+      const previous = receipt.attempt;
+      if (previous) {
+        try { return await previous; }
+        catch (error) {
+          // The direct HTTP request can disconnect while a fallback caller is waiting.
+          if (receipt.attempt === previous || signal.aborted || receipt.controller.signal.aborted) throw error;
+        }
+      }
+      if (!receipt.attempt) {
+        const combined = AbortSignal.any([signal, receipt.controller.signal]);
+        receipt.pending = true;
+        receipt.attempt = startScan(input, initiator, combined, (scanId) => { receipt.scanId = scanId; })
+          .finally(() => {
+            receipt.pending = false;
+            receipt.expires = Date.now() + searchReceiptLifetime;
+            if (signal.aborted && !receipt.controller.signal.aborted && !receipt.scanId) receipt.attempt = undefined;
+          });
+      }
+      return receipt.attempt;
+    },
+    scanGet(id: string) {
+      const job = deps.scans.get(id);
+      if (!job) return null;
+      const result = deps.scans.result<ScanResult>(id);
+      return { job: scanJobView(job), result,
+        ...(job.state === "done" && result === null ? { reason: "result_expired" as const } : {}) };
+    },
+    scanCancel(input: RpcInput<"scan_cancel">, initiator: Initiator) {
+      if ("scanId" in input) deps.scans.cancel(input.scanId);
+      else {
+        const receipt = searchRequest(input.clientRequestId, initiator);
+        receipt.controller.abort(cancelledSearch());
+        receipt.expires = Date.now() + searchReceiptLifetime;
+        if (receipt.scanId) deps.scans.cancel(receipt.scanId);
+      }
+      return {};
+    },
+    async scanTool(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal) {
+      const started = await this.scanStart(input, initiator, signal);
+      if (!("id" in started)) return started;
+      const cancel = () => deps.scans.cancel(started.id);
+      signal.addEventListener("abort", cancel, { once: true });
+      if (signal.aborted) cancel();
+      try {
+        await deps.scans.wait(started.id);
+        signal.throwIfAborted();
+        const job = deps.scans.get(started.id);
+        if (job?.error) throw job.error;
+        if (job?.state !== "done") throw refusal("conflict", "Commander scan did not complete");
+        const result = deps.scans.result<ScanResult>(started.id);
+        if (input.kind === "search") await checkScanRead(initiator, [input.root]);
+        signal.throwIfAborted();
+        if (result && "onlyLeft" in result) {
+          const safe = (entry: (typeof result.onlyLeft)[number]) => ({ ...entry, linkTarget: null });
+          const { equal: _equal, ...diff } = result;
+          return { ...diff, onlyLeft: result.onlyLeft.map(safe), onlyRight: result.onlyRight.map(safe),
+            differ: result.differ.map(([left, right]): [Entry, Entry] => [safe(left), safe(right)]) };
+        }
+        return result;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
+    // S14: owner-only. An archive is opened as a read-only panel; its password comes from the owner's dialog.
+    async archiveOpen(input: RpcInput<"archive_open">, initiator: Initiator, signal: AbortSignal) {
+      return openArchive(input.source, input, initiator, signal, null);
+    },
+    async archiveResume(input: RpcInput<"archive_resume">, initiator: Initiator, signal: AbortSignal) {
+      if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+      if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
+      const source = deps.archives.manager.sourceOf(input.archiveId);
+      if (!source) throw new CommanderError("not_found", "Archive is no longer available");
+      const opened = await openArchive(source, input, initiator, signal, input.archiveId);
+      // Jobs that waited for this archive's copy go on from their checkpoints.
+      if ("endpoint" in opened) void runner.recover().catch(() => undefined);
+      return opened;
+    },
+    async archiveClose(archiveId: string) {
+      await deps.archives?.manager.close(archiveId);
+      return {};
+    },
+    archivePassword(archiveId: string, password: string) {
+      return { accepted: deps.archives?.gate.provide(archiveId, password) === "accepted" };
+    },
+    archivePasswordCancel(archiveId: string) {
+      deps.archives?.gate.cancel(archiveId);
+      return {};
+    },
     listGrants: grants.list,
     setGrant: (grant: AgentGrant) => changeGrants(grant.threadId, () => grants.set(grant)),
     revokeGrant: (key: GrantKey) => changeGrants(key.threadId, () => grants.revoke(key)),
@@ -388,18 +934,97 @@ function agentJobView(job: OperationJob, grants: AgentGrant[]) {
   return damaged(job) ?? (visible ? { ...summary, progress: job.progress, initiator: job.plan.initiator } : summary);
 }
 
+// S11: decode incrementally, keep only a short prefix and a query-sized overlap.
+const matchSearchContent: NonNullable<SearchContext["matchContent"]> = async (provider, hit, content, ctx) => {
+  const { signal } = ctx;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const fold = (value: string) => content.caseSensitive ? value : value.toLowerCase();
+  const needle = fold(content.text);
+  const size = toBig(hit.entry.size);
+  const version = { size: hit.entry.size, mtimeNs: hit.entry.mtimeNs };
+  let number = 1, prefix = "", tail = "", matched = false;
+  let first: SearchHit["line"];
+  const finishLine = () => {
+    if (!first && matched) first = { number, text: [...prefix.replace(/\r$/, "")].slice(0, 200).join("") };
+    number++;
+    prefix = tail = "";
+    matched = false;
+  };
+  for (let offset = 0n; offset < size;) {
+    signal.throwIfAborted();
+    const length = Number(size - offset < 65_536n ? size - offset : 65_536n);
+    const chunk = await provider.read(hit.ref.path, offset, length, version, signal);
+    signal.throwIfAborted();
+    if (chunk.byteLength !== length) {
+      throw new CommanderError("changed_since_plan", "Search file changed during reading");
+    }
+    offset += BigInt(chunk.byteLength);
+    ctx.progress({ bytes: BigInt(chunk.byteLength) });
+    let text: string;
+    try { text = decoder.decode(chunk, { stream: offset < size }); }
+    catch { return undefined; }
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) return undefined;
+    if (first) continue;
+    const lines = text.split("\n");
+    for (let index = 0; index < lines.length && !first; index++) {
+      const part = lines[index];
+      if (prefix.length < 400) prefix = (prefix + part).slice(0, 400);
+      const window = tail + fold(part);
+      matched ||= window.includes(needle);
+      tail = needle.length > 1 ? window.slice(1 - needle.length) : "";
+      if (index < lines.length - 1) finishLine();
+    }
+  }
+  finishLine();
+  return first;
+};
+
+function scanHash(ctx: ScanContext) {
+  return {
+    onBytes: (bytes: bigint) => ctx.progress({ bytes }),
+    createHash() {
+      const hash = createHash("sha256");
+      return { update: (bytes: Uint8Array) => { hash.update(bytes); }, finish: () => hash.digest("hex") };
+    },
+  };
+}
+
+// The owner sees a file that changed while it was viewed as a conflict whose message carries the
+// internal code, so the viewer can tell it apart from other conflicts.
+function changedRefusal(error: unknown): never {
+  if (isCommanderError(error) && error.code === "changed_since_plan") {
+    throw refusal("conflict", JSON.stringify({ code: error.code, message: error.message }));
+  }
+  throw error;
+}
+
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
   const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> = {
+    // S16: the wrapper below admits only owner clients for every editor method.
+    edit_estimate: (input, ctx) => ops.editEstimate(input, ctx.experimental_signal),
+    edit_open: (input, ctx) => ops.editOpen(input, ctx.experimental_signal),
+    edit_route: async (input, ctx) => (await ops.edit()).route(input, ctx.experimental_signal),
+    edit_get: async (input, ctx) => (await ops.edit()).get(input, ctx.experimental_signal),
+    edit_read: async (input, ctx) => (await ops.edit()).read(input, ctx.experimental_signal),
+    edit_save: async (input, ctx) => (await ops.edit()).save(input, ctx.experimental_signal),
+    edit_writeback: async (input, ctx) => (await ops.edit()).writeBack(input, ctx.experimental_signal),
+    edit_compare: async (input, ctx) => (await ops.edit()).compare(input, ctx.experimental_signal),
+    edit_dismiss: async (input, ctx) => (await ops.edit()).dismiss(input, ctx.experimental_signal),
+    edit_close: async (input, ctx) => (await ops.edit()).close(input, ctx.experimental_signal),
     endpoints_list: (_, ctx) => ops.endpointsList(owner, ctx.experimental_signal),
     endpoint_home: ({ endpoint }, ctx) => ops.home(endpoint, ctx.experimental_signal),
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),
     entry_stat: ({ ref }, ctx) => ops.stat(ref, owner, ctx.experimental_signal),
+    file_read: (input, ctx) => ops.read(input, owner, ctx.experimental_signal).catch(changedRefusal),
+    sync_create: (input, ctx) => ops.createSync(input, owner, ctx.experimental_signal),
     plan_create: (input, ctx) => ops.createPlan(input, owner, ctx.experimental_signal),
     plan_run: (input, ctx) => ops.runPlan(input, owner, ctx.experimental_signal),
     job_list: (input) => ops.jobs(input),
     job_get: ({ jobId }) => ops.job(jobId),
     job_decide: (input, ctx) => ops.decide(input, ctx.experimental_signal),
     job_cancel: ({ jobId }) => ops.cancel(jobId, owner),
+    // S17: повтор невыполненного из очереди.
+    job_retry: ({ jobId }, ctx) => ops.retry(jobId, owner, ctx.experimental_signal),
     plan_check: (input, ctx) => ops.checkPlan(input, ctx.experimental_signal),
     plan_approve: (input, ctx) => ops.approve(input, ctx.experimental_signal),
     plan_reject: (input) => ops.reject(input),
@@ -409,6 +1034,14 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     sftp_request_access: (input, ctx) => ops.requestAccess(input, ctx.experimental_signal),
     ui_state_get: ({ threadId }) => ops.getState(threadId),
     ui_state_set: ({ state, threadId }) => ops.setState(state, threadId),
+    scan_start: (input, ctx) => ops.scanStart(input, owner, ctx.experimental_signal),
+    scan_get: ({ scanId }) => ops.scanGet(scanId),
+    scan_cancel: (input) => ops.scanCancel(input, owner),
+    archive_open: (input, ctx) => ops.archiveOpen(input, owner, ctx.experimental_signal),
+    archive_resume: (input, ctx) => ops.archiveResume(input, owner, ctx.experimental_signal),
+    archive_close: ({ archiveId }) => ops.archiveClose(archiveId),
+    archive_password: ({ archiveId, password }) => ops.archivePassword(archiveId, password),
+    archive_password_cancel: ({ archiveId }) => ops.archivePasswordCancel(archiveId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;

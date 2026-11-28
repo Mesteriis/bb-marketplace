@@ -330,7 +330,7 @@
     {
       "id": "makosh-commander",
       "displayName": "Makosh Commander [Experimental]",
-      "description": "Two-pane file manager for local files and SFTP via Remote Hub, with transfer plans, a job queue, a thread tab, CLI and agent tools.",
+      "description": "Two-pane file manager for local files and SFTP: copy, sync, search, batch rename, archive extract, F4 edit, job queue, CLI and agent tools.",
       "icon": {
         "url": "./plugins/commander/assets/icon.svg"
       },

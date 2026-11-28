@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { CommanderErrorShape } from "./errors.ts";
+import { CommanderErrorShape, ErrorCode, ErrorReason, reasonAllowed } from "./errors.ts";
 import { NameSegment, ResourcePath, canonicalBase64, isAncestorOrSelf } from "./path.ts";
 import { Size, toBig } from "./size.ts";
 
-export const ProviderKind = z.enum(["local", "sftp"]);
+export const ProviderKind = z.enum(["local", "sftp", "archive"]);
 export type ProviderKind = z.infer<typeof ProviderKind>;
-export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|sftp:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+export const EndpointId = z.string().regex(/^(host:[A-Za-z0-9_-]{1,64}|(sftp|archive):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
 export type EndpointId = z.infer<typeof EndpointId>;
 export const Endpoint = z.object({
   id: EndpointId,
@@ -66,7 +66,7 @@ export const Initiator = z.discriminatedUnion("kind", [
 ]);
 export type Initiator = z.infer<typeof Initiator>;
 
-export const OperationKind = z.enum(["copy", "move", "rename", "mkdir", "delete"]);
+export const OperationKind = z.enum(["copy", "move", "rename", "mkdir", "delete", "pack"]);
 export type OperationKind = z.infer<typeof OperationKind>;
 export const ConflictPolicy = z.enum(["ask", "overwrite", "skip", "rename", "overwriteIfNewer"]);
 export type ConflictPolicy = z.infer<typeof ConflictPolicy>;
@@ -85,6 +85,7 @@ export const PlanItem = z.object({
   kind: EntryKind,
   fingerprint: Fingerprint.nullable(),     // источника на момент плана; null для mkdir
   expectTarget: ExpectedTarget.nullable(), // цели на момент плана; null ровно когда нет цели
+  requireAbsent: ResourceRef.optional(),   // отсутствующий путь на противоположной стороне sync-delete
 }).strict().superRefine((item, ctx) => {
   if ((item.target === null) !== (item.expectTarget === null)) {
     ctx.addIssue({ code: "custom", path: ["expectTarget"], message: "expectTarget is set exactly when there is a target" });
@@ -95,6 +96,7 @@ export type PlanItem = z.infer<typeof PlanItem>;
 // The plain shape. Refinements are added below; zod 4 forbids .omit() on a refined object.
 const OperationPlanBase = z.object({
   id: z.string().uuid(),
+  syncId: z.string().uuid().optional(),
   kind: OperationKind,
   createdAt: z.string().datetime(),
   initiator: Initiator,
@@ -110,6 +112,14 @@ const OperationPlanBase = z.object({
 }).strict();
 
 export const OperationPlan = OperationPlanBase.superRefine((plan, ctx) => {
+  if (plan.kind !== "delete" || !plan.syncId) {
+    plan.items.forEach((item, index) => {
+      if (item.requireAbsent) ctx.addIssue({
+        code: "custom", path: ["items", index, "requireAbsent"],
+        message: "An absence condition requires a synchronization deletion plan",
+      });
+    });
+  }
   // targetDir is the destination of copy, move and mkdir; delete and rename have none.
   const needsTargetDir = plan.kind === "mkdir" || plan.kind === "copy" || plan.kind === "move";
   if (needsTargetDir !== (plan.targetDir !== null)) {
@@ -195,7 +205,11 @@ export const OperationJob = z.object({
   currentItem: z.number().int().min(0).nullable(),
   pendingConflict: Conflict.nullable(),
   awaitsOwner: z.boolean(),               // план агента вне гранта или с удалением: ждёт plan_approve (S7)
-  items: z.array(z.object({ outcome: ItemOutcome, error: z.string().max(500).nullable() }).strict()),
+  // code and reason of a failed item travel as literals (S14: unsupported/link_not_supported), next to the message.
+  items: z.array(z.object({
+    outcome: ItemOutcome, error: z.string().max(500).nullable(), code: ErrorCode.optional(), reason: ErrorReason.optional(),
+  }).strict().refine((item) => item.reason === undefined || (item.code !== undefined && reasonAllowed(item.code, item.reason)),
+    { message: "reason is not allowed for this code" })),
   error: CommanderErrorShape.nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

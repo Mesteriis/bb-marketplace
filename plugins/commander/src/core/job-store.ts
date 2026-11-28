@@ -1,3 +1,5 @@
+// S16: submitting a writeback can attach a durable receipt to job creation.
+import type { WriteBackRequest } from "./edit-session.ts";
 import type { Fingerprint, JobState, OperationJob } from "./model.ts";
 import type { ResourcePath } from "./path.ts";
 import type { Size } from "./size.ts";
@@ -23,10 +25,15 @@ export interface Checkpoint {
   writing?: { offset: Size; length: number };
   /** Saved by recovery before it removes a temp, so a repeated recovery may rely on it. */
   cleanup?: { tempPath: ResourcePath; tempFingerprint: Fingerprint };
+  /**
+   * Saved right before session.commit, only for jobs with an archive source and for pack (S14).
+   * After a lost commit answer it is the proof of what was meant to be published.
+   */
+  commitIntent?: { size: Size; sha256: string; tempFingerprint: Fingerprint };
 }
 
 export interface JobStore {
-  create(job: OperationJob): Promise<void>;
+  create(job: OperationJob, editWriteBack?: WriteBackRequest): Promise<void>;
   get(id: string): Promise<OperationJob | null>;
   /** A thread ID scopes the page to that agent; "*" selects agent jobs across threads. */
   list(filter: { states?: JobState[]; limit: number; threadId?: string }): Promise<OperationJob[]>;

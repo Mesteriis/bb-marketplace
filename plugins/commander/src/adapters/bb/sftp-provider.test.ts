@@ -67,7 +67,7 @@ function tempName(session: SftpWriteSession): string {
 
 describe("contract and capabilities", () => {
   it("exports the contract id it mirrors and declares only the stage-one capabilities", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@e1b0d502");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@271406d0");
     const { provider } = setup();
     expect([...provider.capabilities].sort()).toEqual(["list", "mkdir", "read", "remove", "rename", "seek", "stat", "write"]);
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
@@ -100,6 +100,37 @@ describe("consent, host key, access", () => {
     const { mock, provider } = setup({ hostKey: "changed" });
     await expectCode(provider.stat(at("etc"), signal()), "host_key_rejected");
     expect(mock.opCount("op:stat")).toBe(0);
+  });
+
+  it.each([
+    ["list", "host_key_changed", "open"],
+    // Direct host-key refusals from an operation are synthetic contract cases.
+    ["list", "host_key_changed", "op"],
+    ["stat", "host_key_unknown", "open"],
+    ["write", "host_key_changed", "op"],
+    ["write", "host_key_unknown", "open"],
+  ] as const)("rejects %s on a cached provider after %s from %s", async (operation, code, via) => {
+    const { mock, provider } = setup();
+    const opts = { cursor: null, limit: 10 };
+    await expect(provider.list(at(), opts, signal())).resolves.toMatchObject({ cursor: null });
+
+    const call = mock.call.bind(mock);
+    const portCall = vi.spyOn(mock, "call").mockImplementation((method, input, sig) => {
+      if (method === (via === "open" ? "hub_sftp_open" : "hub_sftp_op")) {
+        return Promise.reject(new SftpRefusal(code));
+      }
+      return call(method, input, sig);
+    });
+    if (via === "open") mock.expireChannels();
+
+    const result = operation === "write" ? openWrite(provider, at("f.txt"), signal())
+      : operation === "stat" ? provider.stat(at(), signal()) : provider.list(at(), opts, signal());
+    const error = await expectCode(result, "host_key_rejected");
+    expect(error.retryable).toBe(false);
+    if (via === "open") {
+      expect(portCall.mock.calls.map(([method]) => method)).toEqual(["hub_sftp_op", "hub_sftp_open"]);
+    }
+    expect(mock.appliedCount("write")).toBe(0);
   });
 
   it("access refused by the server is permission_denied", async () => {
@@ -664,6 +695,7 @@ describe("error mapping", () => {
     ["profile_needs_config", "unsupported", false],
     ["agent_unavailable", "auth_failed", false],
     ["keychain_locked", "auth_failed", false],
+    ["keychain_unavailable", "auth_failed", false],
     ["keychain_needs_approval", "auth_failed", false],
     ["credential_missing", "auth_failed", false],
     ["auth_failed", "auth_failed", false],
@@ -703,7 +735,7 @@ describe("error mapping", () => {
 
   it("the tables cover every refusal code of the contract", () => {
     expect([...TABLE.map(([code]) => code), ...MUTATION_ONLY].sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
-    expect(TABLE).toHaveLength(23);
+    expect(TABLE).toHaveLength(24);
   });
 
   it.each(TABLE)("refusal %s on a read is %s (retryable %s), with no leaked text", async (code, expected, retryable) => {

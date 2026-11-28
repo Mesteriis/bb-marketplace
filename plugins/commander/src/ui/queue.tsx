@@ -1,23 +1,54 @@
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { OperationJob } from "../core/model.ts";
-import { displayPath } from "../core/path.ts";
+import { displayPath, join, parent } from "../core/path.ts";
+import { tempNameFor } from "../core/reconcile.ts";
+import { parentSkipNote } from "../core/retry-note.ts";
 import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type Problem } from "./model.ts";
+import { archiveReasonText } from "./archive-text.ts";
 import { ProblemLine } from "./pane.tsx";
-import { approvalState, operationText, reasonText, ru, stateText } from "./strings.ts";
+import { approvalState, batchRenameText, operationText, reasonText, ru, stateText } from "./strings.ts";
+
+/** A finished batch rename that left items pending: those were returned to their places, not renamed. */
+export function returnedPendingNote(job: OperationJob): boolean {
+  const finished = job.state === "completed" || job.state === "failed" || job.state === "unknown" || job.state === "cancelled";
+  return finished && job.plan.kind === "rename" && job.plan.items.length > 1 && job.items.some(({ outcome }) => outcome === "pending");
+}
+
+/**
+ * Owner-only: where an unconfirmed batch item may still hold its temporary name. Only
+ * unknown items get a hint, and only batch renames (a single rename has no temporary names).
+ */
+export function tempNameHint(job: OperationJob): string | null {
+  if (job.plan.kind !== "rename" || job.plan.items.length < 2) return null;
+  const paths = job.items.flatMap((item, index) => {
+    const dir = parent(job.plan.items[index].source!.path);
+    return item.outcome === "unknown" && dir ? [displayPath(join(dir, tempNameFor(job.id, index)))] : [];
+  });
+  return paths.length ? batchRenameText.tempNames(paths) : null;
+}
 
 const plurals = new Intl.PluralRules("ru");
 const pluralIndex = { one: 0, few: 1, many: 2, other: 2, two: 2, zero: 2 } as const;
 const cancellable = new Set(["pending", "running", "awaiting_decision", "interrupted"]);
+// S17: те же конечные состояния, что принимает ядро повтора.
+const retryable = new Set(["completed", "failed", "cancelled", "unknown"]);
+// Items a retry can still act on: unfinished, or skipped only because of a directory above them.
+const hasUnfinished = (job: OperationJob) => job.items.some(({ outcome, error }) => outcome === "failed" || outcome === "pending"
+  || outcome === "unknown" || (outcome === "skipped" && error === parentSkipNote));
+/** S17: the result of the last retry request for a job: nothing to retry, or files waiting for a check. */
+export type RetryNote = { kind: "nothing" } | { kind: "waiting"; count: number };
 const stateIcons = {
   pending: "Clock", approval: "Lock", running: "Play", awaiting_decision: "CircleQuestion",
   completed: "CircleCheck", failed: "AlertTriangle", cancel_requested: "Clock",
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, retryNotes, onConfirmArchive }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  onRetry?: (job: OperationJob) => void; retryNotes?: Record<string, RetryNote>;
+  onConfirmArchive?: (job: OperationJob) => void;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -65,7 +96,16 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
     <div className="cm-meta">{progress.itemsDone} / {progress.itemsTotal}
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
-    {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
+    {job.error && <ProblemLine problem={{ code: job.error.code, message: (job.error.reason && archiveReasonText(job.error.code, job.error.reason)) || "" }} />}
+    {job.items.map((item, index) => {
+      const text = item.code && item.reason ? archiveReasonText(item.code, item.reason) : null;
+      const name = text ? job.plan.items[index]?.source?.path.segments.at(-1) : undefined;
+      return text ? <div key={index} className="cm-meta" role="note">{name ? displayPath({ segments: [name] }).replace(/^\//, "") + ": " : ""}{text}</div> : null;
+    })}
+    {tempNameHint(job) && <div className="cm-meta" role="note">{tempNameHint(job)}</div>}
+    {returnedPendingNote(job) && <div className="cm-meta" role="note">{batchRenameText.returnedPending}</div>}
+    {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"
+      ? ru.retryNothing : ru.retryWaitsForCheck((retryNotes[job.id] as { count: number }).count)}</div>}
     <div className="cm-actions">
       {conflict && <Button size="sm" data-conflict-id={conflict.id} onClick={() => onInspect(job)}>{ru.resolve}</Button>}
       {conflict && (conflict.allowedResolutions?.includes("skip") ?? true) &&
@@ -73,6 +113,10 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
+      {onConfirmArchive && job.error?.reason === "archive_copy" && (job.state === "interrupted" || job.state === "pending") && !job.awaitsOwner &&
+        <Button size="sm" onClick={() => onConfirmArchive(job)}>{ru.archive.confirmCopy}</Button>}
+      {onRetry && retryable.has(job.state) && hasUnfinished(job) && !job.awaitsOwner && !conflict &&
+        <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{ru.retryUnfinished}</Button>}
     </div>
   </article>;
 }
@@ -80,6 +124,12 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel }: {
 export type QueueProps = {
   jobs: JobView[]; endpoints: EndpointView[]; error: Problem | null; loading: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
+  /** S17: the last retry result, by job id. */
+  retryNotes?: Record<string, RetryNote>;
+  /** S17: optional, so a host without the retry wiring still renders the queue. */
+  onRetry?: (job: OperationJob) => void;
+  /** S14a: opens the question that lets a job wait for the copy of its archive go on. */
+  onConfirmArchive?: (job: OperationJob) => void;
 };
 export function Queue({ compact, open, selection, id, collapse, ...props }: QueueProps & {
   compact?: boolean; open: boolean; id: string; collapse?: () => void; selection: { count: number; size: string; destination: string; fullDestination: string };

@@ -1,19 +1,54 @@
-import { definePluginApp, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
-import { useCallback, useEffect, useRef, useState } from "react";
+// S16
+import { CommanderEditOpener, waitForEdit } from "./src/adapters/bb/edit-app.tsx";
+import { EDIT_OPENER } from "./src/core/wire/edit.ts";
+import type { SearchActions } from "./src/ui/search-panel.tsx";
+import { definePluginApp, experimental_PluginRpcCallError, experimental_usePluginId, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
+import { assembleImage, type ViewKind, type WireView } from "./src/core/preview.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { JobState, type ConflictAction, type Entry, type OperationJob, type OperationPlan, type ResourceRef } from "./src/core/model.ts";
-import { type UiState, type rpcSchemas } from "./src/core/wire/rpc.ts";
+import { rpcSchemas, type UiState } from "./src/core/wire/rpc.ts";
 import { Workspace } from "./src/ui/index.ts";
+import type { RetryNote } from "./src/ui/queue.tsx";
 import { activeTab, currentRef, emptyState, nativePath, newTab, problemOf, unloaded,
   type Directory, type EndpointView, type JobView, type PlanRequest, type Problem, type Side } from "./src/ui/model.ts";
 import { shortcuts, type KeyBindings, type Shortcut } from "./src/ui/keyboard.ts";
+import type { ScanActions } from "./src/ui/compare-view.tsx";
 import { ru } from "./src/ui/strings.ts";
 import "./src/ui/workspace.css";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcSchemas>>;
 type Sdk = ReturnType<typeof useSdk>;
+// S11: the pinned SDK cannot take a signal. Use HTTP cancellation when the
+// transport is available; both paths also accept a request-id cancellation.
+async function startSearch(rpc: Rpc, pluginId: string, input: Parameters<SearchActions["start"]>[0], signal: AbortSignal) {
+  let response: Response | undefined;
+  let envelope: { ok?: boolean; result?: unknown; error?: unknown } | null;
+  try {
+    response = await fetch(`/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/scan_start`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      signal,
+    });
+    signal.throwIfAborted();
+    if (response.status === 401 || response.status === 404) return rpc.call("scan_start", input);
+    envelope = await response.json();
+  } catch (error) {
+    signal.throwIfAborted();
+    // A successful status can arrive before a truncated JSON body. Reuse the
+    // same request id so the server can replay an already-created job.
+    if (!(error instanceof TypeError) && !(error instanceof SyntaxError && response?.status === 200)) throw error;
+    return rpc.call("scan_start", input);
+  }
+  signal.throwIfAborted();
+  if (!response.ok || envelope?.ok !== true) throw experimental_PluginRpcCallError.from(envelope?.error);
+  return rpcSchemas.scan_start.output.parse(envelope.result);
+}
+
 const delay = 250;
 let pendingWrite = Promise.resolve();
 const bindingsKey = "makosh-commander:key-bindings";
@@ -44,7 +79,9 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
   const second = endpoints.find((endpoint) => endpoint.id !== preferred?.id) ?? preferred;
   const initialize = async (pane: Side, source: EndpointView | undefined, threadPath?: string) => {
     const existing = activeTab(state, pane);
-    if (existing && endpoints.some((item) => item.id === existing.endpoint)) return state[pane];
+    // A saved archive panel stays even when its endpoint is not listed (the copy is gone after a restart): the
+    // panel asks the owner for a new estimate instead of being replaced by a home directory.
+    if (existing && (existing.endpoint.startsWith("archive:") || endpoints.some((item) => item.id === existing.endpoint))) return state[pane];
     if (!source) return emptyState[pane];
     let path;
     if (threadPath) path = parsePosix(threadPath);
@@ -97,14 +134,15 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
     return () => { active = false; mounted.current = false; flush(); };
   }, [rpc, sdk, environment, threadId, flush]);
 
-  const update = useCallback((change: (state: UiState) => UiState) => {
+  const update = useCallback((change: (state: UiState) => UiState, saveNow = false) => {
     const next = change(current.current);
     if (next === current.current) return;
     current.current = next;
     setState(next);
     dirty.current = true;
     clearTimeout(timer.current);
-    timer.current = setTimeout(flush, delay);
+    if (saveNow) flush();
+    else timer.current = setTimeout(flush, delay);
   }, [flush]);
 
   const refreshEndpoints = useCallback(async () => {
@@ -114,6 +152,9 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
   return { state, update, endpoints, problem, refreshEndpoints };
 }
 
+const PAGES_PER_SHOW = 10;
+const SHOW_MS = 100;
+
 function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number): Directory | undefined {
   const key = ref ? JSON.stringify(ref) : null;
   const [view, setView] = useState<{ key: string; directory: Directory } | null>(null);
@@ -121,28 +162,54 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
     if (!key) return;
     let active = true;
     const snapshot = JSON.parse(key) as ResourceRef;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // This attempt is over (whole or failed): its queued batch must not replace the final view. A later attempt at the
+    // same directory starts with its own flag, so an old error never holds it back.
+    let done = false;
     const read = async () => {
       const entries: Entry[] = [];
       const cursors = new Set<string>();
       let cursor: string | null = null;
+      let pending = 0;
+      // The panel merges what it is given into its sorted rows, so pages are handed over in batches: the first
+      // page at once, then every PAGES_PER_SHOW pages or SHOW_MS after the first unshown one, whichever is sooner,
+      // and the last page without waiting. A refresh keeps the complete old listing until the new one is whole.
+      const show = () => {
+        clearTimeout(timer);
+        timer = undefined;
+        pending = 0;
+        if (!active || done) return;
+        const partial = entries.slice();
+        setView((previous) => previous?.key === key && (!previous.directory.partial && !previous.directory.loading && !previous.directory.error)
+          ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
+      };
+      let shown = false;
       do {
         const page: { entries: Entry[]; cursor: string | null } = await rpc.call("dir_list", { ref: snapshot, cursor, limit: LIST_PAGE_MAX });
         if (!active) return;
-        entries.push(...page.entries);
+        for (const item of page.entries) entries.push(item);
         cursor = page.cursor;
         if (cursor !== null) {
           if (cursors.has(cursor) || entries.length >= 100_000 || cursors.size >= 1_000) {
             throw new CommanderError("limit_exceeded", ru.unknownError);
           }
           cursors.add(cursor);
+          if (!shown) { shown = true; show(); }
+          else if (++pending >= PAGES_PER_SHOW) show();
+          else timer ??= setTimeout(show, SHOW_MS);
         }
       } while (cursor !== null);
+      done = true;
+      clearTimeout(timer);
       if (active) setView({ key, directory: { entries, loading: false, error: null } });
     };
     void read().catch((error) => {
+      // A batch may be queued for display; it must not replace the error.
+      done = true;
+      clearTimeout(timer);
       if (active) setView({ key, directory: { entries: [], loading: false, error: problemOf(error) } });
     });
-    return () => { active = false; };
+    return () => { active = false; clearTimeout(timer); };
   }, [rpc, key, revision]);
   return key === null ? undefined : view?.key === key ? view.directory : unloaded;
 }
@@ -196,11 +263,50 @@ function useJobs(rpc: Rpc, revision: number) {
 
 function CommanderPage({ compact = false, environment, threadId }: { compact?: boolean; environment?: string; threadId?: string }) {
   const rpc = useRpc<typeof rpcSchemas>();
+  const pluginId = experimental_usePluginId();
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { state, update, endpoints, problem, refreshEndpoints } = useWorkspaceState(rpc, sdk, threadId, environment);
+  // A scan screen can close before scan_start returns. Keep one pending start
+  // for each kind, matching the two slots in the persisted workspace state.
+  const starting = useRef(new Set<"dirs" | "checksum">());
+  const [startingScans, setStartingScans] = useState<ReadonlySet<"dirs" | "checksum">>(() => new Set());
+  const scans = useMemo<ScanActions>(() => ({
+    async start(input) {
+      const { estimateOnly, estimateId: _estimateId, ...request } = input;
+      if (estimateOnly) return rpc.call("scan_start", input);
+      if (starting.current.has(request.kind)) throw new CommanderError("limit_exceeded", ru.busy);
+      starting.current.add(request.kind);
+      setStartingScans(new Set(starting.current));
+      try {
+        const reply = await rpc.call("scan_start", input);
+        if ("id" in reply) {
+          const scanId = reply.id;
+          update((previous) => request.kind === "dirs"
+            ? { ...previous, lastComparison: { scanId, request } }
+            : { ...previous, lastChecksum: { scanId, request } }, true);
+        }
+        return reply;
+      } finally {
+        starting.current.delete(request.kind);
+        setStartingScans(new Set(starting.current));
+      }
+    },
+    get: (scanId) => rpc.call("scan_get", { scanId }),
+    cancel: (scanId) => rpc.call("scan_cancel", { scanId }),
+  }), [rpc, update]);
+  // S11: polling and job cancellation use the shared scan transport.
+  const search = useMemo<SearchActions>(() => ({
+    start: (input, signal) => startSearch(rpc, pluginId, input, signal),
+    get: scans.get,
+    cancel: scans.cancel,
+    cancelRequest: (clientRequestId) => rpc.call("scan_cancel", { clientRequestId }),
+  }), [pluginId, rpc, scans]);
   const [bindings, setBindings] = useState(loadBindings);
+  // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
+  const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
+  const [passwordFor, setPasswordFor] = useState<string | null>(null);
   const changes = useRef(new Set<string>());
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
@@ -212,6 +318,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (typeof payload !== "object" || payload === null || !("kind" in payload)) return;
     if (payload.kind === "job") changes.current.add("job");
     if (payload.kind === "endpoints") changes.current.add("endpoints");
+    // S14: an encrypted archive asks the owner for its password; the id is all this event carries.
+    if (payload.kind === "archive-password" && "id" in payload && typeof payload.id === "string") setPasswordFor(payload.id);
     if (payload.kind === "dir" && "id" in payload) {
       if (left?.endpoint === payload.id) changes.current.add("left");
       if (right?.endpoint === payload.id) changes.current.add("right");
@@ -297,15 +405,67 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       throw new CommanderError("unsupported", ru.terminalUnavailable);
     }
   };
+  // Owner view: one file_read; a whole image comes at once, a larger one as chunks with one version.
+  const loadView = async (ref: ResourceRef, mode: ViewKind | "auto") => {
+    const first: WireView = await rpc.call("file_read", { ref, mode });
+    return assembleImage(first,
+      (offset, expect) => rpc.call("file_read", { ref, mode: "image", offset: offset.toString(), expect }));
+  };
   const mutate = async (action: Promise<unknown>) => { const result = await action; refresh("job"); return result; };
   const identity = (job: OperationJob) => ({ jobId: job.id, digest: job.plan.digest });
-  return <Workspace state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  const retryUnfinished = async (job: OperationJob) => {
+    const { plan, excluded } = await rpc.call("job_retry", { jobId: job.id });
+    const count = excluded.reduce((sum, entry) => sum + entry.count, 0);
+    const note: RetryNote | null = count ? { kind: "waiting", count } : plan ? null : { kind: "nothing" };
+    setRetryNotes((notes) => {
+      const next = { ...notes };
+      if (note) next[job.id] = note;
+      else delete next[job.id];
+      return next;
+    });
+    if (!plan) return null;
+    return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
+  };
+  // S13: the write tickets use the same queue and per-plan confirmation as other operations.
+  const sync: NonNullable<ComponentProps<typeof Workspace>["sync"]> = {
+    async estimate(paths) {
+      const estimate = await rpc.call("scan_start", {
+        kind: "dirs", ...paths, by: "sha256", mtimeToleranceMs: 0, limit: LIST_PAGE_MAX, estimateOnly: true,
+      });
+      if (!("estimateId" in estimate)) throw new CommanderError("internal", ru.sync.estimateFailed);
+      return estimate;
+    },
+    create: (request, estimateId) => rpc.call("sync_create", { ...request, estimateId }),
+    run: (plan) => mutate(rpc.call("plan_run", { planId: plan.id, digest: plan.digest })),
+  };
+  return <Workspace search={search} sync={sync} scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
-    onEndpoint={selectEndpoint} onRefresh={refresh}
+    retryNotes={retryNotes} onEndpoint={selectEndpoint} onRefresh={refresh}
+    onOpenArchive={async (source, estimateId) => {
+      const reply = await rpc.call("archive_open", estimateId ? { source, estimateId } : { source, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
+      await refreshEndpoints();
+      return { endpoint: reply.endpoint };
+    }}
+    onResumeArchive={async (archiveId, estimateId) => {
+      const reply = await rpc.call("archive_resume", estimateId ? { archiveId, estimateId } : { archiveId, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
+      await refreshEndpoints();
+      return { endpoint: reply.endpoint };
+    }}
+    passwordFor={passwordFor}
+    onPassword={async (archiveId, password) => {
+      await rpc.call("archive_password", { archiveId, password });
+      setPasswordFor(null);
+    }}
+    onPasswordCancel={(archiveId) => {
+      setPasswordFor(null);
+      void rpc.call("archive_password_cancel", { archiveId }).catch(() => undefined);
+    }}
     onAccess={async (endpoint) => {
       await rpc.call("sftp_request_access", { profileId: endpoint.id.slice("sftp:".length), level: "write" });
       await refreshEndpoints();
@@ -326,7 +486,22 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       await mutate(rpc.call("job_decide", { jobId: job.id, conflictId: job.pendingConflict.id, action, applyTo: same ? "remaining_same_reason" : "this" }));
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
-    onPreview={preview} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
+    onRetry={(job) => mutate(retryUnfinished(job))}
+    edit={{
+      estimate: (ref) => rpc.call("edit_estimate", { ref }),
+      async open(ref, estimateId) {
+        const { sessionId, opener } = await rpc.call("edit_open", estimateId ? { ref, estimateId } : { ref });
+        const show = (target: typeof opener) => waitForEdit(sessionId, () => navigate.experimental_openFilePreview({
+          target: { kind: "host", hostId: target.hostId, path: target.path }, location: null, opener: target.id,
+        }));
+        if (await show(opener)) return null;
+        return {
+          path: opener.path,
+          retry: async () => show(await rpc.call("edit_route", { sessionId })),
+        };
+      },
+    }}
+    onPreview={preview} onView={(ref, mode) => loadView(ref, mode)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }
 
@@ -335,6 +510,8 @@ function ThreadTab({ threadId, environment }: ExperimentalThreadTabProps) {
 }
 
 export default definePluginApp((app) => {
+  // S16: this opener is only selected through an explicit id.
+  app.slots.fileOpener({ id: EDIT_OPENER, title: "Правка в Commander", extensions: [], component: CommanderEditOpener });
   app.slots.navPanel({ id: "commander", path: "commander", title: "Commander", icon: "Folder", component: () => <CommanderPage /> });
   app.slots.experimental_tab({
     id: "commander", context: { kind: "thread" }, availability: "fixed", title: "Commander",
