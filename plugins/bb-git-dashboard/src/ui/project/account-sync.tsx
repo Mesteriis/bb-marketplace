@@ -1,0 +1,83 @@
+import { useState } from "react";
+import type { Preview, RemoteAction, RemoteOutcome } from "../../core/publication.ts";
+import { useT } from "../i18n/use-t.tsx";
+import { Dialog } from "../system/dialog.tsx";
+
+/** The account repository a copy is linked to, and the previewed writes through that account. */
+export type AccountSync = {
+  /** The copy's linked account repository; null when the copy is not linked. */
+  target(): Promise<{accountId: string; repoId: string} | null>;
+  prepare(target: {accountId: string; repoId: string}, action: RemoteAction): Promise<Preview>;
+  publish(previewId: string): Promise<RemoteOutcome>;
+};
+const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
+
+/** Asks the server for the write's preview through the copy's linked account; the caller shows it with AccountConfirm. */
+export async function prepareThroughAccount(sync: AccountSync, action: RemoteAction): Promise<Preview> {
+  const target = await sync.target();
+  if (!target) throw new Error("NO_ACCOUNT_LINK");
+  return sync.prepare(target, action);
+}
+
+/** What the server will do through the account, line by line; Confirm runs it once and says how it ended. */
+export function AccountConfirm({title, preview, sync, onDone, onClose}: {title: string; preview: Preview; sync: AccountSync;
+  onDone(outcome: RemoteOutcome): void; onClose(): void}) {
+  const t = useT();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const confirm = async () => {
+    setPending(true);
+    setError("");
+    try {
+      const outcome = await sync.publish(preview.id);
+      if (outcome.status === "failed" || outcome.status === "unknown") setError(t("pg.account-failed", {code: outcome.code ?? outcome.status}));
+      else onDone(outcome);
+    } catch (cause) { setError(message(cause)); }
+    finally { setPending(false); }
+  };
+  return <Dialog title={title} busy={pending} wide onClose={onClose} actions={<>
+    <button type="button" className="g-btn" disabled={pending} onClick={onClose}>{t("common.cancel")}</button>
+    <button type="button" className="g-btn pri" disabled={pending} onClick={() => void confirm()}>{pending ? t("pg.account-working") : t("pg.account-confirm")}</button>
+  </>}>
+    <p className="g-muted">{t("pg.account-what")}</p>
+    <ul className="git-account-lines">{preview.lines.map((line, index) => <li key={index} className="g-mono">{line}</li>)}</ul>
+    {error && <p className="g-banner bad" role="alert">{error}</p>}
+  </Dialog>;
+}
+
+/** A pull request from the copy's branch: base, title and description, then the server's preview before anything is sent. */
+export function CreatePullDialog({branch, head, sync, onPrepared, onClose}: {branch: string; head: string; sync: AccountSync;
+  onPrepared(preview: Preview): void; onClose(): void}) {
+  const t = useT();
+  const [base, setBase] = useState("main");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const ready = base.trim() && title.trim() && base.trim() !== branch;
+  const submit = async () => {
+    if (!ready) return;
+    setPending(true);
+    setError("");
+    try { onPrepared(await prepareThroughAccount(sync, {kind: "pull", action: {kind: "create", head: branch, expected: head, base: base.trim(), title: title.trim(), body}})); }
+    catch (cause) { setError(explain(message(cause), t)); }
+    finally { setPending(false); }
+  };
+  return <Dialog title={t("pg.create-pr")} busy={pending} wide onClose={onClose} actions={<>
+    <button type="button" className="g-btn" disabled={pending} onClick={onClose}>{t("common.cancel")}</button>
+    <button type="button" className="g-btn pri" disabled={pending || !ready} onClick={() => void submit()}>{t("pg.create-pr-next")}</button>
+  </>}>
+    <form className="git-account-form" onSubmit={event => { event.preventDefault(); void submit(); }}>
+      <p className="git-push-where"><span className="g-branch">{branch}</span> → <span className="g-branch">{base || "…"}</span></p>
+      <label>{t("pg.pr-base")}<input className="g-inp" value={base} onChange={event => setBase(event.target.value)} maxLength={250}/></label>
+      <label>{t("pg.pr-title")}<input className="g-inp" value={title} onChange={event => setTitle(event.target.value)} maxLength={220} autoFocus/></label>
+      <label>{t("pg.pr-body")}<textarea className="g-inp" value={body} onChange={event => setBody(event.target.value)} maxLength={8000} rows={5}/></label>
+    </form>
+    {error && <p className="g-banner bad" role="alert">{error}</p>}
+  </Dialog>;
+}
+
+/** A copy without a linked account repository is told where to link one; other codes are shown as the server gave them. */
+export function explain(text: string, t: ReturnType<typeof useT>): string {
+  return text.startsWith("NO_ACCOUNT_LINK") ? t("pg.account-unlinked") : text;
+}

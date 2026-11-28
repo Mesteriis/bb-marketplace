@@ -2,7 +2,7 @@ import type { CodeReviewApi } from "./code-review/review-api.ts";
 import { useEffect, useState, type FormEvent } from "react";
 import type { Account, Repo } from "../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../core/repository-features.ts";
-import type { RemoteApi } from "./remotes.tsx";
+import type { RemoteApi } from "./remote-api.ts";
 import { ForgeStatusLine, type ForgeStatus } from "./forge-status.tsx";
 import { limitation } from "../core/forge/capabilities.ts";
 import { CiPanel, type CiView } from "./ci/ci-panel.tsx";

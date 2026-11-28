@@ -7,7 +7,8 @@ import { useLanguage, useT } from "./i18n/use-t.tsx";
 import { PageHead } from "./shell/page-head.tsx";
 import { Icon } from "./system/icon.tsx";
 import "./connections.css";
-import { MenuButton } from "./system/menu.tsx";
+import type { RemoteOutcome } from "../core/publication.ts";
+import { PublicationActivity } from "./publication-activity.tsx";
 
 const kinds = {azure: "Azure DevOps", gitea: "Gitea", gitlab: "GitLab", github: "GitHub"};
 type T = ReturnType<typeof useT>;
@@ -15,6 +16,8 @@ export type ConnectionsApi = ConnectionApi & {
   accounts(): Promise<Account[]>;
   /** The last check of an account (refresh false), or a new one with its stored token. */
   accountCheck(accountId: string, refresh: boolean): Promise<AccountCheck | null>;
+  /** The writes done through the accounts, newest first. */
+  activity(): Promise<RemoteOutcome[]>;
 };
 type Host = {id: string; name: string};
 const hostOf = (origin: string) => { try { return new URL(origin).host; } catch { return origin; } };
@@ -43,11 +46,11 @@ function facts(account: Account, check: AccountCheck, health: Health, local: num
  * Connected forge accounts with what a check of each found (its login, repositories, the token's rights and end), a new
  * connection, and the servers the projects folder's remotes use — with the account on each, or a way to connect one.
  */
-export function ConnectionsPage({api, title, hosts, localKeys, onBrowse, onChanged}: {
+export function ConnectionsPage({api, title, hosts, localKeys, onChanged}: {
   api: ConnectionsApi; title: string; hosts: Host[];
   /** The forge keys (host/path) of a machine's projects folder, for the table of servers. */
   localKeys(hostId: string): Promise<(string | null)[]>;
-  onBrowse(): void; onChanged?(): void;
+  onChanged?(): void;
 }) {
   const t = useT();
   const {language} = useLanguage();
@@ -113,8 +116,6 @@ export function ConnectionsPage({api, title, hosts, localKeys, onBrowse, onChang
         </div>
         {health && chip(health, t)}
         <button type="button" className="g-btn sm" disabled={busy} onClick={() => check(account.id)}>{busy ? t("cn.checking") : t("cn.check")}</button>
-        <MenuButton label={t("cn.more", {label: account.label})} className="g-btn ghost sm" chevron={false} entries={[{kind: "item", label: t("cn.browse"), onSelect: onBrowse}]}>
-          <Icon name="MoreHorizontal" small/></MenuButton>
       </li>;
     })}</ul>}
     <section className="git-connection-hosts" aria-labelledby="git-connection-hosts">
@@ -134,6 +135,7 @@ export function ConnectionsPage({api, title, hosts, localKeys, onBrowse, onChang
           </tr>)}</tbody>
         </table></div>}
     </section>
+    <PublicationActivity load={api.activity}/>
     {connecting && <ConnectionWizard api={api} initialAddress={connecting.address} onClose={() => setConnecting(null)} onSaved={account => {
       setAccounts(previous => [...(previous ?? []).filter(item => item.id !== account.id), account]);
       setConnecting(null);

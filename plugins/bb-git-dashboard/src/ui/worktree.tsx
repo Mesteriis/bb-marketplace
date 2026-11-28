@@ -18,7 +18,9 @@ type View = "changes" | "branches" | "worktrees" | "activity";
 const views: View[] = ["changes", "branches", "worktrees", "activity"];
 
 /** A copy's Code: Changes, Branches, Worktrees and Activity as tabs, with the copy's machine and path; a merge or rebase in progress above them. */
-export function Worktree({copy, host, run, refresh, loadOperations, attach, pin, openReview}: {
+export function Worktree({copy, host, run, refresh, loadOperations, attach, pin, openReview, initialPath}: {
+  /** The changed file to show first. */
+  initialPath?: string;
   copy: Copy;
   host: string;
   run: RunGit;
@@ -115,7 +117,9 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin,
             (event.currentTarget.parentElement?.querySelector("[data-view=\"" + next + "\"]") as HTMLElement | null)?.focus();
           }}>{t(("pg.view." + name) as MessageKey)}{counts[name] ? <span className="g-num g-muted">{counts[name]}</span> : null}</button>)}
       </div>
-      <span className="g-muted git-code-place" title={host + " · " + copy.root}><Icon name="FolderGit" small/>{host} · <span className="g-mono">{homeRelative(copy.root)}</span></span>
+      {/* Where the copy is: the machine and the path, cut with an ellipsis; on a narrow screen only the mark, with both in its tooltip. */}
+      <span className="g-muted git-code-place" title={(host ? host + " · " : "") + copy.root} aria-label={(host ? host + " · " : "") + homeRelative(copy.root)} role="note">
+        <Icon name="FolderGit" small/><span className="git-code-place-text">{host ? host + " · " : ""}<span className="g-mono">{homeRelative(copy.root)}</span></span></span>
       {pin && <button type="button" className="g-btn ghost sm" onClick={pin}>{t("pg.pin")}</button>}
       <button type="button" className="g-btn ghost sm" onClick={() => { setError(""); reread(); }}><Icon name="RotateCcw" small/>{t("pg.refresh")}</button>
       {view === "branches" && <button type="button" className="g-btn sm" onClick={() => setCreating(true)}>+ {t("br.create")}</button>}
@@ -131,7 +135,7 @@ export function Worktree({copy, host, run, refresh, loadOperations, attach, pin,
       onChanged={reread} onClose={() => setResolving(null)}/>}
     <div role="tabpanel" id={id + "panel"} aria-labelledby={id + view} className="git-code-panel">
       {!state ? <p className="g-muted" role="status">{t("pg.reading")}</p>
-        : view === "changes" ? <Changes state={state} sequence={sequence} run={run} pending={pending} revision={revision + refresh} act={act} actAll={actAll}
+        : view === "changes" ? <Changes initialPath={initialPath} state={state} sequence={sequence} run={run} pending={pending} revision={revision + refresh} act={act} actAll={actAll}
           onResolve={setResolving} onError={report} openReview={openReview} canPush={canPush} onCommitted={pushToo => { if (pushToo) void askPush(); }}/>
         : view === "branches" ? (detail?.text !== undefined
           ? <Branches text={detail.text} state={state} sequence={sequence} run={run} pending={pending} act={act} onError={report} creating={creating} onCreating={setCreating}

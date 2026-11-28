@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useState } from "react";
 import type { GitAction, GitResult } from "../../core/git.ts";
+import type { Preview } from "../../core/publication.ts";
 import type { Copy } from "../../core/workspace.ts";
 import { useT } from "../i18n/use-t.tsx";
 import { Dialog } from "../system/dialog.tsx";
 import { Icon } from "../system/icon.tsx";
+import { AccountConfirm, CreatePullDialog, explain, prepareThroughAccount, type AccountSync } from "./account-sync.tsx";
 import "./project.css";
 
 type RunGit = (action: GitAction) => Promise<GitResult>;
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 
-/** The head of a copy's page: its name, branch and sync, and Fetch, Pull and Push — Push asks first, in a dialog. */
-export function ProjectHead({copy, run, refresh, onChanged, onState}: {copy: Copy; run: RunGit; refresh: number;
+/**
+ * The head of a copy's page: its name, branch and sync, and Fetch, Pull and Push — Push asks first, in a dialog.
+ * A network origin is fetched from and pushed to through the copy's linked account, after the server's preview;
+ * the same account opens a pull request from the branch.
+ */
+export function ProjectHead({copy, run, refresh, onChanged, onState, sync}: {copy: Copy; run: RunGit; refresh: number;
+  /** Writes through the copy's linked account; without it a network origin is only named as the reason. */
+  sync?: AccountSync;
   /** The status the head read, for the page's counts (Code: the changed files). */
   onState?(state: GitResult): void;
   /** A head action changed the copy: the page reads it again. */
@@ -20,6 +28,9 @@ export function ProjectHead({copy, run, refresh, onChanged, onState}: {copy: Cop
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [push, setPush] = useState<{head: string; branch: string; origin: string} | null>(null);
+  const [account, setAccount] = useState<{title: string; preview: Preview} | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [notice, setNotice] = useState("");
   useEffect(() => {
     let active = true;
     run({kind: "status"}).then(value => { if (active) { setState(value); onState?.(value); } }, cause => { if (active) setError(message(cause)); });
@@ -33,15 +44,30 @@ export function ProjectHead({copy, run, refresh, onChanged, onState}: {copy: Cop
     catch (cause) { if (!quiet) setError(message(cause)); throw cause; }
     finally { setPending(false); }
   }, [run, onChanged]);
+  // A network origin answers ACCOUNT_TRANSPORT_REQUIRED: the write goes through the linked account, previewed first.
+  const network = (cause: unknown) => sync && message(cause).startsWith("ACCOUNT_TRANSPORT_REQUIRED");
+  const throughAccount = async (kind: "fetch" | "push") => {
+    if (!sync) return;
+    setPending(true);
+    try { setAccount({title: t(kind === "fetch" ? "pg.account-fetch" : "pg.account-push"), preview: await prepareThroughAccount(sync, {kind, copyId: copy.id})}); }
+    catch (cause) { setError(explain(message(cause), t)); }
+    finally { setPending(false); }
+  };
+  const fetch = async () => {
+    setNotice("");
+    try { await act({kind: "fetch"}, true); }
+    catch (cause) { if (network(cause)) await throughAccount("fetch"); else setError(message(cause)); }
+  };
   const askPush = async () => {
     if (!state?.head || !state.branch) return;
     const {head, branch} = state;
     setError("");
+    setNotice("");
     try {
       const origin = await run({kind: "localOrigin"});
       if (origin.text) setPush({head, branch, origin: origin.text});
       else setError("NO_ORIGIN");
-    } catch (cause) { setError(message(cause)); }
+    } catch (cause) { if (network(cause)) await throughAccount("push"); else setError(message(cause)); }
   };
   const name = copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root;
   const ahead = state?.ahead ?? 0, behind = state?.behind ?? 0;
@@ -54,7 +80,9 @@ export function ProjectHead({copy, run, refresh, onChanged, onState}: {copy: Cop
           : <>↑{ahead} <span className={behind ? "g-warn" : undefined}>↓{behind}</span></>}</span>
     </> : <span className="g-muted" role="status">{t("pg.reading")}</span>}
     <div className="g-actions">
-      <button type="button" className="g-btn" disabled={pending || !state} onClick={() => void act({kind: "fetch"}).catch(() => {})}>
+      {sync && <button type="button" className="g-btn ghost" disabled={pending || !state?.head || !state.branch} onClick={() => { setError(""); setNotice(""); setCreating(true); }}>
+        <Icon name="GitPullRequest" small/>{t("pg.create-pr")}</button>}
+      <button type="button" className="g-btn" disabled={pending || !state} onClick={() => void fetch()}>
         <Icon name="RotateCcw" small/>{t("pg.fetch")}</button>
       <button type="button" className="g-btn" disabled={pending || !state?.upstream} title={state?.upstream ? t("pg.pull-hint", {upstream: state.upstream}) : t("pg.no-pull")}
         onClick={() => void act({kind: "fastForward"}).catch(() => {})}><Icon name="ArrowDown" small/>{t("pg.pull")}</button>
@@ -62,6 +90,15 @@ export function ProjectHead({copy, run, refresh, onChanged, onState}: {copy: Cop
         <Icon name="ArrowUp" small/>{t("pg.push")}{ahead ? " " + ahead : ""}</button>
     </div>
     {error && <p className="git-project-head-error g-bad" role="alert">{error}</p>}
+    {notice && <p className="git-project-head-error g-good" role="status">{notice}</p>}
+    {creating && sync && state?.head && state.branch && <CreatePullDialog branch={state.branch} head={state.head} sync={sync} onClose={() => setCreating(false)}
+      onPrepared={preview => { setCreating(false); setAccount({title: t("pg.create-pr"), preview}); }}/>}
+    {account && sync && <AccountConfirm title={account.title} preview={account.preview} sync={sync} onClose={() => setAccount(null)} onDone={outcome => {
+      setAccount(null);
+      setNotice(outcome.kind === "pull" && outcome.pullNumber ? t("pg.pr-created", {n: outcome.pullNumber})
+        : outcome.status === "accepted" ? t("pg.account-accepted") : t(outcome.kind === "fetch" ? "pg.account-fetched" : "pg.account-pushed"));
+      onChanged();
+    }}/>}
     {push && <PushDialog {...push} ahead={ahead} onConfirm={() => act({kind: "push", expected: push.head, branch: push.branch, destination: push.origin}, true)}
       onClose={() => setPush(null)}/>}
   </header>;

@@ -30,8 +30,8 @@ A pull request opens with its Markdown discussion and Jira links, checks, files 
 
 A copy's and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with filters; a run opens as a page at its failed job's error line, to re-run, cancel or run a workflow after a confirmation. **Templates** write a pipeline for the copy's stack to a new branch with a pull request. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
 
-## Remote repositories
+## Accounts
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts in three steps; **Check** says what each token can do. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s macOS Keychain entry; New project adds it on macOS. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts in three steps; **Check** says what each token can do. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Clone, fetch, push and new PRs go through the account after a preview. HTTPS Git uses the account’s macOS Keychain entry; New project adds it on macOS. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
 Beside a thread, one **Git** tab sums up the copy: changes, pull request, CI, review, history, each opening in the panel. Pin a copy or a PR. Grant agents read or write access.

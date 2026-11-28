@@ -3,7 +3,8 @@ import type { Run } from "../../core/ci/model.ts";
 import type { GitResult } from "../../core/git.ts";
 import { ago } from "../../core/i18n/time.ts";
 import { branchRun } from "../../core/panel/summary.ts";
-import type { PanelScreen } from "../../core/panel/target.ts";
+import { foldMemory, type Part } from "../../core/panel/folds.ts";
+import { backFocus, type PanelScreen } from "../../core/panel/target.ts";
 import type { InboxPr } from "../../core/pulls/model.ts";
 import type { Copy, Operation } from "../../core/workspace.ts";
 import type { CiApi } from "../ci/ci-api.ts";
@@ -29,9 +30,8 @@ export type PanelApi = {
   /** The copy's open and all comment threads over its line reviews. */
   reviewCounts(copyId: string): Promise<{open: number; total: number}>;
 };
-type Part = "changes" | "pull" | "ci" | "review" | "history";
 // Which parts are folded, for the browser tab's life: the panel opens as it was left.
-const folded = new Set<Part>(["history"]);
+const folds = foldMemory(["history"]);
 
 /**
  * The Git panel of a working copy beside a thread: a head with Pull and Push, then a summary — changes with their
@@ -60,12 +60,8 @@ export function GitPanel({copy, host, run, refresh, loadOperations, api, ci, his
   const [ciNote, setCiNote] = useState("");
   const [counts, setCounts] = useState<{open: number; total: number} | null>(null);
   const [last, setLast] = useState<string | null>(null);
-  const [open, setOpen] = useState(() => new Set<Part>((["changes", "pull", "ci", "review", "history"] as Part[]).filter(part => !folded.has(part))));
-  const toggle = (part: Part) => setOpen(previous => {
-    const next = new Set(previous);
-    if (next.has(part)) { next.delete(part); folded.add(part); } else { next.add(part); folded.delete(part); }
-    return next;
-  });
+  const [open, setOpen] = useState(folds.open);
+  const toggle = (part: Part) => setOpen(previous => folds.toggle(previous, part));
   useEffect(() => {
     let active = true;
     run({kind: "status"}).then(value => { if (active) { setState(value); setError(""); } }, cause => { if (active) setError(cause instanceof Error ? cause.message : String(cause)); });
@@ -105,12 +101,13 @@ export function GitPanel({copy, host, run, refresh, loadOperations, api, ci, his
 
   // Switching screens moves the focus to the new screen's heading, and back to the part that opened it.
   const bar = useRef<HTMLHeadingElement>(null);
-  const opener = useRef<string | null>(null);
+  const opener = useRef<Exclude<PanelScreen["kind"], "summary"> | null>(null);
   useEffect(() => {
     if (screen.kind !== "summary") { opener.current = opener.current ?? screen.kind; bar.current?.focus(); return; }
     const from = opener.current;
     opener.current = null;
-    if (from) document.getElementById("git-panel-" + (from === "changes" ? "changes" : from === "ci" ? "ci" : from === "review" ? "review" : "history"))?.focus();
+    const id = backFocus(from);
+    if (id) document.getElementById(id)?.focus();
   }, [screen.kind]);
   const pr = pull === "unread" ? null : pull;
   const head = <PanelHead copy={copy} state={state} forge={forge} base={pr?.baseRefName ?? null} run={run} onChanged={changed} note={note}/>;
@@ -121,7 +118,7 @@ export function GitPanel({copy, host, run, refresh, loadOperations, api, ci, his
       <div className="git-panel-bar"><button type="button" className="g-btn ghost sm" onClick={() => onScreen({kind: "summary"})} aria-label={t("gp.back")}>
         <Icon name="ChevronLeft" small/></button><h3 ref={bar} tabIndex={-1}>{title}</h3></div>
       <div className="git-panel-screen">
-        {screen.kind === "changes" ? <Worktree copy={copy} host={host} run={run} refresh={refresh + revision} loadOperations={loadOperations} openReview={() => onScreen({kind: "review"})}/>
+        {screen.kind === "changes" ? <Worktree key={screen.path ?? ""} initialPath={screen.path} copy={copy} host={host} run={run} refresh={refresh + revision} loadOperations={loadOperations} openReview={() => onScreen({kind: "review"})}/>
           : screen.kind === "ci" ? <CiPanel api={ci} copyId={copy.id} currentThreadId={threadId} repository={copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root} view={screen.view}
             onView={view => onScreen({kind: "ci", view})}/>
           : screen.kind === "review" ? <ReviewPanel api={review} copyId={copy.id} currentThreadId={threadId} revision={reviewRevision}/>
@@ -136,7 +133,7 @@ export function GitPanel({copy, host, run, refresh, loadOperations, api, ci, his
     {error && <div className="g-banner bad" role="alert">{error}</div>}
     <Section id="git-panel-changes" title={t("gp.changes")} open={open.has("changes")} onToggle={() => toggle("changes")}
       aside={state ? <span className="g-muted">{t("ct.files", {n: files.length})}</span> : undefined}>
-      {state ? <ChangesBody state={state} run={run} onChanged={changed} onOpen={() => onScreen({kind: "changes"})}/> : <p className="g-muted" role="status">{t("pg.reading")}</p>}
+      {state ? <ChangesBody state={state} run={run} onChanged={changed} onOpen={path => onScreen(path ? {kind: "changes", path} : {kind: "changes"})}/> : <p className="g-muted" role="status">{t("pg.reading")}</p>}
       {files.length > 0 && <button type="button" className="g-btn ghost sm git-panel-more" onClick={() => onScreen({kind: "changes"})}>{t("gp.all-changes")}<Icon name="ChevronRight" small/></button>}
     </Section>
     <Section id="git-panel-pull" title={pr ? t("gp.pull-n", {n: pr.number}) : t("gp.pull")} open={open.has("pull")} onToggle={() => toggle("pull")}

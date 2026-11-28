@@ -40,13 +40,15 @@ function State({result, t}: {result: BulkResult | undefined; t: T}) {
  * where it is cloned or is cloned on click into a category of the projects folder; the open pull requests of chosen
  * repositories are listed under the table.
  */
-export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
+export function CatalogPage({api, hosts, initialTab = "local"}: {api: CatalogApi; hosts: Host[];
+  /** The tab it opens on: Remote for the address of the former Remote repositories screen. */
+  initialTab?: Tab}) {
   const t = useT();
   const [hostId, setHostId] = useState(hosts[0]?.id ?? "");
   const [view, setView] = useState<CatalogView | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [tab, setTab] = useState<Tab>("local");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [query, setQuery] = useState("");
   const [account, setAccount] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());

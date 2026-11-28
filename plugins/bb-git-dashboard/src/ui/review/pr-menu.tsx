@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
+import { useT } from "../i18n/use-t.tsx";
 import { message, type PrRef, type ReviewApi } from "./review-api.ts";
 
 /**
- * The pull request's ⋯ menu: Refresh, Copy link, Copy PR number, Link to thread…, Ask a question, Explain this PR.
+ * The pull request's ⋯ menu: Refresh, Copy link, Copy PR number, Link to thread…, Ask a question, Explain this PR, and
+ * Pin as a tab when the page can pin.
  * Follows bb-github-pr-dashboard's PR menu (MIT, © 2026 Muhammad Ahsan); see THIRD_PARTY_NOTICES.md.
  */
-export function PrMenu({api, target, url, onRefresh, onNotice}: {api: ReviewApi; target: PrRef; url: string; onRefresh(): void; onNotice(text: string): void}) {
+export function PrMenu({api, target, url, onRefresh, onNotice, onPin}: {api: ReviewApi; target: PrRef; url: string; onRefresh(): void; onNotice(text: string): void;
+  /** Pins the pull request as its own tab beside the thread; throws when the panel did not take it. */
+  onPin?(): Promise<void> | void}) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [linking, setLinking] = useState(false);
   const run = (work: () => Promise<void> | void, done?: string) => {
@@ -13,16 +18,17 @@ export function PrMenu({api, target, url, onRefresh, onNotice}: {api: ReviewApi;
     Promise.resolve().then(work).then(() => { if (done) onNotice(done); }, cause => onNotice(message(cause)));
   };
   return <div className="git-pr-menu">
-    <button type="button" aria-label="More pull request actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}>⋯</button>
+    <button type="button" aria-label={t("pr.m.more")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(value => !value)}>⋯</button>
     {open && <div role="menu" className="git-pr-menu-list" onKeyDown={event => { if (event.key === "Escape") setOpen(false); }}>
-      <button role="menuitem" type="button" onClick={() => run(onRefresh)}>Refresh</button>
-      {url && <button role="menuitem" type="button" onClick={() => run(() => api.copy(url), "Link copied.")}>Copy link</button>}
-      <button role="menuitem" type="button" onClick={() => run(() => api.copy("#" + target.number), "PR number copied.")}>Copy PR number</button>
-      <button role="menuitem" type="button" onClick={() => { setOpen(false); setLinking(true); }}>Link to thread…</button>
-      <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "ask"))}>Ask a question</button>
-      <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "explain"))}>Explain this PR</button>
+      <button role="menuitem" type="button" onClick={() => run(onRefresh)}>{t("pr.m.refresh")}</button>
+      {url && <button role="menuitem" type="button" onClick={() => run(() => api.copy(url), t("pr.m.link-copied"))}>{t("pr.m.copy-link")}</button>}
+      <button role="menuitem" type="button" onClick={() => run(() => api.copy("#" + target.number), t("pr.m.number-copied"))}>{t("pr.m.copy-number")}</button>
+      <button role="menuitem" type="button" onClick={() => { setOpen(false); setLinking(true); }}>{t("pr.m.link-thread")}</button>
+      <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "ask"))}>{t("pr.m.ask")}</button>
+      <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "explain"))}>{t("pr.m.explain")}</button>
+      {onPin && <button role="menuitem" type="button" onClick={() => run(onPin, t("pr.pinned"))}>{t("pr.pin")}</button>}
     </div>}
-    {linking && <LinkDialog api={api} target={target} onClose={() => setLinking(false)} onLinked={title => { setLinking(false); onNotice("Linked to " + title + "."); }}/>}
+    {linking && <LinkDialog api={api} target={target} onClose={() => setLinking(false)} onLinked={title => { setLinking(false); onNotice(t("pr.m.linked", {title})); }}/>}
   </div>;
 }
 

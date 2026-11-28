@@ -19,7 +19,7 @@ test("every place of the dashboard belongs to one section of the side column", (
   assert.equal(sectionOf("reviews"), "reviews");
   assert.equal(sectionOf("catalog"), "catalog");
   assert.equal(sectionOf("connections"), "connections");
-  assert.equal(sectionOf("remotes"), "connections");
+  assert.equal(sectionOf("remotes"), "catalog");
 });
 
 test("the side column lists each section once, with its path", () => {

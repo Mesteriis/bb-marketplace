@@ -20,7 +20,8 @@ export function sectionOf(subPath: string): SectionId {
   const head = subPath.split("/")[0] ?? "";
   if (head === "pr" || head === "inbox") return "inbox";
   if (head === "ci" || head === "reviews" || head === "catalog" || head === "connections") return head;
-  if (head === "remotes") return "connections";
+  // The address of the former Remote repositories screen opens the Catalog's remote tab.
+  if (head === "remotes") return "catalog";
   // A run of a copy (`<copy>/actions/<run>`) is a CI/CD page, its path leads back there.
   const [, second, third] = subPath.split("/");
   if (second === "actions" && third && third !== "templates") return "ci";

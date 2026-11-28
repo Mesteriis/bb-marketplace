@@ -15,7 +15,9 @@ import { refPath } from "../ui/review/review-api.ts";
 import { Icon } from "../ui/system/icon.tsx";
 import { ciApi, codeReviewApi, failed, historyApi, pullRequestApi } from "./apis.tsx";
 import { useCatalog } from "./catalog-data.tsx";
-import { withInterface } from "./interface.tsx";
+import { useInterfaceLanguage, withInterface } from "./interface.tsx";
+import { format, type Language } from "../core/i18n/language.ts";
+import { unpinTab } from "./pin-tabs.ts";
 import { useReviewRevisions } from "./review-signal.ts";
 
 type Client = ReturnType<typeof useRpc<typeof rpc>>;
@@ -49,11 +51,27 @@ function readOpenPulls(client: Client, fresh: boolean) {
   return openPulls.value;
 }
 
-/** Closes this plugin's open tab with these params (Unpin): its key is read from the panel, never kept. */
-function unpin(panel: ReturnType<typeof experimental_useAppPanel>, tabId: string, params: JsonValue | null) {
-  const same = JSON.stringify(params);
-  const open = panel.getTabs().tabs.find(item => item.detail.kind === "plugin" && item.detail.tab.id === tabId && JSON.stringify(item.detail.params) === same);
-  if (open) panel.closeTab(open.key);
+/** Unpin: closes the pinned tab; says so when the tab is no longer open. */
+function UnpinButton({tab, params}: {tab: {id: string}; params: JsonValue | null}) {
+  const t = useT();
+  const panel = experimental_useAppPanel();
+  const [missing, setMissing] = useState(false);
+  return <>
+    <button type="button" className="g-btn ghost sm" onClick={() => setMissing(!unpinTab(panel, tab, params))}>{t("gp.unpin")}</button>
+    {missing && <span className="g-warn" role="alert">{t("gp.unpin-missing")}</span>}
+  </>;
+}
+
+/** The path of an account's repository by its id, from the account's first five pages of repositories. */
+export async function repositoryPath(client: Client, accountId: string, repoId: string): Promise<string | null> {
+  for (let page = 1; page <= 5; page++) {
+    const listed = await client.call("repositories", {accountId, page, refresh: false});
+    if (!listed.ok) return null;
+    const found = listed.value.items.find(item => item.id === repoId);
+    if (found) return found.path;
+    if (!listed.value.more) return null;
+  }
+  return null;
 }
 
 function usePanelApis(client: Client) {
@@ -102,6 +120,8 @@ function BoundPanel({copy, host, beside, screen, onScreen, note, footer}: {copy:
 export function ThreadGit({threadId}: {threadId: string}) {
   const t = useT();
   const client = useRpc<typeof rpc>();
+  // The machine is said by its name; while the names are read, by nothing rather than its id.
+  const {hosts} = useCatalog();
   const [context, setContext] = useState<Awaited<ReturnType<typeof read>>>();
   const [error, setError] = useState("");
   const [screen, setScreen] = useState<PanelScreen>({kind: "summary"});
@@ -131,7 +151,7 @@ export function ThreadGit({threadId}: {threadId: string}) {
     {error && <div className="g-banner bad" role="alert"><span>{error}</span><button type="button" className="g-btn sm" onClick={refresh}>{t("gp.retry")}</button></div>}
     {!context ? !error && <p className="g-state-page" role="status">{t("gp.reading")}</p> : !context.ok
       ? <p className="g-state-page">{t("gp.no-copy", {code: context.code})}</p>
-      : <BoundPanel key={context.copy.id} copy={context.copy} host={context.copy.hostId} beside={threadId} screen={screen} onScreen={onScreen}
+      : <BoundPanel key={context.copy.id} copy={context.copy} host={hosts.find(item => item.id === context.copy.hostId)?.name ?? ""} beside={threadId} screen={screen} onScreen={onScreen}
         footer={<label className="git-panel-footer">{t("gp.access")}
           <select className="g-inp" value={context.permission} onChange={event => void authorize(event.target.value as "none" | "read" | "write")}>
             <option value="none">{t("gp.access.none")}</option><option value="read">{t("gp.access.read")}</option><option value="write">{t("gp.access.write")}</option>
@@ -147,14 +167,13 @@ export function PinnedGitPage({params}: {params: JsonValue | null}) { return <Pi
 function PinnedGit({params, beside = false}: {params: JsonValue | null; beside?: boolean}) {
   const t = useT();
   const {copies, hosts, loaded} = useCatalog();
-  const panel = experimental_useAppPanel();
   const [screen, setScreen] = useState<PanelScreen>({kind: "summary"});
   const copyId = params && typeof params === "object" && !Array.isArray(params) ? params.copyId : undefined;
   const copy = copies.find(item => item.id === copyId);
   const note = <p className="git-panel-note"><Icon name="Pin" small/>{t(beside ? "gp.pinned-copy" : "gp.pinned-copy-page")}
-    <button type="button" className="g-btn ghost sm" onClick={() => unpin(panel, pinnedCopyTab.id, params)}>{t("gp.unpin")}</button></p>;
+    <UnpinButton tab={pinnedCopyTab} params={params}/></p>;
   return <div className="git-ws">{copy
-    ? <BoundPanel key={copy.id} copy={copy} host={hosts.find(host => host.id === copy.hostId)?.name ?? copy.hostId} screen={screen} onScreen={setScreen} note={note}/>
+    ? <BoundPanel key={copy.id} copy={copy} host={hosts.find(host => host.id === copy.hostId)?.name ?? ""} screen={screen} onScreen={setScreen} note={note}/>
     : <p className="g-state-page">{loaded ? t("gp.pinned-gone") : t("gp.pinned-reading")}</p>}</div>;
 }
 
@@ -163,7 +182,6 @@ export function PinnedPull({params}: {params: JsonValue | null}) {
   const t = useT();
   const client = useRpc<typeof rpc>();
   const navigate = useBbNavigate();
-  const panel = experimental_useAppPanel();
   const api = useMemo(() => pullRequestApi(client, navigate), [client, navigate]);
   const target = params && typeof params === "object" && !Array.isArray(params) ? params : {};
   const {accountId, repoId, number} = target;
@@ -177,13 +195,7 @@ export function PinnedPull({params}: {params: JsonValue | null}) {
       const accounts = await client.call("accounts", null);
       const account = accounts.ok ? accounts.items.find(item => item.id === accountId) : undefined;
       // Pins made before 0.14.7 keep the repository's id only: its path is found among the account's repositories.
-      let repo = typeof target.repo === "string" ? target.repo : null;
-      for (let page = 1; !repo && typeof repoId === "string" && page <= 5; page++) {
-        const listed = await client.call("repositories", {accountId, page, refresh: false});
-        if (!listed.ok) break;
-        repo = listed.value.items.find(item => item.id === repoId)?.path ?? null;
-        if (!listed.value.more) break;
-      }
+      const repo = typeof target.repo === "string" ? target.repo : typeof repoId === "string" ? await repositoryPath(client, accountId, repoId) : null;
       if (!active) return;
       if (!repo) { setError(t("gp.pr-unreadable")); return; }
       setPlace({repo, forge: account ? forgeNames[account.kind] : ""});
@@ -192,7 +204,7 @@ export function PinnedPull({params}: {params: JsonValue | null}) {
   }, [client, accountId, repoId, number, target.repo, t]);
   return <div className="git-ws git-panel">
     <p className="git-panel-note git-panel-pin"><Icon name="Pin" small/>{t("gp.pinned-pr", {repo: place?.repo ?? "…", forge: place?.forge ?? ""})}
-      <button type="button" className="g-btn ghost sm" onClick={() => unpin(panel, pinnedPullTab.id, params)}>{t("gp.unpin")}</button></p>
+      <UnpinButton tab={pinnedPullTab} params={params}/></p>
     {error && <div className="g-banner bad" role="alert">{error}</div>}
     {place && typeof accountId === "string" && typeof number === "number"
       ? <PrPage api={api} accountId={accountId} repo={place.repo} number={number}/>
@@ -200,19 +212,22 @@ export function PinnedPull({params}: {params: JsonValue | null}) {
   </div>;
 }
 
-const headerShortcut: PluginThreadActionRegistration<boolean> = {
+// The header buttons' labels follow the interface language: the SDK takes `label` from `item`, which reads what
+// `useData` (a hook) returned; only the registration's `title` (the quick-action picker's name) is static.
+type Shortcut = {on: boolean; language: Language};
+const headerShortcut: PluginThreadActionRegistration<Shortcut> = {
   id: "git-history-header", title: "Git History", icon: "GitBranch", group: "git", placement: "header",
-  useData: () => useSettings().values?.historyHeaderShortcut === true,
-  item: ({data, experimental_panel}) => data ? {
-    label: "Git History", icon: "GitBranch",
+  useData: () => ({on: useSettings().values?.historyHeaderShortcut === true, language: useInterfaceLanguage()}),
+  item: ({data, experimental_panel}) => data.on ? {
+    label: format(data.language, "gp.head-history"), icon: "GitBranch",
     run: () => { experimental_panel.openTab({tab: gitTab, target: {screen: "history"}}); },
   } : null,
 };
-const reviewShortcut: PluginThreadActionRegistration<boolean> = {
+const reviewShortcut: PluginThreadActionRegistration<Shortcut> = {
   id: "git-review-header", title: "Review", icon: "FileDiff", group: "git", placement: "header",
-  useData: () => useSettings().values?.reviewHeaderShortcut !== false,
-  item: ({data, experimental_panel}) => data ? {
-    label: "Review this thread's changes", icon: "FileDiff",
+  useData: () => ({on: useSettings().values?.reviewHeaderShortcut !== false, language: useInterfaceLanguage()}),
+  item: ({data, experimental_panel}) => data.on ? {
+    label: format(data.language, "gp.head-review"), icon: "FileDiff",
     // Opens the Git tab on its Review (a toggle would close the panel when the Git tab shows another screen).
     run: () => { experimental_panel.openTab({tab: gitTab, target: {screen: "review"}}); },
   } : null,

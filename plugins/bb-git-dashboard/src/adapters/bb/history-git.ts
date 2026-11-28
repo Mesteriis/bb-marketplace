@@ -43,12 +43,19 @@ async function refs(git: GitRun) {
   return {...parseRefs(raw.text, headRef, head.text.trim() || null), headRef, hasHead: head.code === 0};
 }
 
+/** Untracked files counted line by line, at most this many (each is a git call); beyond, they show no counts. */
+const untrackedCounted = 200;
+
 async function working(git: GitRun, hasHead: boolean) {
   const [status, counts] = await Promise.all([
     git(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=all"], {limit: large}),
     hasHead ? git(["diff", "--numstat", "-z", ...diffFlags, "HEAD"], {limit: large}) : Promise.resolve({text: "", code: 0}),
   ]);
-  return {status: status.text, files: workingChanges(status.text, counts.text)};
+  // `diff HEAD` does not see untracked files: each is counted against /dev/null, as its patch is shown ("2\t0\t\0/dev/null\0path\0").
+  const untracked = status.text.split("\0").filter(record => record.startsWith("?? ")).map(record => record.slice(3)).slice(0, untrackedCounted);
+  const extra = await Promise.all(untracked.map(path => git(["diff", "--no-index", "--numstat", "-z", ...diffFlags, "--", "/dev/null", path], {codes: [0, 1]})
+    .then(answer => { const [numbers = ""] = answer.text.split("\0"); return numbers + path + "\0"; }, () => "")));
+  return {status: status.text, files: workingChanges(status.text, counts.text + extra.join(""))};
 }
 
 /** A page of the graph over all refs, newest first in topological order, with the working tree's changes. */

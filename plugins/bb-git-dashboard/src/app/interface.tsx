@@ -1,7 +1,7 @@
 import { experimental_Icon, useRpc, useSettings } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useSyncExternalStore, type ComponentType, type FunctionComponent } from "react";
 import type { rpc } from "../adapters/bb/rpc.ts";
-import { resolveLanguage, type LanguageSetting } from "../core/i18n/language.ts";
+import { resolveLanguage, type Language, type LanguageSetting } from "../core/i18n/language.ts";
 import { LanguageProvider } from "../ui/i18n/use-t.tsx";
 import { IconProvider } from "../ui/system/icon.tsx";
 
@@ -22,6 +22,17 @@ const subscribe = (listener: () => void) => { listeners.add(listener); return ()
 const isSetting = (value: unknown): value is LanguageSetting => value === "auto" || value === "ru" || value === "en";
 function cached(): LanguageSetting {
   try { const value = localStorage.getItem(cacheKey); return isSetting(value) ? value : "auto"; } catch { return "auto"; }
+}
+
+/**
+ * The interface language outside a slot component's tree (a thread header button's `useData`): the same choice
+ * withInterface makes, from the uiLanguage setting, the language just chosen, and BB's own.
+ */
+export function useInterfaceLanguage(): Language {
+  const settings = useSettings();
+  const now = useSyncExternalStore(subscribe, () => chosen);
+  const stored: LanguageSetting = settings.values ? (isSetting(settings.values.uiLanguage) ? settings.values.uiLanguage : "auto") : cached();
+  return resolveLanguage(now ?? stored, bbLanguage());
 }
 
 /** Accounts were added or changed in this window (the Connections count of the side column reads them again). */

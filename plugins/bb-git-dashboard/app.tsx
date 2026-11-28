@@ -10,7 +10,8 @@ import { ProjectHead } from "./src/ui/project/project-head.tsx";
 import type { ConnectionApi } from "./src/ui/connection-wizard.tsx";
 import type { RepositoryApi } from "./src/ui/repository-panel.tsx";
 import { Worktree } from "./src/ui/worktree.tsx";
-import { Remotes, type RemoteApi } from "./src/ui/remotes.tsx";
+import type { RemoteApi } from "./src/ui/remote-api.ts";
+import type { AccountSync } from "./src/ui/project/account-sync.tsx";
 import { InboxPage } from "./src/ui/pulls/inbox-page.tsx";
 import type { AlertSummary, InboxApi, InboxItem } from "./src/ui/pulls/inbox-api.ts";
 import { PrPage } from "./src/ui/review/pr-page.tsx";
@@ -23,7 +24,8 @@ import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-o
 import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue, pullRequestApi } from "./src/app/apis.tsx";
 import { useCatalog } from "./src/app/catalog-data.tsx";
-import { gitTab, pinnedCopyTab, pinnedPullTab, PinnedGitPage, PinnedGitThread, PinnedPull, registerThreadSurfaces, ThreadGit } from "./src/app/thread-panel.tsx";
+import { gitTab, pinnedCopyTab, pinnedPullTab, PinnedGitPage, PinnedGitThread, PinnedPull, registerThreadSurfaces, repositoryPath, ThreadGit } from "./src/app/thread-panel.tsx";
+import { pinPullTab } from "./src/app/pin-tabs.ts";
 import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
 import { ConnectionsPage, type ConnectionsApi } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
@@ -63,7 +65,7 @@ function BoundWorktree({copy, client, host, attach, pin, openReview}: {
     return result.value;
   }, [client, copy.id]);
   const operations = useCallback(() => client.call("operations", {copyId:copy.id}), [client, copy.id]);
-  return <Worktree copy={copy} host={host ?? copy.hostId} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin} openReview={openReview}/>;
+  return <Worktree copy={copy} host={host ?? ""} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin} openReview={openReview}/>;
 }
 
 function BoundHead({copy, client, onFiles}: {copy: Copy; client: Client; onFiles(count: number): void}) {
@@ -76,7 +78,13 @@ function BoundHead({copy, client, onFiles}: {copy: Copy; client: Client; onFiles
     return result.value;
   }, [client, copy.id]);
   const onState = useCallback((state: import("./src/core/git.ts").GitResult) => onFiles(state.files?.length ?? 0), [onFiles]);
-  return <ProjectHead copy={copy} run={run} refresh={revision} onChanged={changed} onState={onState}/>;
+  // A network origin goes through the account the copy is linked to (CI/CD tab), after the server's preview.
+  const sync = useMemo<AccountSync>(() => ({
+    target: async () => { const result = await client.call("repositoryLink", {copyId: copy.id}); return result.ok ? result.target : failed(result); },
+    prepare: async (target, action) => { const result = await client.call("prepare", {...target, action}); return result.ok ? result.value : failed(result); },
+    publish: async previewId => { const result = await client.call("publish", {previewId}); return result.ok ? result.value : failed(result); },
+  }), [client, copy.id]);
+  return <ProjectHead copy={copy} run={run} refresh={revision} onChanged={changed} onState={onState} sync={sync}/>;
 }
 
 /** Open comment threads over every line review, for the Reviews count. */
@@ -151,15 +159,12 @@ function Dashboard({subPath}: {subPath: string}) {
     accounts: async () => {const result=await client.call("accounts");return result.ok ? result.items : failed(result);},
     accountCheck: async (accountId,refresh) => {const result=await client.call("accountCheck",{accountId,refresh});return result.ok ? result.value : failed(result);},
     repositories: async (accountId,page,refresh) => {const result=await client.call("repositories",{accountId,page,refresh});return result.ok ? result.value : failed(result);},
-    pulls: async (repo,page) => {const result=await client.call("pulls",{accountId:repo.accountId,repoId:repo.id,page});return result.ok ? result : failed(result);},
-    pull: async (repo,number) => {const result=await client.call("pull",{accountId:repo.accountId,repoId:repo.id,number});return result.ok ? result.value : failed(result);},
     trees: async copyId => {
       const result = await client.call("git",{copyId,action:{kind:"worktrees"}});
       return result.ok ? result.value : failed(result);
     },
     status: async copyId => {const result=await client.call("git",{copyId,action:{kind:"status"}});return result.ok ? result.value : failed(result);},
-    compare: async (copyId,base,head) => {const result=await client.call("git",{copyId,action:{kind:"compare",base,head}});return result.ok ? result.value : failed(result);},
-    prepare: async (repo,action) => {const result=await client.call("prepare",{accountId:repo.accountId,repoId:repo.id,action});return result.ok ? result.value : failed(result);},
+    prepare: async (target,action) => {const result=await client.call("prepare",{...target,action});return result.ok ? result.value : failed(result);},
     publish: async previewId => {const result=await client.call("publish",{previewId});return result.ok ? result.value : failed(result);},
     activity: () => client.call("remoteActivity"),
     link: async copyId => {
@@ -240,7 +245,9 @@ function Dashboard({subPath}: {subPath: string}) {
       };
       return <>
         {ref.kind === "pr" && typeof ref.number === "number"
-          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} position={index < 0 ? undefined : {index,total:order.length}} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0} onList={() => open("inbox")}/>
+          ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} position={index < 0 ? undefined : {index,total:order.length}} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0} onList={() => open("inbox")}
+            onPin={async () => { await pinPullTab(panel, pullTab, {accountId: ref.accountId, repo: ref.repo, number: ref.number as number}, ref.repo.split("/").pop() + " #" + ref.number,
+              (accountId, repoId) => repositoryPath(client, accountId, repoId)); }}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;
@@ -251,18 +258,12 @@ function Dashboard({subPath}: {subPath: string}) {
     </> : subPath === "inbox" ? <>
       <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}
         onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>
-    </> : subPath === "catalog" ? <>
-      <CatalogPage api={catalogApi} hosts={hosts}/>
+    </> : subPath === "catalog" || subPath === "remotes" ? <>
+      <CatalogPage key={subPath} api={catalogApi} hosts={hosts} initialTab={subPath === "remotes" ? "remote" : "local"}/>
     </> : subPath === "" ? <>
       <OverviewPage api={overview} ready={loaded} categories={categories} groups={groups} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
     </> : subPath === "connections" ? <>
-      <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
-    </> : subPath === "remotes" ? <>
-      <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
-        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,repo:repo.path,number},title:repo.name+" #"+number})) {
-          throw new Error("The panel did not accept this pull request.");
-        }
-      }}/>
+      <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onChanged={accountsChanged}/>
     </> : subPath === "projects" || subPath.startsWith("project/") ? <>
       <ProjectsRoute subPath={subPath} copies={copies} projects={projects} hosts={hosts} locations={locations} loaded={loaded} overview={overview} open={open}/>
     </> : <ProjectWorkspace copies={copies} hosts={hosts} subPath={subPath}

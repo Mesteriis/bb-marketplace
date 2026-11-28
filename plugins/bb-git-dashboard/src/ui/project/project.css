@@ -9,9 +9,11 @@
 .git-ws .git-code-bar .g-seg [role="tab"] { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: 6px;
   background: transparent; color: var(--muted-foreground); font: inherit; font-weight: 500; cursor: pointer; }
 .git-ws .git-code-bar .g-seg [role="tab"][aria-selected="true"] { background: var(--background); color: var(--foreground); box-shadow: 0 0 0 1px var(--border); }
-.git-ws .git-code-place { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; flex: 1; }
+/* At least 14em: on a crowded bar the place takes a line of its own rather than shrinking to a stub; the path then ends in an ellipsis. */
+.git-ws .git-code-place { display: inline-flex; align-items: center; gap: 6px; min-width: min(14em, 100%); overflow: hidden; white-space: nowrap; flex: 1 1 14em; }
 /* The path is the part that gives way: it ends with an ellipsis, the machine stays whole. */
-.git-ws .git-code-place > .g-mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.git-ws .git-code-place-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container (max-width: 640px) { .git-ws .git-code-place { flex: 0 0 auto; min-width: 0; } .git-ws .git-code-place-text { display: none; } }
 .git-ws .git-code-panel { min-width: 0; }
 .git-ws .git-codeview > .g-banner { margin: 12px 24px 0; }
 .git-ws .g-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -87,3 +89,8 @@
 .git-ws .git-project > .git-project-main > .git-codeview { flex: 1; }
 .git-ws .git-codeview > .git-code-panel { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .git-ws .git-code-panel > .git-changes { flex: 1; }
+/* Through the account: the server's preview lines, and the new pull request's form. */
+.git-ws .git-account-lines { list-style: none; margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--git-subtle); display: grid; gap: 4px;
+  font-size: 12px; overflow-wrap: anywhere; }
+.git-ws .git-account-form { display: grid; gap: 12px; }
+.git-ws .git-account-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }

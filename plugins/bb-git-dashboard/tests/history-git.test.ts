@@ -26,6 +26,21 @@ test("an empty repository has an empty history, not an error", async () => {
   } finally { done(); }
 });
 
+test("an untracked file is counted by its lines like a changed one; only a binary one has no counts", async () => {
+  const {root, git, done} = repository();
+  try {
+    writeFileSync(join(root, "a.txt"), "1\n");
+    git("add", "a.txt"); git("commit", "-qm", "first");
+    writeFileSync(join(root, "note.txt"), "one\ntwo\nthree\n");
+    writeFileSync(join(root, "logo.bin"), Buffer.from([0, 1, 2, 0]));
+    const page = await historyPage(root, 0, 50);
+    assert.deepEqual(page.uncommitted, [
+      {path: "logo.bin", status: "added", additions: null, deletions: null},
+      {path: "note.txt", status: "added", additions: 3, deletions: 0},
+    ]);
+  } finally { done(); }
+});
+
 test("the history covers all refs with branches, tags, merges and uncommitted files", async () => {
   const {root, git, done} = repository();
   try {

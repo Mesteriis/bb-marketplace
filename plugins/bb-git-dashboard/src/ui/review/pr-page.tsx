@@ -27,7 +27,9 @@ type Tab = typeof tabs[number];
 const forgeNames = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "Azure DevOps"} as const;
 
 /** A pull request: its head (path, place in the list, title and state, the branches), then Overview, Checks, Files, Commits and Comments. */
-export function PrPage({api, accountId, repo, number, onStep, position, revision = 0, onList}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
+export function PrPage({api, accountId, repo, number, onStep, position, revision = 0, onList, onPin}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
+  /** Pins this pull request as its own tab beside the thread. */
+  onPin?(): Promise<void> | void;
   /** Where this pull request is in the My PRs list it was opened from (0-based); absent when opened from elsewhere. */
   position?: {index: number; total: number};
   /** Changes when an agent's answer may have arrived: the drafts are read again. */
@@ -149,7 +151,7 @@ export function PrPage({api, accountId, repo, number, onStep, position, revision
         {title === null && can.editTitle && detail.canEdit && <button type="button" className="g-btn ghost sm" aria-label={t("pr.edit-title")} onClick={() => setTitle(detail.title)}><Icon name="Edit" small/></button>}
         <span className="git-pr-head-actions">
           {detail.url && <span className="git-pr-forge"><api.Link href={detail.url}><Icon name="ExternalLink" small/>{t("pr.on-forge", {forge: forgeNames[detail.forge]})}</api.Link></span>}
-          <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice}/>
+          <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice} onPin={onPin}/>
         </span>
       </div>
       <p className="git-pr-branches g-muted">

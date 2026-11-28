@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { GitAction, GitResult } from "../../core/git.ts";
+import { patchHunks } from "../../core/patch.ts";
 import { useT } from "../i18n/use-t.tsx";
 import { Icon } from "../system/icon.tsx";
 import type { Sequence } from "../merge/merge-actions.tsx";
@@ -13,7 +14,9 @@ const tones: Record<string, string> = {M: "g-warn", A: "g-good", D: "g-bad", R: 
  * Changes: the staged and not staged files (a check box stages one, the group's action all of them), the outgoing
  * commits and the commit at the bottom of the column; the chosen file's diff beside them, each hunk's action under it.
  */
-export function Changes({state, sequence, run, pending, revision, act, actAll, onResolve, onError, openReview, canPush, onCommitted}: {
+export function Changes({state, sequence, run, pending, revision, act, actAll, onResolve, onError, openReview, canPush, onCommitted, initialPath}: {
+  /** The file to show first (a file chosen in the panel's summary); the first listed one otherwise. */
+  initialPath?: string;
   state: GitResult; sequence: Sequence | null; run: RunGit; pending: boolean; revision: number;
   /** Runs one write; resolves true when it went through. */
   act(action: GitAction): Promise<boolean>;
@@ -27,7 +30,7 @@ export function Changes({state, sequence, run, pending, revision, act, actAll, o
   onCommitted(push: boolean): void;
 }) {
   const t = useT();
-  const [selected, setSelected] = useState<Selection>();
+  const [selected, setSelected] = useState<Selection | undefined>(() => initialPath ? {path: initialPath, staged: false} : undefined);
   const [diff, setDiff] = useState<GitResult>();
   const [outgoing, setOutgoing] = useState<GitResult | null>(null);
   const [outgoingOpen, setOutgoingOpen] = useState(false);
@@ -136,6 +139,11 @@ export function Changes({state, sequence, run, pending, revision, act, actAll, o
               {selected.staged ? t("pg.hunk-unstage") : t("pg.hunk-stage")}</button>
           </div>
         </article>)}
+        {openReview && <div className="git-changes-hunk-actions"><button type="button" className="g-btn ghost sm" onClick={() => openReview(selected.path)}>
+          <Icon name="MessageSquare" small/>{t("pg.open-review")}</button></div>}
+      </> : patchHunks(diff.text ?? "").length ? <>
+        {/* A new file's patch (against /dev/null) has no hunks to stage one by one: its box stages it whole. */}
+        {patchHunks(diff.text ?? "").map((hunk, index) => <article className="git-changes-hunk" key={index}><HunkLines patch={hunk}/></article>)}
         {openReview && <div className="git-changes-hunk-actions"><button type="button" className="g-btn ghost sm" onClick={() => openReview(selected.path)}>
           <Icon name="MessageSquare" small/>{t("pg.open-review")}</button></div>}
       </> : <pre className="git-changes-plain">{diff.text || t("pg.no-diff")}</pre>}

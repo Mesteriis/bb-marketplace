@@ -3,6 +3,7 @@ import { isTerminal, type Job, type Run } from "../../core/ci/model.ts";
 import type { GitAction, GitResult } from "../../core/git.ts";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { ago } from "../../core/i18n/time.ts";
+import { commitOfSummary, inIndex, isConflict as conflict, stageOfSummary } from "../../core/panel/changes.ts";
 import { errorLines, prState } from "../../core/panel/summary.ts";
 import type { InboxPr } from "../../core/pulls/model.ts";
 import type { CiApi } from "../ci/ci-api.ts";
@@ -30,45 +31,42 @@ export function Section({id, title, aside, open, onToggle, children}: {id: strin
  * and a copy without a commit author are sent to the copy's Changes, where they are resolved or set.
  */
 export function ChangesBody({state, run, onChanged, onOpen}: {state: GitResult; run(action: GitAction): Promise<GitResult>; onChanged(): void;
-  /** Opens the copy's Changes. */
-  onOpen(): void}) {
+  /** Opens the copy's Changes, at this file when one is named. */
+  onOpen(path?: string): void}) {
   const t = useT();
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const files = state.files ?? [];
-  const inIndex = (file: (typeof files)[number]) => ![".", "?"].includes(file.index);
-  const staged = files.filter(inIndex).length;
-  // The same rule as the copy's Changes: unmerged, both added or both deleted.
-  const conflict = (file: (typeof files)[number]) => file.index === "U" || file.worktree === "U" || ["AA", "DD"].includes(file.index + file.worktree);
   const conflicts = files.filter(conflict).length;
+  const {staged, action: commit} = commitOfSummary(state, text);
   const act = async (action: GitAction) => {
     setPending(true); setError("");
     try { await run(action); onChanged(); return true; } catch (cause) { setError(message(cause)); return false; } finally { setPending(false); }
   };
   if (!files.length) return <p className="g-muted git-panel-empty">{t("pg.clean")}</p>;
-  const canCommit = !pending && staged > 0 && !!text.trim() && !!state.snapshot && !!state.author && conflicts === 0;
+  const canCommit = !pending && commit !== null;
   return <>
     {conflicts > 0 && <div className="g-banner warn git-panel-note-banner" role="status"><span>{t("gp.conflicts", {n: conflicts})}</span>
-      <button type="button" className="g-btn sm" onClick={onOpen}>{t("pg.resolve")}</button></div>}
+      <button type="button" className="g-btn sm" onClick={() => onOpen()}>{t("pg.resolve")}</button></div>}
     <ul className="git-panel-files" aria-label={t("gp.changes")}>{files.map(file => {
       const mark = (inIndex(file) ? file.index : file.worktree === "." ? file.index : file.worktree).replace(".", "?");
       const letter = file.index === "?" ? "U" : mark;
       const slash = file.path.lastIndexOf("/");
       return <li key={file.path}>
         <input type="checkbox" checked={inIndex(file)} disabled={pending || conflict(file)} aria-label={t(inIndex(file) ? "pg.unstage" : "pg.stage", {path: file.path})}
-          onChange={() => void act({kind: "stage", path: file.path, staged: inIndex(file)})}/>
+          onChange={() => void act(stageOfSummary(file))}/>
         <span className={"git-panel-mark " + (tones[letter === "U" && file.index === "?" ? "?" : letter] ?? "")}>{letter}</span>
-        <button type="button" className="git-panel-path" title={file.path} onClick={onOpen}>
+        <button type="button" className="git-panel-path" title={file.path} onClick={() => onOpen(file.path)}>
           {slash >= 0 && <span className="g-muted">{file.path.slice(0, slash + 1)}</span>}{file.path.slice(slash + 1)}</button>
       </li>;
     })}</ul>
-    <form className="git-panel-commit" onSubmit={event => { event.preventDefault(); if (canCommit) void act({kind: "commit", expected: state.snapshot!, message: text}).then(done => { if (done) setText(""); }); }}>
+    <form className="git-panel-commit" onSubmit={event => { event.preventDefault(); if (canCommit && commit) void act(commit).then(done => { if (done) setText(""); }); }}>
       <input className="g-inp" aria-label={t("pg.message")} placeholder={t("pg.message")} maxLength={8000} value={text} onChange={event => setText(event.target.value)}/>
       <button type="submit" className="g-btn" disabled={!canCommit}>{t("pg.commit")}{staged ? " " + staged : ""}</button>
     </form>
     {!state.author && <p className="g-muted git-panel-empty">{t("gp.no-author")}
-      <button type="button" className="g-btn ghost sm" onClick={onOpen}>{t("gp.set-author")}</button></p>}
+      <button type="button" className="g-btn ghost sm" onClick={() => onOpen()}>{t("gp.set-author")}</button></p>}
     {error && <p className="g-bad git-panel-error" role="alert">{error}</p>}
   </>;
 }
