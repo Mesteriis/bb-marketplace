@@ -45,6 +45,8 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   ci:
     runs-on: ubuntu-latest

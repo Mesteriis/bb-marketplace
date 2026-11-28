@@ -99,7 +99,8 @@ const rootMake = file("Makefile", "check: layout\n\t$(MAKE) -C src/frontend chec
 test("a frontend alone in src/frontend/ is a Node.js project: CI installs there and runs make check at the root", () => {
   const made = ciOf([rootMake, ...frontend], scaffold({packageManager: "npm", lockfile: false, make: true}), "github", repo);
   assert.equal(made.template, "node-github");
-  assert.match(made.text, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "22"\n/);
+  // engines >=22.12 admits 24, the Node.js a web UI beside another application gets too.
+  assert.match(made.text, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "24"\n/);
   assert.match(made.text, /- name: Install\n {8}run: npm install\n {8}working-directory: src\/frontend\n/);
   assert.match(made.text, /- name: Check\n {8}run: make check\n$/);
 });

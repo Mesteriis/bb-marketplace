@@ -62,8 +62,15 @@ try {
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
+    // The probe reads English labels: it sets the language itself, whatever a probe before it left (the setting is BB's,
+    // not the browser context's).
+    let english = false;
     const open = async name => {
       await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
+      if (!english) {
+        await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: "EN", exact: true }).click({ timeout: 30000 });
+        english = true;
+      }
       await page.locator(".git-projects-table").getByText(name, { exact: true }).first().click({ timeout: 30000 });
       await page.locator(".git-project-head").waitFor({ timeout: 30000 });
       await page.locator(".git-project-head .g-branch").first().waitFor({ timeout: 30000 });
