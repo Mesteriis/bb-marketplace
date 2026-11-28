@@ -2,17 +2,17 @@ import { createHash } from "node:crypto";
 import type { z } from "zod";
 import { checksum, scanFile } from "../../core/compare.ts";
 import { EDIT_IDLE_MS, EDIT_SNAPSHOT_ENDPOINT, decideWriteBack, uploadExpired, type EditSession, type WriteBackRequest } from "../../core/edit-session.ts";
-import { readEditSource } from "../../core/edit-source.ts";
+import { editTextValidator, readEditSource } from "../../core/edit-source.ts";
 import { CommanderError } from "../../core/errors.ts";
 import { assertWritable, segmentKey } from "../../core/guards.ts";
 import type { JobStore } from "../../core/job-store.ts";
-import { OperationPlan, planDigest, type Entry, type OperationJob, type ResourceRef } from "../../core/model.ts";
+import { OperationPlan, planDigest, type Entry, type Fingerprint, type OperationJob, type ResourceRef } from "../../core/model.ts";
 import { nextFreeName } from "../../core/naming.ts";
 import { join, parent, samePath } from "../../core/path.ts";
 import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
 import { entryName, readForView, replyFor } from "../../core/preview.ts";
-import { LIST_PAGE_MAX } from "../../core/provider.ts";
-import { fingerprint, matches } from "../../core/reconcile.ts";
+import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider } from "../../core/provider.ts";
+import { fingerprint, matches, readChunks } from "../../core/reconcile.ts";
 import { EDIT_OPENER, type editRpcSchemas } from "../../core/wire/edit.ts";
 import { snapshotIds, snapshotRef, type EditHost } from "./edit-host-client.ts";
 import type { EditStore } from "./edit-store.ts";
@@ -110,6 +110,40 @@ export function createEditOperations(deps: {
     } as const;
   }
 
+  async function existingSession(ref: ResourceRef, provider: FileProvider, signal: AbortSignal) {
+    const { provider: kind, caseSensitive, hostId } = provider.endpoint;
+    if (kind !== "local") return store.forRef(ref, caseSensitive);
+    const exact = store.forRef(ref, true);
+    if (exact || !hostId) return exact;
+    const aliases = store.foldedRefs(ref);
+    if (aliases.length === 0) return null;
+    const sourceIdentity = (candidate: ResourceRef) => host.call("editSourceIdentity", { path: candidate.path }, hostId, signal);
+    const identity = await sourceIdentity(ref);
+    if (identity === null || identity.ino === "0") return null;
+    for (const candidate of aliases) {
+      const other = await sourceIdentity(candidate.ref);
+      if (other?.dev === identity.dev && other.ino === identity.ino) return candidate;
+    }
+    return null;
+  }
+
+  async function verifiedPrefix(
+    provider: FileProvider, ref: ResourceRef, expect: Fingerprint, signal: AbortSignal,
+  ) {
+    const budget = 256 * 1024;
+    const prefix = Buffer.alloc(Math.min(Number(expect.size), budget));
+    const digest = createHash("sha256");
+    await readChunks({ provider, path: ref.path }, expect, READ_CHUNK_MAX, signal, (read) => read(), async (chunk, offset) => {
+      digest.update(chunk);
+      if (offset < BigInt(prefix.length)) prefix.set(chunk.subarray(0, prefix.length - Number(offset)), Number(offset));
+    });
+    const after = await provider.stat(ref.path, signal);
+    if (after?.kind !== "file" || !matches(after, expect)) {
+      throw new CommanderError("changed_since_plan", "Файл изменился во время сравнения");
+    }
+    return { prefix, sha256: digest.digest("hex"), truncated: Number(expect.size) > budget };
+  }
+
   async function currentTarget(session: EditSession, signal: AbortSignal) {
     const { endpoint, path } = session.ref;
     await deps.prepare([endpoint], signal);
@@ -147,8 +181,8 @@ export function createEditOperations(deps: {
         await deps.prepare([ref.endpoint], signal);
         const provider = planner.provider(ref.endpoint);
         assertWritable(provider.endpoint);
-        const { caseSensitive } = provider.endpoint;
-        const existing = store.forRef(ref, caseSensitive);
+        const caseSensitive = provider.endpoint.provider === "local" || provider.endpoint.caseSensitive;
+        const existing = await existingSession(ref, provider, signal);
         if (existing && !expired(existing)) return present(await refreshBase(existing), signal);
         if (existing) store.close(existing.sessionId);
         let expected;
@@ -272,22 +306,15 @@ export function createEditOperations(deps: {
         const expect = { size, mtimeNs };
         try {
           if (sha256) {
-            const verified = await readEditSource(provider, ref.path, signal, { expected: expect });
-            if (!matches(verified.base, shown.current)) {
-              return assignConflict(session, { kind: "file", fingerprint: verified.base }, signal);
+            const verified = await verifiedPrefix(provider, ref, expect, signal);
+            if (verified.sha256 !== sha256) {
+              return assignConflict(session, { kind: "file", fingerprint: { ...expect, sha256: verified.sha256 } }, signal);
             }
-            const budget = 256 * 1024;
-            const prefix = Buffer.alloc(Math.min(Number(size), budget));
-            let offset = 0;
-            for (const chunk of verified.chunks) {
-              const part = chunk.subarray(0, prefix.length - offset);
-              prefix.set(part, offset);
-              offset += part.length;
-              if (offset === prefix.length) break;
-            }
-            const truncated = Number(size) > budget;
-            const text = new TextDecoder("utf-8").decode(prefix, { stream: truncated });
-            return { kind: "text", text: text + (truncated ? "\n…" : "") };
+            const validate = editTextValidator();
+            validate(verified.prefix);
+            if (!verified.truncated) validate();
+            const text = new TextDecoder("utf-8").decode(verified.prefix, { stream: verified.truncated });
+            return { kind: "text", text: text + (verified.truncated ? "\n…" : "") };
           }
           const view = replyFor(await readForView(provider, ref.path, { offset: 0n, length: 256 * 1024, expect }, signal), "text", "owner");
           if (view.view.kind !== "text") throw new CommanderError("unsupported", "Текущая версия недоступна для текстового просмотра");

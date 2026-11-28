@@ -79,3 +79,13 @@ it("resumes a partial load and releases quota after ten minutes of inactivity", 
   expect(await files.commitRevision(dir, id, 0, "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282"))
     .toBe(1);
 });
+
+it.each(["draft:2.txt", "notes?.txt"])("uses an existing valid Windows path for SFTP name %s", async (name) => {
+  const files = createEditFiles({ platform: "win32" });
+  await files.create(dir, id);
+  await files.writeChunk(dir, id, 0, 0, abc);
+  await files.commitRevision(dir, id, 0, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", true);
+  const path = await files.route(dir, id, 0, name);
+  expect(path).toBe(join(dir, "commander-edits", id, "revision-0"));
+  expect(await readFile(path, "utf8")).toBe("abc");
+});

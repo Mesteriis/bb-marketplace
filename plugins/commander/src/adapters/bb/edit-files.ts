@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { CommanderError } from "../../core/errors.ts";
 import { EDIT_CHUNK, EDIT_LIMIT, editTextValidator } from "../../core/edit-source.ts";
 
+import { validateTargetName, type NamePlatform } from "./host-fs/names.ts";
+
 export const EDIT_DIRECTORY = "commander-edits";
 const UPLOAD_TTL = 10 * 60 * 1000;
 const QUOTA = 1024 * 1024 * 1024;
@@ -90,7 +92,11 @@ async function writeNew(path: string, bytes: Uint8Array) {
   }
 }
 
-export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
+export function createEditFiles({
+  quotaBytes = QUOTA,
+  now = Date.now,
+  platform = process.platform === "win32" ? "win32" : "posix",
+}: { quotaBytes?: number; now?: () => number; platform?: NamePlatform } = {}) {
   // The host SDK runs one worker for this plugin on a host. Serialize quota
   // inspection and file mutations within the worker.
   let tail = Promise.resolve();
@@ -240,20 +246,29 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
       return transaction(async () => {
         const folder = await sessionPath(dataDir, id);
         const revisionName = leafName({ revision });
-        const { file } = await regular(join(folder, revisionName), constants.O_RDONLY);
+        const revisionPath = join(folder, revisionName);
+        const { file } = await regular(revisionPath, constants.O_RDONLY);
         await file.close();
+        if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+          throw new CommanderError("invalid_name", "Invalid editor filename");
+        }
+        if (platform === "win32") {
+          try { validateTargetName({ t: name }, platform); }
+          catch (error) {
+            if (error instanceof CommanderError && error.code === "invalid_name") return revisionPath;
+            throw error;
+          }
+        }
         const view = join(folder, "view-" + revision);
         await mkdir(view, { recursive: true, mode: 0o700 });
         await directory(view);
-        if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")
-            || process.platform === "win32" && /[\\:"<>|?*]/u.test(name)) {
-          throw new CommanderError("invalid_name", "Invalid editor filename");
-        }
         const path = join(view, name);
         const target = join("..", revisionName);
         try { await symlink(target, path, "file"); }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST" || await readlink(path) !== target) throw error;
+          const { code } = error as NodeJS.ErrnoException;
+          if (platform === "win32" && (code === "EPERM" || code === "EACCES")) return revisionPath;
+          if (code !== "EEXIST" || await readlink(path) !== target) throw error;
         }
         return path;
       });

@@ -1,10 +1,27 @@
 import type { ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
 import { CommanderError } from "../../core/errors.ts";
 import type { editHostSchemas } from "../../core/wire/edit.ts";
+import { createEditPathPolicy } from "./edit-path-policy.ts";
+import { hasErrno } from "./host-fs/errors.ts";
+import { resolvePath } from "./host-fs/paths.ts";
 import { createEditFiles } from "./edit-files.ts";
 
 export function createEditHostHandlers(files = createEditFiles()): ExperimentalHostRpcHandlers<typeof editHostSchemas> {
   const handlers: ExperimentalHostRpcHandlers<typeof editHostSchemas> = {
+    async editSourceIdentity({ path }, ctx) {
+      const platform = process.platform === "win32" ? "win32" : "posix";
+      const policy = await createEditPathPolicy(ctx.experimental_paths.dataDir, platform, ctx.signal);
+      await policy.check(path);
+      const resolved = await resolvePath(path, platform).catch((error) => {
+        if (hasErrno(error, "ENOENT")) return null;
+        throw error;
+      });
+      if (!resolved?.stats?.isFile()) return null;
+      if (await policy.hidden(resolved.full, resolved.stats)) {
+        throw new CommanderError("permission_denied", "Path is outside the agent's grant");
+      }
+      return { dev: resolved.stats.dev.toString(), ino: resolved.stats.ino.toString() };
+    },
     async editCreate(input, ctx) {
       return { path: await files.create(ctx.experimental_paths.dataDir, input.sessionId, input.size) };
     },

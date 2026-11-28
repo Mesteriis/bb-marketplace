@@ -38,7 +38,7 @@ function ref(path = source) {
   return { endpoint: "host:test", path: parsePosix(path) };
 }
 
-async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false, options: { loseChunkReply?: boolean; caseSensitive?: boolean } = {}) {
+async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false, options: { loseChunkReply?: boolean; caseSensitive?: boolean; identity?: (path: ReturnType<typeof parsePosix>) => { dev: string; ino: string } } = {}) {
   const db = new Database(join(folder, "jobs.db"));
   const signal = new AbortController();
   const callbacks: (() => Promise<void>)[] = [];
@@ -81,6 +81,9 @@ async function start(remote = new RemoteHubMock(), primaryHostId: string | null 
         async call(method: string, data: unknown, ctx: { signal?: AbortSignal }) {
           if (method === "home") return { path: parsePosix(folder), caseSensitive: options.caseSensitive ?? true };
           if (method === "editSweep") sweepStarted = true;
+          if (method === "editSourceIdentity" && options.identity) {
+            return options.identity((data as { path: ReturnType<typeof parsePosix> }).path);
+          }
           if (holdSnapshotRead && method === "editReadChunk" && "snapshotId" in (data as { source: object }).source) {
             snapshotRead.resolve();
             const callSignal = ctx.signal ?? signal.signal;
@@ -368,7 +371,13 @@ it("blocks writeback after the host accepts the first chunk and its reply is los
 it.each([[false, true], [true, false]])("uses endpoint case sensitivity %s for repeated opens", async (caseSensitive, sameSession) => {
   // Simulate both volume policies with distinct directory entries. On a folded
   // volume the second spelling addresses the first existing session.
-  const bb = await start(undefined, "test", false, { caseSensitive });
+  const bb = await start(undefined, "test", false, {
+    caseSensitive,
+    identity(path) {
+      const upper = path.segments.at(-1);
+      return { dev: "5", ino: caseSensitive && upper && "t" in upper && upper.t === "A.txt" ? "13" : "12" };
+    },
+  });
   const upper = join(folder, "A.txt");
   await writeFile(upper, "abc");
   const first = await bb.open();
@@ -408,4 +417,56 @@ it("uses the original basename and resolves a new fallback path after saving", a
   expect(fresh.path.split("/").at(-1)).toBe("a.txt");
   expect(fresh.path).not.toBe(opener.path);
   expect(await readFile(fresh.path, "utf8")).toBe("hello");
+});
+
+it("keeps distinct inodes in separate sessions even when host home folds case", async () => {
+  const probes: string[] = [];
+  const bb = await start(undefined, "test", false, {
+    caseSensitive: false,
+    identity(path) {
+      const leaf = path.segments.at(-1);
+      if (!leaf || !("t" in leaf)) throw new Error("Expected a textual fixture path");
+      probes.push(leaf.t);
+      return { dev: "5", ino: leaf.t === "A.txt" ? "13" : "12" };
+    },
+  });
+  const first = await bb.open();
+  const upper = join(folder, "A.txt");
+  await writeFile(upper, "different");
+  const second = editRpcSchemas.edit_open.output.parse(await bb.rpc("edit_open", { ref: ref(upper) }));
+  expect(second.sessionId).not.toBe(first.sessionId);
+  expect(await readFile(first.opener.path, "utf8")).toBe("abc");
+  expect(await readFile(second.opener.path, "utf8")).toBe("different");
+  expect(probes).toEqual(["A.txt", "a.txt"]);
+});
+
+it("compares the verified prefix when the original has grown beyond the edit limit", async () => {
+  const bb = await start();
+  const { sessionId } = await bb.open();
+  const contents = Buffer.alloc(16_777_217, 0x61);
+  contents.write("verified prefix\n");
+  await writeFile(source, contents);
+  const shown = editRpcSchemas.edit_writeback.output.parse(await bb.rpc("edit_writeback", {
+    sessionId, clientRequestId: randomUUID(), revision: 0,
+  }));
+  if (shown.kind !== "conflict") throw new Error("Expected conflict");
+  const result = await bb.rpc("edit_compare", { sessionId, conflictId: shown.conflictId });
+  expect(result).toEqual({ kind: "text", text: "verified prefix\n" + "a".repeat(262_128) + "\n…" });
+  expect(bb.db.prepare("SELECT count(*) AS total FROM jobs").get()).toEqual({ total: 0 });
+});
+
+it("reports equal device and inode for hard links and distinguishes separate files", async () => {
+  const bb = await start();
+  const handler = worker.handlers.editSourceIdentity;
+  const context = { signal: client.experimental_signal, experimental_paths: { dataDir: privateData } } as Parameters<typeof handler>[1];
+  const alias = join(folder, "same-inode.txt");
+  const distinct = join(folder, "other-inode.txt");
+  await link(source, alias);
+  await writeFile(distinct, "abc");
+  const original = await handler({ path: parsePosix(source) }, context);
+  expect(original).toMatchObject({ dev: expect.stringMatching(/^[0-9]+$/), ino: expect.stringMatching(/^[1-9][0-9]*$/) });
+  await expect(handler({ path: parsePosix(alias) }, context)).resolves.toEqual(original);
+  await expect(handler({ path: parsePosix(distinct) }, context)).resolves.not.toEqual(original);
+  await expect(handler({ path: parsePosix(join(folder, "missing")) }, context)).resolves.toBeNull();
+  await bb.close();
 });

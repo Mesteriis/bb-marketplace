@@ -79,16 +79,15 @@ export function createEditStore(db: Database) {
     };
   }
 
+  function foldedRefs(ref: ResourceRef) {
+    return byEndpoint.all(ref.endpoint).map(session)
+      .filter((existing) => samePath(existing.ref.path, ref.path, false));
+  }
+
   function forRef(ref: ResourceRef, caseSensitive: boolean) {
-    if (caseSensitive) {
-      const row = byRef.get(refKey(ref));
-      return row ? session(row) : null;
-    }
-    for (const row of byEndpoint.iterate(ref.endpoint)) {
-      const existing = session(row);
-      if (samePath(existing.ref.path, ref.path, false)) return existing;
-    }
-    return null;
+    const exact = byRef.get(refKey(ref));
+    if (exact) return session(exact);
+    return caseSensitive ? null : foldedRefs(ref)[0] ?? null;
   }
 
   const create = db.transaction((value: EditSession, caseSensitive: boolean) => {
@@ -101,7 +100,7 @@ export function createEditStore(db: Database) {
       const row = byId.get(id);
       return row ? session(row) : null;
     },
-    forRef,
+    forRef, foldedRefs,
     list() { return all.all().map(session); },
     open(value: EditSession, caseSensitive: boolean) { create.immediate(value, caseSensitive); },
     save(value: EditSession) {
