@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { experimental_PluginRpcCallError, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -474,20 +474,26 @@ it("reports equal device and inode for hard links and distinguishes separate fil
   await bb.close();
 });
 
-it("writes through the selected directory entry when case variants have the same inode", async () => {
-  const bb = await start(undefined, "test", false, {
-    caseSensitive: false,
-    identity(path) {
-      const name = path.segments.at(-1)!;
-      return { dev: "5", ino: "12", parentDev: "5", parentIno: "8", name };
-    },
-  });
+it("writes through the selected directory entry when case variants have the same inode", async ({ skip }) => {
   const upper = join(folder, "A.txt");
-  // On a case-sensitive test volume this creates the actual pair. On a folded
-  // test volume the worker response supplies the two distinct spellings.
-  await link(source, upper).catch((error: NodeJS.ErrnoException) => {
-    if (error.code !== "EEXIST") throw error;
-  });
+  try {
+    await link(source, upper);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      skip("The test volume folds A.txt and a.txt into one directory entry");
+      return;
+    }
+    throw error;
+  }
+  const lowerStat = await stat(source, { bigint: true });
+  const upperStat = await stat(upper, { bigint: true });
+  expect(upperStat.dev).toBe(lowerStat.dev);
+  expect(upperStat.ino).toBe(lowerStat.ino);
+  expect(upperStat.nlink).toBe(2n);
+
+  // The endpoint's home volume can fold case while the selected volume does
+  // not. Only home is stubbed; editSourceIdentity uses the real host worker.
+  const bb = await start(undefined, "test", false, { caseSensitive: false });
   const lower = await bb.open();
   const opened = editRpcSchemas.edit_open.output.parse(await bb.rpc("edit_open", { ref: ref(upper) }));
   expect(opened.sessionId).not.toBe(lower.sessionId);
@@ -500,4 +506,6 @@ it("writes through the selected directory entry when case variants have the same
   if (result.kind !== "written") throw new Error("Expected queued write");
   const job = await bb.completed(result.jobId);
   expect(job.plan.items[0]?.target?.path.segments.at(-1)).toEqual({ t: "A.txt" });
+  expect(await readFile(upper, "utf8")).toBe("hello");
+  expect(await readFile(source, "utf8")).toBe("abc");
 });
