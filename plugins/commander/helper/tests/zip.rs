@@ -320,6 +320,23 @@ fn symlinks_are_listed_and_classified() {
 }
 
 #[test]
+fn a_target_that_cannot_be_classified_counts_as_escaping() {
+    let inside_4096 = vec![b'a'; 4096];
+    let inside_4097 = vec![b'a'; 4097];
+    let mut absolute_4097 = vec![b'a'; 4097];
+    absolute_4097[0] = b'/';
+    let z = zip(&[
+        ZEntry::symlink(b"at-limit", &inside_4096),
+        ZEntry::symlink(b"over-limit", &inside_4097),
+        ZEntry::symlink(b"over-absolute", &absolute_4097),
+    ]);
+    let (mut h, r) = open_zip(&z.bytes);
+    r.ok();
+    let refused: Vec<String> = h.list_root().iter().map(|e| e["refused"].as_str().unwrap().to_string()).collect();
+    assert_eq!(refused, ["link_not_supported", "link_escapes", "link_escapes"]);
+}
+
+#[test]
 fn unsupported_compression_is_reported() {
     let mut e = ZEntry::stored(b"a", b"1");
     e.method = 12; // bzip2

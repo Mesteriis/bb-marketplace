@@ -282,6 +282,18 @@ fn links_are_listed_and_never_readable() {
 }
 
 #[test]
+fn a_hardlink_target_counts_from_the_archive_root_and_a_symlink_from_its_directory() {
+    let mut t = Vec::new();
+    t.extend(tar_header(b"d/hard", b'1', &octal12(0), b"../x"));
+    t.extend(tar_header(b"d/sym", b'2', &octal12(0), b"../x"));
+    t.extend(tar_header(b"d/hard2", b'1', &octal12(0), b"x"));
+    let (mut h, r) = open_tar(&tar_finish(t));
+    r.ok();
+    let refused: Vec<String> = h.list("d/").iter().map(|e| e["refused"].as_str().unwrap().to_string()).collect();
+    assert_eq!(refused, ["link_escapes", "link_not_supported", "link_not_supported"]);
+}
+
+#[test]
 fn limits_entries_and_total_bytes() {
     let mut t = Vec::new();
     for i in 0..3 {

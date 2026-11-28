@@ -252,7 +252,7 @@ pub fn scan(file: &PreadFile, limits: &Limits, ctx: &Ctx) -> Result<Index, HErr>
             }
         }
         let refused = match kind {
-            Kind::Symlink | Kind::Hardlink => Some(crate::links::classify(&name, link.as_deref().unwrap_or(b""))),
+            Kind::Symlink | Kind::Hardlink => Some(crate::links::classify(&name, link.as_deref().unwrap_or(b""), kind == Kind::Hardlink)),
             Kind::Special => Some("special_file"),
             _ => names::check_entry_name(&name).err(),
         };

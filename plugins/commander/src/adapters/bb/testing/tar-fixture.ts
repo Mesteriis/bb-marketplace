@@ -1,5 +1,5 @@
-/** Builds a ustar archive in memory for tests: files (type 0), directories (5), symlinks (2). */
-export function ustar(entries: Array<{ name: string; data?: string; type?: "0" | "5" | "2"; link?: string }>): Uint8Array {
+/** Builds a ustar archive in memory for tests: files (type 0), directories (5), symlinks (2), hardlinks (1). */
+export function ustar(entries: Array<{ name: string; data?: string; type?: "0" | "5" | "2" | "1"; link?: string }>): Uint8Array {
   const blocks: Buffer[] = [];
   for (const entry of entries) {
     const data = Buffer.from(entry.data ?? "");

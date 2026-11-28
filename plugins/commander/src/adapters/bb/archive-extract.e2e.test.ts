@@ -122,24 +122,33 @@ describe.skipIf(!runnable)("extracting from an archive", () => {
     zip: (link: string) => ({ name: "a.zip", bytes: storedZip([{ name: "ok.txt", data: "fine" }, { name: "ln", data: link, mode: SYMLINK }]) }),
     tar: (link: string) => ({ name: "a.tar", bytes: ustar([{ name: "ok.txt", data: "fine" }, { name: "ln", type: "2", link }]) }),
   };
+  async function failsWith(archive: { name: string; bytes: Uint8Array }, entry: string, reason: string) {
+    const { manager, target, runner, deps, store } = await rig([], archive);
+    const plan = await buildPlan({
+      kind: "copy", initiator: { kind: "owner" }, sources: [{ endpoint: ARCHIVE, path: parsePosix(entry) }],
+      targetDir: { endpoint: "host:dst", path: parsePosix("/out") }, newName: null, conflictPolicy: "ask", verify: "size",
+    }, { ...deps, protectedPathsFor: () => [], limits: { maxItems: 1000, maxDepth: 16 } } as never, signal);
+    const { id } = await runner.submit(plan);
+    await vi.waitFor(async () => expect(["failed", "completed"]).toContain((await store.get(id))?.state), { timeout: 15_000 });
+    const job = (await store.get(id))!;
+    expect(job.items[0]).toEqual({ outcome: "failed", error: "Links in archives are not extracted", code: "unsupported", reason });
+    expect(job.error).toMatchObject({ code: "unsupported", reason });
+    expect(target.contents(parsePosix("/out" + entry.slice(entry.lastIndexOf("/"))))).toBeNull();
+    expect((await target.list(parsePosix("/out"), { cursor: null, limit: 100 }, signal)).entries).toEqual([]);
+    expect(target.temporaryCount).toBe(0);
+    await manager.close(ID);
+  }
   for (const [format, build] of Object.entries(formats)) {
     for (const [where, link, reason] of [["inside the root", "ok.txt", "link_not_supported"], ["outside the root", "../../etc/passwd", "link_escapes"]] as const) {
-      it("a " + format.toUpperCase() + " symlink " + where + " fails its item with unsupported/" + reason + " and writes nothing", async () => {
-        const { manager, target, runner, deps, store } = await rig([], build(link));
-        const plan = await buildPlan({
-          kind: "copy", initiator: { kind: "owner" }, sources: [{ endpoint: ARCHIVE, path: parsePosix("/ln") }],
-          targetDir: { endpoint: "host:dst", path: parsePosix("/out") }, newName: null, conflictPolicy: "ask", verify: "size",
-        }, { ...deps, protectedPathsFor: () => [], limits: { maxItems: 1000, maxDepth: 16 } } as never, signal);
-        const { id } = await runner.submit(plan);
-        await vi.waitFor(async () => expect(["failed", "completed"]).toContain((await store.get(id))?.state), { timeout: 15_000 });
-        const job = (await store.get(id))!;
-        expect(job.items[0]).toEqual({ outcome: "failed", error: "Links in archives are not extracted", code: "unsupported", reason });
-        expect(job.error).toMatchObject({ code: "unsupported", reason });
-        expect(target.contents(parsePosix("/out/ln"))).toBeNull();
-        expect((await target.list(parsePosix("/out"), { cursor: null, limit: 100 }, signal)).entries).toEqual([]);
-        expect(target.temporaryCount).toBe(0);
-        await manager.close(ID);
-      });
+      it("a " + format.toUpperCase() + " symlink " + where + " fails its item with unsupported/" + reason + " and writes nothing", () =>
+        failsWith(build(link), "/ln", reason));
     }
   }
+  const tar = (link: string) => ({ name: "a.tar", bytes: ustar([{ name: "d/", type: "5" }, { name: "d/l", type: "1", link }]) });
+  it("a TAR hardlink d/l -> ../x counts from the archive root: link_escapes", () => failsWith(tar("../x"), "/d/l", "link_escapes"));
+  it("a TAR hardlink d/l -> x stays inside the root: link_not_supported", () => failsWith(tar("x"), "/d/l", "link_not_supported"));
+  const zip = (link: string) => ({ name: "a.zip", bytes: storedZip([{ name: "ln", data: link, mode: SYMLINK }]) });
+  it("a ZIP symlink target of 4096 bytes inside the root is link_not_supported", () => failsWith(zip("a".repeat(4096)), "/ln", "link_not_supported"));
+  it("a ZIP symlink target of 4097 bytes cannot be classified: link_escapes", () => failsWith(zip("a".repeat(4097)), "/ln", "link_escapes"));
+  it("a ZIP symlink target over 4096 bytes starting with a slash is link_escapes", () => failsWith(zip("/" + "a".repeat(4096)), "/ln", "link_escapes"));
 });
