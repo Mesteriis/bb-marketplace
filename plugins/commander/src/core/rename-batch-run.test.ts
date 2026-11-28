@@ -577,10 +577,12 @@ test("a confirmed item stays done in the journal when the next item turns out un
     { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
     { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
   ]);
-  // Stop before the second item's move: the first item has landed, the second is staged.
+  // Stop at the confirmation read after the first landing, before its done record is written.
   let crashing: Promise<void> | null = null;
   provider.delay = async (op, path, signal) => {
-    if (op !== "rename" || isTemp(path) || leaf(path) !== "y.txt" || crashing) return;
+    if (op !== "stat" || leaf(path) !== "x.txt" || crashing) return;
+    const previous = provider.calls.at(-2);
+    if (!(previous?.op === "rename" && leaf(previous.path) === "x.txt")) return;
     crashing = runner.shutdown();
     if (!signal.aborted) {
       await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
@@ -590,7 +592,8 @@ test("a confirmed item stays done in the journal when the next item turns out un
   const { id } = await runner.submit(plan);
   await vi.waitFor(() => expect(crashing).not.toBeNull());
   await crashing;
-  // The second item's staged file disappears: its next item is unknown.
+  // The first item is not yet done in the journal; the second item's staged file disappears: unconfirmable.
+  expect((await store.get(id))?.items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
   const second = tempNameFor(id, 1);
   await provider.remove(parsePosix("/" + ("t" in second ? second.t : "")), { kind: "file" }, new AbortController().signal);
   provider.delay = undefined;
@@ -726,9 +729,11 @@ test("a cancel recovery with a record but neither temporary name nor source file
     { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
     { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
   ]);
+  // Stop before the second item is staged: the first item has only its stage record, so the batch is not committed.
+  const secondTemp = tempNameFor(JOB_ID, 1);
   let crashing: Promise<void> | null = null;
   provider.delay = async (op, path, signal) => {
-    if (op !== "rename" || isTemp(path) || crashing) return;
+    if (op !== "rename" || leaf(path) !== ("t" in secondTemp ? secondTemp.t : "") || crashing) return;
     crashing = runner.shutdown();
     if (!signal.aborted) {
       await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
@@ -813,4 +818,69 @@ test("a foreign directory under a temporary name, with no record of the item, su
   expect(await provider.stat(parsePosix("/" + firstName), new AbortController().signal)).not.toBeNull();
   expect(await provider.stat(parsePosix("/x"), new AbortController().signal)).toBeNull();
   expect(text(provider.contents(parsePosix("/c.txt")))).toBe("C");
+});
+
+test("a stat refused while confirming a job's source is that item's unknown; the other job's recovery still completes", async () => {
+  const { provider, runner, newRunner, store, at } = await setup([
+    ["/a.txt", "A", "1000"], ["/c.txt", "C", "2000"], ["/e.txt", "E", "3000"], ["/g.txt", "G", "4000"],
+  ]);
+  const JOB_B = "523e4567-e89b-42d3-a456-426614174000";
+  const other = new JobRunner({
+    store, provider: () => provider, now: () => new Date(date), uuid: () => JOB_B,
+    chunkBytes: mib, retryDelay: vi.fn(async () => {}), onEvent: () => {},
+  });
+  const planA = await renamePlan([
+    { from: "/a.txt", to: "/x.txt", fingerprint: fp("1", "1000"), expect: "absent" },
+    { from: "/c.txt", to: "/y.txt", fingerprint: fp("1", "2000"), expect: "absent" },
+  ]);
+  const planB = await renamePlan([
+    { from: "/e.txt", to: "/p.txt", fingerprint: fp("1", "3000"), expect: "absent" },
+    { from: "/g.txt", to: "/q.txt", fingerprint: fp("1", "4000"), expect: "absent" },
+  ]);
+  // Job A stops before the second item is staged: only the first item has a stage record.
+  const tempA1 = tempNameFor(JOB_ID, 1);
+  const tempB1 = tempNameFor(JOB_B, 1);
+  let stopA: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || leaf(path) !== ("t" in tempA1 ? tempA1.t : "") || stopA) return;
+    stopA = runner.shutdown();
+    if (!signal.aborted) await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    signal.throwIfAborted();
+  };
+  await runner.submit(planA);
+  await vi.waitFor(() => expect(stopA).not.toBeNull());
+  await stopA;
+  // Job B stops the same way, on its own runner.
+  let stopB: Promise<void> | null = null;
+  provider.delay = async (op, path, signal) => {
+    if (op !== "rename" || leaf(path) !== ("t" in tempB1 ? tempB1.t : "") || stopB) return;
+    stopB = other.shutdown();
+    if (!signal.aborted) await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new CommanderError("cancelled", "stop"))));
+    signal.throwIfAborted();
+  };
+  await other.submit(planB);
+  await vi.waitFor(() => expect(stopB).not.toBeNull());
+  await stopB;
+  provider.delay = undefined;
+  // Both jobs were cancelled before the restart.
+  await store.update(JOB_ID, { error: new CommanderError("cancelled", "Job cancelled").toShape() }, "running");
+  await store.update(JOB_B, { error: new CommanderError("cancelled", "Job cancelled").toShape() }, "running");
+  // The confirmation read of job A's first source is refused, once, right after its restoring move.
+  let refused = false;
+  provider.delay = async (op, path) => {
+    if (op !== "stat" || refused || leaf(path) !== "a.txt") return;
+    const previous = provider.calls.at(-2);
+    if (!(previous?.op === "rename" && leaf(previous.path) === "a.txt")) return;
+    refused = true;
+    throw new CommanderError("permission_denied", "denied");
+  };
+  await expect(newRunner().recover()).resolves.toBeDefined();
+  expect(refused).toBe(true);
+  await at(JOB_ID, "unknown");
+  await at(JOB_B, "cancelled");
+  expect((await store.get(JOB_ID))?.items.map(({ outcome }) => outcome)).toEqual(["unknown", "pending"]);
+  expect((await store.get(JOB_B))?.items.map(({ outcome }) => outcome)).toEqual(["pending", "pending"]);
+  expect(text(provider.contents(parsePosix("/e.txt")))).toBe("E");
+  expect(text(provider.contents(parsePosix("/g.txt")))).toBe("G");
+  expect(provider.contents(parsePosix("/p.txt"))).toBeNull();
 });

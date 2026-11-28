@@ -1080,9 +1080,15 @@ export class JobRunner {
         if (record?.via !== "rename") continue;
         const item = job.plan.items[index];
         const source = this.location(item.source!);
-        const seen = await observe(source, this.context(job.id, index, this.stopping.signal));
-        if (!this.sizedAs(seen, item) || !await this.provesRecorded(source, item.kind, record, this.stopping.signal)) {
-          failures.set(index, new CommanderError("outcome_unknown", "The item could not be confirmed at its source"));
+        try {
+          const seen = await observe(source, this.context(job.id, index, this.stopping.signal));
+          if (!this.sizedAs(seen, item) || !await this.provesRecorded(source, item.kind, record, this.stopping.signal)) {
+            failures.set(index, new CommanderError("outcome_unknown", "The item could not be confirmed at its source"));
+          }
+        } catch (error) {
+          // A failed read is this item's outcome; the runner's own stop is not.
+          this.stopping.signal.throwIfAborted();
+          failures.set(index, new CommanderError("outcome_unknown", "The item could not be confirmed at its source: " + safeError(error).message));
         }
       }
       const latest = await this.store.get(job.id);
