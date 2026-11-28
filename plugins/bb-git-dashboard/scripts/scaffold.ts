@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { readScaffoldTree } from "../src/adapters/bb/scaffold-tree.ts";
 import { scaffoldCi } from "../src/core/scaffolds/ci.ts";
 import { buildScaffold, variants } from "../src/core/scaffolds/model.ts";
-import { commonParams } from "../src/core/scaffolds/overlay.ts";
+import { commonParams } from "../src/core/scaffolds/common-params.ts";
 import { loadRepository } from "../src/core/scaffolds/source.ts";
 import type { CiForge } from "../src/core/ci-templates/render.ts";
 import { CodedError } from "../src/core/workspace.ts";

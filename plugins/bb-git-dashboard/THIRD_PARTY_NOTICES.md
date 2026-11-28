@@ -210,22 +210,3 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-
-## Django's project template, written by the django-uv scaffold
-
-- Source: Django 6.1, `django/conf/project_template` (what `django-admin startproject` writes): https://github.com/django/django
-- Used in: `src/templates/scaffolds/django-uv.ts` — `manage.py`, `wsgi.py`, `asgi.py` and the lists of `settings.py` (installed apps, middleware, templates, password validators) follow the template; the settings read from the environment, the test settings and the rest are the plugin's own.
-- License: BSD-3-Clause, Copyright (c) Django Software Foundation and individual contributors. All rights reserved. Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met: (1) redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer; (2) redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution; (3) neither the name of Django nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission. THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-## Examples from the Celery and aiogram documentation, written by scaffolds
-
-- Source: Celery's "First steps with Django" (https://docs.celeryq.dev/en/stable/django/first-steps-with-django.html, the `proj/proj/celery.py` module and its import in `__init__.py`) and aiogram's "Testing" page (https://docs.aiogram.dev/en/latest/dispatcher/testing.html, the `bot_dispatcher` fixture and a test driving `bot_user` and `bot_chat`).
-- Used in: `src/templates/scaffolds/django-uv.ts` (`<project>/celery.py` and `<project>/__init__.py`, with type hints) and `src/templates/scaffolds/python-service-uv.ts` (`tests/test_bot.py`, with a router built per dispatcher).
-- License: Celery — BSD-3-Clause, Copyright (c) 2017-2026 Asif Saif Uddin, core team & contributors; (c) 2015-2016 Ask Solem & contributors; (c) 2012-2014 GoPivotal, Inc.; (c) 2009-2012 Ask Solem and individual contributors (the conditions and disclaimer are those quoted for Django above, with Celery's name for Django's); aiogram — MIT, Copyright (c) 2017 - present Alex Root Junior.
-
-## License texts written by scaffolds
-
-`src/core/scaffolds/licenses.ts` holds the texts a new project's LICENSE gets: the MIT License, with the copyright
-line as a template, and the Apache License, Version 2.0, terms and conditions as published by the Apache Software
-Foundation (taken from the TypeScript package's `LICENSE.txt`, line ends normalised). License texts are reproduced
-verbatim so they can be applied to other works; they carry no code.

@@ -37,8 +37,8 @@ try {
     if (theme === "light") {
       // django-uv on Poetry with Celery and GitLab CI.
       const {section, form} = await newProject(page, "Django site (uv or Poetry)");
-      check("django-uv is offered with its parameters", await visible(form.getByLabel("Django project package (settings, URLs)"))
-        && await visible(form.getByRole("group", { name: "Dependency manager" })));
+      check("django-uv is offered with its parameters, the project package no longer one of them", await visible(form.getByRole("group", { name: "Dependency manager" }))
+        && await form.getByLabel("Django project package (settings, URLs)").count() === 0);
       await form.getByLabel("Folder name").fill("legacy-shop");
       await form.getByRole("group", { name: "Dependency manager" }).getByRole("button", { name: "poetry" }).click();
       await form.getByLabel("Celery worker (Redis broker)").check();
@@ -47,11 +47,11 @@ try {
       await form.getByLabel("Email").fill("author@example.invalid");
       const files = section.getByRole("list", { name: "Files" });
       check("the files: manage.py, the settings, Celery, Poetry's GitLab CI", await visible(files.getByRole("button", { name: ".gitlab-ci.yml" }))
-        && await visible(files.getByRole("button", { name: "manage.py" })) && await visible(files.getByRole("button", { name: "config/settings.py" }))
-        && await visible(files.getByRole("button", { name: "config/celery.py" })) && await files.getByRole("button", { name: "Dockerfile" }).count() === 0);
-      await files.getByRole("button", { name: "pyproject.toml" }).click();
+        && await visible(files.getByRole("button", { name: "src/web/manage.py" })) && await visible(files.getByRole("button", { name: "src/web/config/settings.py" }))
+        && await visible(files.getByRole("button", { name: "src/web/config/celery.py" })) && await files.getByRole("button", { name: "docker/Dockerfile" }).count() === 0);
+      await files.getByRole("button", { name: "src/web/pyproject.toml" }).click();
       // The content is shown with line numbers: each line is looked for by itself.
-      const pyproject = await section.getByLabel("Content of pyproject.toml").innerText();
+      const pyproject = await section.getByLabel("Content of src/web/pyproject.toml").innerText();
       check("pyproject.toml is Poetry's, with Django and Celery pinned", pyproject.includes("[tool.poetry]") && pyproject.includes("package-mode = false")
         && pyproject.includes("\"django==6.1.3\"") && pyproject.includes("\"celery[redis]==5.7.0\"") && !pyproject.includes("[tool.uv]"), pyproject.slice(0, 400));
       await files.getByRole("button", { name: ".gitlab-ci.yml" }).click();
@@ -65,7 +65,7 @@ try {
       await dialog.getByRole("button", { name: "Confirm" }).click();
       check("the catalog says the Django project was made", await visible(page.getByText(/Created .*\/projects\/legacy-shop with its first commit/), 60000));
       check("the Django folder has manage.py (executable), git on main and one commit by the author, nothing left over",
-        existsSync(root + "/manage.py") && (statSync(root + "/manage.py").mode & 0o111) !== 0 && existsSync(root + "/config/celery.py")
+        existsSync(root + "/src/web/manage.py") && (statSync(root + "/src/web/manage.py").mode & 0o111) !== 0 && existsSync(root + "/src/web/config/celery.py")
         && git(root, "branch", "--show-current") === "main" && git(root, "log", "--format=%an <%ae>|%s") === "Stand Author <author@example.invalid>|Initial commit from the Django site (uv or Poetry) scaffold"
         && git(root, "status", "--porcelain") === "", existsSync(root) ? git(root, "log", "--format=%an|%s") : "no folder");
       check("its CI file is Poetry's on GitLab", /pip install poetry==2\.5\.2 && poetry install --no-interaction/.test(readFileSync(root + "/.gitlab-ci.yml", "utf8")));
@@ -73,19 +73,18 @@ try {
       // python-service-uv's aiogram bot.
       const bot = await newProject(page, "Python service (uv)");
       await bot.form.getByLabel("Folder name").fill("echo-bot");
-      await bot.form.getByLabel("Python package (import name)").fill("echo");
-      await bot.form.getByRole("group", { name: "Kind of service" }).getByRole("button", { name: "aiogram" }).click();
+      await bot.form.getByRole("group", { name: /^Kind of service/ }).getByRole("button", { name: "aiogram" }).click();
       await bot.form.getByLabel("Name", { exact: true }).fill("Stand Author");
       await bot.form.getByLabel("Email").fill("author@example.invalid");
       const botFiles = bot.section.getByRole("list", { name: "Files" });
-      check("the aiogram bot's files: its router and the toolkit's tests", await visible(botFiles.getByRole("button", { name: "src/echo/bot.py" }))
-        && await visible(botFiles.getByRole("button", { name: "tests/test_bot.py" })) && await botFiles.getByRole("button", { name: "src/echo/app.py" }).count() === 0);
+      check("the aiogram bot's files: its router and the toolkit's tests", await visible(botFiles.getByRole("button", { name: "src/bot/runtime/bot.py" }))
+        && await visible(botFiles.getByRole("button", { name: "src/bot/tests/test_bot.py" })) && await botFiles.getByRole("button", { name: "src/api/api/app.py" }).count() === 0);
       await bot.section.getByRole("button", { name: "Check project…" }).click();
       await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
       const botRoot = projects + "/echo-bot";
       check("the bot was made with one commit", await visible(page.getByText(/Created .*\/projects\/echo-bot with its first commit/), 60000)
-        && existsSync(botRoot + "/src/echo/bot.py") && git(botRoot, "log", "--format=%s") === "Initial commit from the Python service (uv) scaffold"
-        && /"aiogram==3\.34\.0"/.test(readFileSync(botRoot + "/pyproject.toml", "utf8")));
+        && existsSync(botRoot + "/src/bot/runtime/bot.py") && git(botRoot, "log", "--format=%s") === "Initial commit from the Python service (uv) scaffold"
+        && /"aiogram==3\.34\.0"/.test(readFileSync(botRoot + "/src/bot/pyproject.toml", "utf8")));
     } else {
       // The same form in dark, then in Russian: the scaffold's own parameters are labelled in the chosen language.
       await newProject(page, "Django site (uv or Poetry)");
@@ -93,13 +92,13 @@ try {
       await page.screenshot({ path: out + "/scaffolds-django-form-dark.png", fullPage: true });
       await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: "RU", exact: true }).click({ timeout: 30000 });
       await page.waitForTimeout(500);
-      const ru = await newProject(page, "Django site (uv or Poetry)", "Новый Django site (uv or Poetry)");
-      check("ru: django-uv's parameters are labelled in Russian", await visible(ru.form.getByLabel("Пакет проекта Django (настройки, URL)"))
-        && await visible(ru.form.getByRole("group", { name: "Менеджер зависимостей" })) && await visible(ru.form.getByLabel("Воркер Celery (брокер Redis)")));
+      const ru = await newProject(page, "Сайт на Django (uv или Poetry)", "Новый Сайт на Django (uv или Poetry)");
+      check("ru: django-uv's title and parameters come in Russian from its template", await visible(ru.form.getByRole("group", { name: "Менеджер зависимостей" }))
+        && await visible(ru.form.getByLabel("Воркер Celery (брокер Redis)")));
       await page.screenshot({ path: out + "/scaffolds-django-form-ru-dark.png", fullPage: true });
-      const python = await newProject(page, "Python service (uv)", "Новый Python service (uv)");
-      check("ru: the Python service's parameters too", await visible(python.form.getByLabel("Пакет Python (имя для импорта)"))
-        && await visible(python.form.getByRole("group", { name: "Вид сервиса" })));
+      const python = await newProject(page, "Сервис на Python (uv)", "Новый Сервис на Python (uv)");
+      check("ru: the Python service's parameters too", await visible(python.form.getByLabel("Версия Python").or(python.form.getByRole("group", { name: "Версия Python" })))
+        && await visible(python.form.getByRole("group", { name: /^Вид сервиса/ })));
       await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: "EN", exact: true }).click({ timeout: 30000 });
       await page.waitForTimeout(400);
     }

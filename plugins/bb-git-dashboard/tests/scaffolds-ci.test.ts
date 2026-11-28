@@ -1,50 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { scaffoldCi } from "../src/core/scaffolds/ci.ts";
-import { buildScaffold } from "../src/core/scaffolds/model.ts";
-import { builtinScaffolds } from "../src/templates/scaffolds/index.ts";
+import type { Scaffold } from "../src/core/scaffolds/model.ts";
 
-const byId = (id: string) => builtinScaffolds.find(item => item.id === id)!;
-const ci = (id: string, forge: Parameters<typeof scaffoldCi>[2], given = {}) => {
-  const scaffold = byId(id);
-  return scaffoldCi(buildScaffold(scaffold, given, {}).files, scaffold, forge, {name: "demo", branch: "main"});
-};
+/** A scaffold with only what CI looks at: its files and its CI values. */
+const scaffold = (ci: Scaffold["ci"]): Scaffold => ({id: "x", title: "X", description: "", params: [], files: [], ...(ci ? {ci} : {})});
+const file = (path: string, text: string) => ({path, text, executable: false});
+const python = [file("Makefile", "check: layout\n\t$(MAKE) -C src/service check\n"), file("src/service/Makefile", "check:\n\tuv run pytest\n"),
+  file("src/service/pyproject.toml", "[project]\nname = \"svc\"\nrequires-python = \">=3.13\"\n\n[dependency-groups]\ndev = [\"pytest==9.2.0\"]\n\n[tool.uv]\npackage = false\n"),
+  file("src/service/main.py", "")];
+const go = (web: boolean) => [file("Makefile", "check: layout\n\t$(MAKE) -C src/service check\n"), file("src/service/go.mod", "module example.com/demo\n\ngo 1.26.0\n"),
+  ...(web ? [file("src/frontend/package.json", "{\"name\": \"demo\", \"scripts\": {\"check\": \"vitest run\"}}\n")] : [])];
+const plugin = [file("Makefile", "check:\n\tnpm run check\n"), file("package.json", "{\"name\": \"demo\", \"scripts\": {\"check\": \"tsc\"}, \"engines\": {\"node\": \">=22.18\"}}\n")];
+const repo = {name: "demo", branch: "main"};
 
 test("the created project's CI comes from the CI template of its stack, with the scaffold's values on top", () => {
-  const python = ci("python-service-uv", "github")!;
-  assert.equal(python.path, ".github/workflows/ci.yml");
-  assert.equal(python.template, "python-github");
-  assert.match(python.text, /python-version: "3\.13"/);
-  assert.match(python.text, /run: pip install uv==0\.13\.10 && uv sync\n/);
-  assert.match(python.text, /run: make check\n$/);
+  const py = scaffoldCi(python, scaffold({pythonTool: "uv", lockfile: false, make: true}), "github", repo)!;
+  assert.equal(py.path, ".github/workflows/ci.yml");
+  assert.equal(py.template, "python-github");
+  assert.match(py.text, /run: pip install uv==0\.13\.10 && uv sync\n {8}working-directory: src\/service\n/);
+  assert.match(py.text, /run: make check\n$/);
 
-  const go = ci("go-service-with-web", "gitlab", {web: false})!;
-  assert.equal(go.path, ".gitlab-ci.yml");
-  assert.match(go.text, /^ {2}image: golang:1\.26$/m);
-  assert.match(go.text, /^ {4}- make check$/m);
-  assert.doesNotMatch(go.text, /^web:/m);
+  const lab = scaffoldCi(go(false), scaffold({make: true}), "gitlab", repo)!;
+  assert.equal(lab.path, ".gitlab-ci.yml");
+  assert.match(lab.text, /^ {4}- make check$/m);
+  assert.doesNotMatch(lab.text, /^web:/m);
 
-  const plugin = ci("bb-plugin", "azure")!;
-  assert.equal(plugin.path, "azure-pipelines.yml");
-  assert.match(plugin.text, /versionSpec: "22\.x"/);
-  assert.match(plugin.text, /- script: npm install\n/);
-  assert.match(plugin.text, /- script: make check\n {4}displayName: Check\n$/);
-
-  assert.equal(ci("bb-plugin", "gitea")!.path, ".gitea/workflows/ci.yml");
+  const azure = scaffoldCi(plugin, scaffold({packageManager: "npm", lockfile: false, make: true}), "azure", repo)!;
+  assert.equal(azure.path, "azure-pipelines.yml");
+  assert.match(azure.text, /- script: npm install\n/);
+  assert.match(azure.text, /- script: make check\n {4}displayName: Check\n$/);
+  assert.equal(scaffoldCi(plugin, scaffold({make: true}), "gitea", repo)!.path, ".gitea/workflows/ci.yml");
 });
 
 test("no forge chosen means no CI file", () => {
-  assert.equal(ci("python-service-uv", null), null);
+  assert.equal(scaffoldCi(python, scaffold({make: true}), null, repo), null);
 });
 
-test("a Go project with web/ gets Node.js for it: in the same job on Actions and Azure, in a job of its own on GitLab", () => {
-  const gitlab = ci("go-service-with-web", "gitlab")!.text;
+test("a Go service with its web UI in src/frontend/ gets Go's CI with Node.js: in the same job on Actions and Azure, in a job of its own on GitLab", () => {
+  const github = scaffoldCi(go(true), scaffold({make: true}), "github", repo)!;
+  assert.equal(github.template, "go-github");
+  assert.match(github.text, /go-version: "1\.26"/);
+  assert.match(github.text, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "24"\n/);
+  assert.match(github.text, /run: make check\n$/);
+  const gitlab = scaffoldCi(go(true), scaffold({make: true}), "gitlab", repo)!.text;
   assert.match(gitlab, /^ {4}- make check WEB=0$/m);
   assert.match(gitlab, /\nweb:\n {2}image: node:24\n {2}script:\n {4}- make web-check\n$/);
-  const github = ci("go-service-with-web", "github")!.text;
-  assert.match(github, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "24"\n/);
-  assert.match(github, /run: make check\n$/);
-  assert.match(ci("go-service-with-web", "azure")!.text, /- task: NodeTool@0\n {4}inputs:\n {6}versionSpec: "24\.x"\n/);
+  assert.match(scaffoldCi(go(true), scaffold({make: true}), "azure", repo)!.text, /- task: NodeTool@0\n {4}inputs:\n {6}versionSpec: "24\.x"\n/);
 });
 
 test("the CI templates install uv and Poetry at the versions they were checked with, as the actions are pinned", async () => {
@@ -82,32 +84,4 @@ test("an application under src/<role>/ installs and checks there; make check sta
   const rooted = renderTemplate(github, resolveValues(github, {pythonTool: "uv"}, {})).text;
   assert.doesNotMatch(rooted, /working-directory/);
   assert.throws(() => resolveValues(github, {appDir: "../out", inApp: true}, {}));
-});
-
-test("a scaffold with its application under src/<role>/ gets CI that installs there and runs make check at the root", () => {
-  const pyproject = "[project]\nname = \"svc\"\n\n[dependency-groups]\ndev = [\"pytest==9.2.0\"]\n\n[tool.uv]\npackage = false\n";
-  const files = [{path: "Makefile", text: "check:\n\t$(MAKE) -C src/service check\n", executable: false},
-    {path: "src/service/Makefile", text: "check:\n\tuv run pytest\n", executable: false},
-    {path: "src/service/pyproject.toml", text: pyproject, executable: false},
-    {path: "src/service/main.py", text: "", executable: false}];
-  const scaffold = {...byId("python-service-uv"), ci: {pythonTool: "uv", lockfile: false, make: true}};
-  const made = scaffoldCi(files, scaffold, "github", {name: "svc", branch: "main"})!;
-  assert.equal(made.template, "python-github");
-  assert.match(made.text, /- name: Install\n {8}run: pip install uv==0\.13\.10 && uv sync\n {8}working-directory: src\/service\n/);
-  assert.match(made.text, /- name: Check\n {8}run: make check\n$/);
-});
-
-test("a Go service in src/service/ with its web UI in src/frontend/ gets Go's CI, with Node.js for the UI", () => {
-  const files = [{path: "Makefile", text: "check: layout\n\t$(MAKE) -C src/service check\n", executable: false},
-    {path: "src/service/go.mod", text: "module example.com/demo\n\ngo 1.26.0\n", executable: false},
-    {path: "src/frontend/package.json", text: "{\"name\": \"demo\", \"scripts\": {\"check\": \"vitest run\"}}\n", executable: false}];
-  const scaffold = {...byId("go-service-with-web"), ci: {make: true}};
-  const github = scaffoldCi(files, scaffold, "github", {name: "demo", branch: "main"})!;
-  assert.equal(github.template, "go-github");
-  assert.match(github.text, /go-version: "1\.26"/);
-  assert.match(github.text, /- uses: actions\/setup-node@v4\n/);
-  assert.match(github.text, /run: make check\n$/);
-  const gitlab = scaffoldCi(files, scaffold, "gitlab", {name: "demo", branch: "main"})!;
-  assert.match(gitlab.text, /^ {4}- make check WEB=0$/m);
-  assert.match(gitlab.text, /\nweb:\n {2}image: node:24\n/);
 });

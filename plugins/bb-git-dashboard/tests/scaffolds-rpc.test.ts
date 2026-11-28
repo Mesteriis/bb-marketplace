@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { scaffoldHandlers } from "../src/adapters/bb/scaffold-rpc.ts";
+import { fixtureSha, offline, scaffoldBb } from "./scaffold-bb.ts";
 
 const client = {experimental_caller: {kind: "client"}};
-const request = {hostId: "host-1", key: "builtin:python-service-uv", values: {name: "notes"}, category: "", ciForge: "github" as const,
-  author: {name: "Stand Author", email: "author@example.invalid"}, repository: null};
+const request = {hostId: "host-1", key: "github:demo", values: {name: "notes"}, category: "", ciForge: "github" as const,
+  author: {name: "Stand Author", email: "author@example.invalid"}, repository: null, revision: fixtureSha};
 
 /** A server with one machine; `answer` is what the host's scaffoldCreate returns, or throws for a lost answer. */
 function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>; account?: () => typeof account;
@@ -16,19 +16,14 @@ function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<u
   const log: {id: string; kind: string; status: string; summary: string[]; code?: string}[] = [];
   const saved: unknown[] = [];
   let root = "~/projects";
-  const bb = {
-    settings: {define: () => ({get: async () => ({scaffolds: "", scaffoldsFolder: ""})})},
-    hosts: {experimental_client: () => ({call: async (name: string, input: unknown) => {
-      // Whether the machine has a Keychain is asked by the preview; the writes are what the tests count.
-      if (name === "credentialHelper") return (more.helper ?? (async () => ({ok: true, keychain: true})))();
-      calls.push({name, input});
-      return name === "scaffoldPublish" ? (more.publish ?? (async () => ({ok: true})))()
-        : name === "scaffoldCredential" ? (more.credential ?? (async () => ({ok: true})))() : answer();
-    }})},
-    onDispose: () => {},
-    realtime: {publish: () => {}},
-  } as unknown as BbPluginApi;
-  const handlers = scaffoldHandlers(bb, {rules: async () => ({root}), saveCopy: async (...args) => { saved.push(args); return {id: "copy-1"} as never; },
+  const {bb} = scaffoldBb({call: async (name: string, input: unknown) => {
+    // Whether the machine has a Keychain is asked by the preview; the writes are what the tests count.
+    if (name === "credentialHelper") return (more.helper ?? (async () => ({ok: true, keychain: true})))();
+    calls.push({name, input});
+    return name === "scaffoldPublish" ? (more.publish ?? (async () => ({ok: true})))()
+      : name === "scaffoldCredential" ? (more.credential ?? (async () => ({ok: true})))() : answer();
+  }});
+  const handlers = scaffoldHandlers(bb, {send: offline, rules: async () => ({root}), saveCopy: async (...args) => { saved.push(args); return {id: "copy-1"} as never; },
     accounts: async () => [account],
     api: async () => ({account: (more.account ?? (() => account))(), token, api: {createRepository: async (spec: unknown) => { created.push(spec); return (more.create ?? (async () => repo))(); }} as never}),
     link: async (_copy, accountId, path) => { linked.push([accountId, path]); },
@@ -46,8 +41,8 @@ test("only the app may ask; a preview names the place and files, and the project
   const prepared = await handlers.scaffoldPrepare(request, client);
   assert.ok(prepared.ok);
   if (!prepared.ok) return;
-  assert.deepEqual(prepared.preview.lines.slice(1, 3), ["host-1 · ~/projects/notes", "CI · .github/workflows/ci.yml (python-github)"]);
-  assert.ok(prepared.preview.files.some(file => file.path === "pyproject.toml"));
+  assert.deepEqual(prepared.preview.lines.slice(1, 4), ["Templates owner/templates@ccccccc (main)", "host-1 · ~/projects/notes", "No CI file"]);
+  assert.ok(prepared.preview.files.some(file => file.path === "README.md"));
   assert.equal(calls.length, 0);
   const created = await handlers.scaffoldCreate({previewId: prepared.preview.id}, client);
   assert.deepEqual(created, {ok: true, copyId: "copy-1", root: "/home/owner/projects/notes", repository: null, notes: []});
@@ -233,4 +228,45 @@ test("off macOS the project and the empty repository are made as previewed: no K
   assert.deepEqual(run.log[1]!.summary, ["New private repository octo/notes", "No Keychain on this machine: the token of octo is not saved",
     "main not pushed from /home/owner/projects/notes"]);
   assert.deepEqual(run.linked, []);
+});
+
+test("a github: template is previewed and made from the revision the form showed only", async () => {
+  const {handlers, calls} = server(made);
+  const stale = await handlers.scaffoldPrepare({...request, revision: "d".repeat(40)}, client);
+  assert.deepEqual(stale.ok ? null : [stale.code, stale.detail], ["SCAFFOLDS_CHANGED", "the form shows revision ddddddd, the templates repository is at ccccccc"]);
+  const missing = await handlers.scaffoldPrepare({...request, revision: null}, client);
+  assert.equal(missing.ok ? "ok" : missing.code, "SCAFFOLDS_CHANGED");
+  assert.equal(calls.length, 0);
+});
+
+test("the project is not made when the templates moved on between the preview and Create", async () => {
+  const {ScaffoldCache} = await import("../src/adapters/bb/scaffold-cache.ts");
+  const {fixtureArchive} = await import("./scaffold-bb.ts");
+  const {bb} = scaffoldBb({call: async () => made()});
+  const handlers = scaffoldHandlers(bb, {send: offline, rules: async () => ({root: "~/projects"}), saveCopy: async () => ({id: "copy-1"}) as never,
+    accounts: async () => [], api: async () => { throw new Error("no"); }, link: async () => {}, record: async () => {}});
+  const prepared = await handlers.scaffoldPrepare(request, client);
+  assert.ok(prepared.ok);
+  if (!prepared.ok) return;
+  const db = (bb as unknown as {storage: {database(): never}}).storage.database();
+  new ScaffoldCache(db).put({repository: "owner/templates", branch: "main", sha: "e".repeat(40), committedAt: "2026-11-28T11:00:00.000Z", etag: null,
+    checkedAt: "2026-11-28T11:00:00.000Z", archive: fixtureArchive()});
+  const created = await handlers.scaffoldCreate({previewId: prepared.preview.id}, client);
+  assert.deepEqual(created.ok ? null : [created.code, created.detail], ["SCAFFOLDS_CHANGED", "the form shows revision ccccccc, the templates repository is at eeeeeee"]);
+});
+
+test("the templates are renewed by a background service, and Refresh asks GitHub at once", async () => {
+  const asked: string[] = [];
+  const send = (async (input: string | URL | Request) => { asked.push(String(input)); return new Response(null, {status: 304}); }) as typeof fetch;
+  const {bb, services} = scaffoldBb({call: async () => ({ok: true})});
+  const handlers = scaffoldHandlers(bb, {send, rules: async () => ({root: "~/projects"}), saveCopy: async () => ({}) as never,
+    accounts: async () => [], api: async () => { throw new Error("no"); }, link: async () => {}, record: async () => {}});
+  assert.deepEqual(services, ["scaffolds-watch"]);
+  const view = await handlers.scaffoldsRefresh({hostId: "host-1"}, client);
+  assert.ok(view.ok);
+  if (!view.ok) return;
+  assert.deepEqual(asked, ["https://api.github.com/repos/owner/templates/branches/main"]);
+  assert.deepEqual(view.templates.revision, {sha: fixtureSha, committedAt: "2026-11-28T10:00:00.000Z"});
+  assert.deepEqual(view.offered.map(item => item.key), ["github:demo"]);
+  assert.deepEqual(view.rejected.map(item => [item.source, item.name]), [["github", "broken"]]);
 });

@@ -5,9 +5,8 @@ import type { CiForge } from "../../core/ci-templates/render.ts";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { scaffoldCi } from "../../core/scaffolds/ci.ts";
 import type { ScaffoldsView } from "../../core/scaffolds/contract.ts";
-import { scaffoldLabelKey } from "../../core/scaffolds/labels.ts";
 import { buildScaffold } from "../../core/scaffolds/model.ts";
-import { commonParams } from "../../core/scaffolds/overlay.ts";
+import { commonParams } from "../../core/scaffolds/common-params.ts";
 import { validOwner } from "../../core/scaffolds/repository.ts";
 import type { TemplateParam, TemplateValues } from "../../core/templating/engine.ts";
 import { CodedError } from "../../core/workspace.ts";
@@ -22,7 +21,7 @@ import type { CatalogApi } from "./catalog-api.ts";
 type Offered = ScaffoldsView["offered"][number];
 type T = ReturnType<typeof useT>;
 const forges: [CiForge | "", string][] = [["github", "GitHub"], ["gitlab", "GitLab"], ["gitea", "Gitea"], ["azure", "Azure"], ["", ""]];
-const sourceKey = {builtin: "np.src.builtin", settings: "np.src.settings", folder: "np.src.folder"} as const;
+const sourceKey = {github: "np.src.github", folder: "np.src.folder"} as const;
 /** The common values every scaffold asks for: their labels are the plugin's own, so they are said in the chosen language. */
 const commonLabel = (name: string): MessageKey | null => commonParams.some(param => param.name === name) ? ("np.p." + name) as MessageKey : null;
 type Created = Awaited<ReturnType<CatalogApi["createScaffold"]>>;
@@ -35,11 +34,11 @@ function Field({label, children}: {label: string; children: ReactNode}) {
 }
 
 /** One scaffold parameter: a short list as a segment, a longer one as a select, a flag as a checkbox, else a field. */
-function Param({scaffold, param, value, onChange, t, translated}: {scaffold: string; param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T;
+function Param({param, value, onChange, t, translated}: {param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T;
   /** The template's own label in the interface language, when it gives one. */
   translated?: string}) {
-  // The common values and the plugin's own scaffolds are labelled in the chosen language; a template by its own labels.
-  const key = commonLabel(param.name) ?? scaffoldLabelKey(scaffold, param.name);
+  // The common values are labelled in the chosen language by the plugin; a template's own by its labels.
+  const key = commonLabel(param.name);
   const label = key ? t(key) : translated ?? param.label;
   if (param.kind === "flag") return <label className="git-np-check"><input type="checkbox" checked={value === true} onChange={event => onChange(event.target.checked)}/>
     <span>{label}</span></label>;
@@ -55,8 +54,10 @@ function Param({scaffold, param, value, onChange, t, translated}: {scaffold: str
  * The form of one scaffold in three columns: where the project goes and its values, CI, author and repository; the files
  * as they will be written; the chosen file's text. "Check project…" asks the server for the preview, confirmed in a dialog.
  */
-function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts, onCreated, picker}: {api: CatalogApi; hostId: string; root: string;
-  categories: string[]; entry: Offered; suggested: TemplateValues; accounts: ScaffoldsView["accounts"]; onCreated(made: Created): void; picker: ReactNode}) {
+function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts, onCreated, picker, revision}: {api: CatalogApi; hostId: string; root: string;
+  categories: string[]; entry: Offered; suggested: TemplateValues; accounts: ScaffoldsView["accounts"]; onCreated(made: Created): void; picker: ReactNode;
+  /** The templates repository's revision shown, which a github: scaffold is made from. */
+  revision: string | null}) {
   const t = useT();
   const params = useMemo(() => [...commonParams, ...entry.scaffold.params], [entry]);
   const [values, setValues] = useState<TemplateValues>(() => Object.fromEntries(params.map(param => [param.name, suggested[param.name] ?? param.default])));
@@ -74,7 +75,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   // The same build the server makes, so a value that does not fit shows before anything is sent.
   const built = useMemo(() => {
     try {
-      const {files} = buildScaffold(entry.scaffold, values, suggested);
+      const {files} = buildScaffold(entry.scaffold, values, suggested, entry.common);
       const ci = scaffoldCi(files, entry.scaffold, forge || null, {name: String(values.name), branch: "main"});
       const all = ci ? [...files.filter(file => file.path !== ci.path), {path: ci.path, text: ci.text, executable: false}].sort((a, b) => a.path < b.path ? -1 : 1) : files;
       return {ok: true as const, files: all, ci};
@@ -87,13 +88,14 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   const set = (name: string) => (value: string | boolean) => setValues(previous => ({...previous, [name]: value}));
   const {language} = useLanguage();
   const words = own(entry.scaffold, language);
-  const param = (item: TemplateParam) => <Param key={item.name} scaffold={entry.scaffold.id} translated={words?.labels?.[item.name]} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
+  const param = (item: TemplateParam) => <Param key={item.name} translated={words?.labels?.[item.name]} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
   const common = (name: string) => params.find(item => item.name === name);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setPending(true); setError("");
     api.prepareScaffold({hostId, key: entry.key, values, category, ciForge: forge || null, author: {name: author.name.trim(), email: author.email.trim()},
-      repository: remote.on && account ? {accountId: account.id, owner: remote.owner.trim() || null, visibility: remote.visibility} : null})
+      repository: remote.on && account ? {accountId: account.id, owner: remote.owner.trim() || null, visibility: remote.visibility} : null,
+      revision: entry.source === "github" ? revision : null})
       .then(setPreview, failure => setError(message(failure))).finally(() => setPending(false));
   };
   const nameParam = common("name");
@@ -178,6 +180,26 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   </div>;
 }
 
+/** Where the templates come from: the repository's revision held, when GitHub last answered, and Refresh. */
+function Templates({state, refreshing, onRefresh}: {state: ScaffoldsView["templates"]; refreshing: boolean; onRefresh(): void}) {
+  const t = useT();
+  const {language} = useLanguage();
+  const when = (at: string) => new Date(at).toLocaleString(language, {dateStyle: "medium", timeStyle: "short"});
+  const revision = state.revision;
+  return <>
+    <div className="git-np-templates" role="status" aria-label={t("np.templates")}>
+      <span className="g-muted">{t("np.templates")}</span>
+      {revision ? <span className="g-mono" title={revision.sha}>{t("np.templates-at", {repository: state.repository, sha: revision.sha.slice(0, 7),
+        when: revision.committedAt ? when(revision.committedAt) : "—"})}</span> : <span>{state.repository} · {t("np.templates-never")}</span>}
+      {state.checkedAt && <span className="g-muted">· {t("np.templates-checked", {when: when(state.checkedAt)})}</span>}
+      <button type="button" className="g-btn sm" onClick={onRefresh} disabled={refreshing}><Icon name="RefreshCw" small/>
+        {refreshing ? t("np.templates-refreshing") : t("np.templates-refresh")}</button>
+    </div>
+    {state.error && revision && <div className="g-banner warn git-np-note" role="alert">{t("np.templates-stale", {detail: state.error.detail})}</div>}
+    {state.error && !revision && <div className="g-banner bad git-np-note" role="alert">{t("np.templates-none", {repository: state.repository, detail: state.error.detail})}</div>}
+  </>;
+}
+
 /** New project: a scaffold, made into a folder of the projects folder with git init and a first commit, after a preview. */
 export function NewProject({api, hostId, root, categories, onClose, onCreated}: {api: CatalogApi; hostId: string; root: string;
   categories: string[]; onClose(): void; onCreated(made: Created): void}) {
@@ -186,11 +208,18 @@ export function NewProject({api, hostId, root, categories, onClose, onCreated}: 
   const [view, setView] = useState<ScaffoldsView | null>(null);
   const [error, setError] = useState("");
   const [key, setKey] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     let live = true;
     api.scaffolds(hostId).then(result => { if (live) { setView(result); setKey(result.offered[0]?.key ?? ""); } }, failure => { if (live) setError(message(failure)); });
     return () => { live = false; };
   }, [api, hostId]);
+  // A new revision may drop the chosen template: the first one is chosen then.
+  const refresh = () => {
+    setRefreshing(true); setError("");
+    api.refreshScaffolds(hostId).then(result => { setView(result); setKey(previous => result.offered.some(item => item.key === previous) ? previous : result.offered[0]?.key ?? ""); },
+      failure => setError(message(failure))).finally(() => setRefreshing(false));
+  };
   const entry = view?.offered.find(item => item.key === key);
   const picker = view && <Field label={t("np.scaffold")}><span className="git-np-pick">
     <select className="g-inp" value={key} onChange={event => setKey(event.target.value)}>
@@ -206,8 +235,9 @@ export function NewProject({api, hostId, root, categories, onClose, onCreated}: 
     {error && <div className="g-banner bad" role="alert">{error}</div>}
     {view && view.rejected.length > 0 && <details className="g-banner warn git-np-rejected"><summary>{t("np.rejected", {n: view.rejected.length})}</summary>
       <ul>{view.rejected.map(item => <li key={item.source + item.name}><strong>{item.name}</strong> ({t(sourceKey[item.source])}): {item.issues.join(" ")}</li>)}</ul></details>}
-    {view && !view.offered.length && <p className="g-state-page">{t("np.none")}</p>}
-    {view && entry && <ScaffoldForm key={entry.key} api={api} hostId={hostId} root={root} categories={categories} entry={entry} suggested={view.suggested}
+    {view && <Templates state={view.templates} refreshing={refreshing} onRefresh={refresh}/>}
+    {view && !view.offered.length && !(view.templates.error && !view.templates.revision) && <p className="g-state-page">{t("np.none")}</p>}
+    {view && entry && <ScaffoldForm key={entry.key + "@" + (view.templates.revision?.sha ?? "")} revision={view.templates.revision?.sha ?? null} api={api} hostId={hostId} root={root} categories={categories} entry={entry} suggested={view.suggested}
       accounts={view.accounts} onCreated={onCreated} picker={picker}/>}
   </div>;
 }

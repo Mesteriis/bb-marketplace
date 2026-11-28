@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.16.1 — 2026-11-28
+
+Scaffolds from a templates repository, second of two slices: the repository on GitHub is the source, and the plugin holds no templates of its own.
+
+- **Scaffolds: templates repository on GitHub** (its default is the templates repository README names) and **Scaffolds: branch of the templates repository** (default `main`) name the source. The branch's head is read anonymously from `api.github.com` with the ETag of the last answer; only a new head's archive is read, from `codeload.github.com`, and unpacked in memory: at most 5 MB compressed, 20 MB unpacked, 2000 entries, a depth of 12 and 256 KB a file; a link, a device, an absolute path, `..` or an entry outside the archive's folder refuses it before any content is taken, and nothing is written to disk. Requests go to those two hosts only; a redirect elsewhere is refused before anything is sent. A connected github.com account's token is used only after GitHub's anonymous limit, towards those two hosts, and is in no answer, cache or log.
+- The last good revision is kept in the plugin's database, bound to its repository and branch: another repository or branch never reads it. A failed check — no network, GitHub's limit, a broken archive — keeps it and says why in the form. Without the network on the first run New project lists nothing and says so, with **Refresh templates**.
+- The revision is checked when New project opens (at most once a minute), with **Refresh templates**, and every 15 minutes by a background service that stops with the plugin. GitHub counts an anonymous 304 against its limit of 60 requests an hour for the machine (docs.github.com, Best practices for using the REST API); four background checks an hour and the form's openings stay well inside it.
+- New project shows the repository, the revision (`owner/name@abc1234`), the time of its commit and when it was checked. The preview names the revision; it is made from the revision the form showed, and Create refuses (`SCAFFOLDS_CHANGED`) once the templates moved on, writing nothing.
+- Fixed: a template of a templates folder (and `scripts/scaffold.ts`) rendered with the plugin's built-in common files, not with the repository's `common/` (0.16.0). Every template offered now carries its repository's common layer; without a `common/` a template writes its own files only.
+- Removed: the four built-in scaffolds and the plugin's own common files and licence texts (they are in the templates repository), and the **Scaffolds: own scaffolds (JSON list)** setting. Its last value stays unused in BB's settings. A scaffold of that list becomes a folder of a templates folder (**Scaffolds: local templates folder**):
+
+  ```text
+  JSON list item                                   templates folder
+  {"id": "notes", "title": "Notes",               templates/notes/template.json:
+   "description": "A notes service.",               {"format": 1, "id": "notes",
+   "params": [{"name": "docker", "kind": "flag",      "title": {"en": "Notes"}, "description": {"en": "A notes service."},
+     "label": "Docker", "default": false}],           "params": [{"name": "docker", "kind": "flag", "default": false, "label": {"en": "Docker"}}],
+   "files": [                                         "when": {"Dockerfile": "docker"}}
+     {"path": "README.md", "body": "# {{name}}\n"},  templates/notes/files/README.md       — the body, as the file's content
+     {"path": "Dockerfile", "body": "FROM scratch\n",  templates/notes/files/Dockerfile      — its "when" is the manifest's "when"
+      "when": "docker"},
+     {"path": "run.sh", "body": "...",               templates/notes/files/run.sh          — "executable": true is the file's mode (chmod +x)
+      "executable": true}]}
+  ```
+
+  `ignore`, `editorconfig` and `ci` move into `template.json` as they are; labels become `{"en": …, "ru": …}`. A `common/` folder beside `templates/` gives every template the files of every project (licence, AGENTS.md, .gitignore); without it a template writes its own files only.
+- The plugin database's migrations are one list (`migrations.ts`); the review's statements keep their numbers.
+- A new stand-in GitHub on the stand (`fake-github.mjs`, behind a proxy the stand's BB is pointed at, refusing every other host) and a new probe, `scaffolds-github.mjs`; `run.sh` needs `SCAFFOLDS_REPO`, a clone of the templates repository. `scaffolds.mjs` and `scaffolds-python.mjs` make their projects from it and compare the common files with its `common/`.
+
 ## 0.16.0 — 2026-11-28
 
 Scaffolds from a templates repository, first of two slices: the format, its loader, a local folder as a source and a CLI.

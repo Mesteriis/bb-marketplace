@@ -22,6 +22,8 @@ export type CatalogApi = {
   openPull(accountId: string, repo: string, number: number): void;
   /** The scaffolds for a new project on a machine. */
   scaffolds(hostId: string): Promise<ScaffoldsView>;
+  /** The Refresh templates button: GitHub is asked for a new revision now. */
+  refreshScaffolds(hostId: string): Promise<ScaffoldsView>;
   /** The server's render of a scaffold and the preview of the project it makes. */
   prepareScaffold(request: ScaffoldRequest): Promise<{id: string; lines: string[]; files: {path: string; bytes: number}[]}>;
   /** Makes the prepared project; it is attached as a working copy. */

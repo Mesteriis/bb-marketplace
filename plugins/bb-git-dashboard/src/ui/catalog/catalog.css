@@ -77,6 +77,8 @@
 .git-ws .git-np-where { margin: 0; display: flex; align-items: center; gap: 10px; padding: 12px; border-radius: 8px; background: var(--git-subtle); overflow-wrap: anywhere; }
 .git-ws .git-np-submit { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .git-ws .git-np-rejected ul { margin: 6px 0 0; }
+.git-ws .git-np-templates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 12px; }
+.git-ws .git-np-templates .g-btn { margin-left: auto; }
 @container (max-width: 1100px) {
   .git-ws .git-np { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .git-ws .git-np-content { grid-column: 1 / -1; border-top: 1px solid var(--border); }
