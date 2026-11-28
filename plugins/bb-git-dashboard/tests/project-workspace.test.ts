@@ -84,3 +84,17 @@ test("nested folders keep projects at intermediate nodes and search alternate so
   equal(tree.children[0].rows[0].id,"b");
   equal(nestedFolders(rows,"library")[0].rows[0].id,"b");
 });
+
+test("categories are named relative to the projects folder, with the full path kept for a tooltip", () => {
+  const rows = projectTree([
+    {id:"a",name:"A",folder:{path:"/home/owner/projects/Personal",hostId:"local"}},
+    {id:"b",name:"B",folder:{path:"/home/owner/projects/Work",hostId:"local"}},
+    {id:"c",name:"C",folder:{path:"/home/owner/projects/Work/clients",hostId:"local"}},
+  ],[]);
+  deepEqual(nestedFolders(rows,"").map(folder => [folder.label, folder.path, folder.children.map(child => child.label)]),
+    [["Personal","/home/owner/projects/Personal",[]], ["Work","/home/owner/projects/Work",["clients"]]]);
+  // Projects straight in the projects folder: the one category is that folder, by its name.
+  const flat = projectTree([{id:"d",name:"D",folder:{path:"/home/owner/projects",hostId:"local"}},
+    {id:"e",name:"E",folder:{path:"/home/owner/projects",hostId:"local"}}],[]);
+  deepEqual(nestedFolders(flat,"").map(folder => [folder.label, folder.path]), [["projects","/home/owner/projects"]]);
+});

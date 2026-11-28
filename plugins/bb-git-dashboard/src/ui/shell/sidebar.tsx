@@ -109,7 +109,7 @@ export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositor
         aria-label={(expanded ? t("shell.folderCollapse", {name: folder.label || t("shell.noFolder")}) : t("shell.folderExpand", {name: folder.label || t("shell.noFolder")}))}
         onClick={() => toggle(folder.key)}>
         <Icon name={expanded ? "ChevronDown" : "ChevronRight"} small/>
-        <span className="g-ell" title={folder.label || t("shell.noFolder")}>{folder.label || t("shell.noFolder")}</span>
+        <span className="g-ell" title={folder.path || t("shell.noFolder")}>{folder.label || t("shell.noFolder")}</span>
         <span className="g-state">{folder.count}</span>
       </button>
       {expanded && <ul>

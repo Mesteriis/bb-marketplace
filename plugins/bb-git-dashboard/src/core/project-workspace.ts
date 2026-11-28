@@ -63,7 +63,8 @@ export function sidebarFolders(rows:ReturnType<typeof projectTree>, query:string
 }
 
 type ProjectRow = ReturnType<typeof projectTree>[number];
-export type FolderNode = {key:string;label:string;rows:ProjectRow[];children:FolderNode[];count:number};
+/** A folder of the tree: its name relative to the folder above it (the projects folder at the top), and its full path. */
+export type FolderNode = {key:string;label:string;path:string;rows:ProjectRow[];children:FolderNode[];count:number};
 
 export function nestedFolders(rows:ProjectRow[],query:string) {
   const roots:FolderNode[] = [];
@@ -72,12 +73,14 @@ export function nestedFolders(rows:ProjectRow[],query:string) {
     if (!parts.length) parts.push(folder.label);
     let siblings = roots;
     const prefix = [folder.hostId,folder.path.startsWith("/") ? "/" : ""];
+    const separator = folder.path.includes("\\") && !folder.path.includes("/") ? "\\" : "/";
     for (const [index,label] of parts.entries()) {
       prefix.push(label);
       const key = JSON.stringify(prefix);
       let node = siblings.find(item => item.key === key);
       if (!node) {
-        node = {key,label,rows:[],children:[],count:0};
+        const path = folder.path ? (folder.path.startsWith("/") ? "/" : "") + parts.slice(0, index + 1).join(separator) : "";
+        node = {key,label,path,rows:[],children:[],count:0};
         siblings.push(node);
       }
       node.count += folder.rows.length;
@@ -85,16 +88,17 @@ export function nestedFolders(rows:ProjectRow[],query:string) {
       siblings = node.children;
     }
   }
+  // A chain of folders holding no project folds into its last folder, which keeps its own name.
   function compact(nodes:FolderNode[]):FolderNode[] {
     return nodes.map(start => {
       let node = start;
-      const labels = [start.label];
-      while (!node.rows.length && node.children.length === 1) {
-        node = node.children[0];
-        labels.push(node.label);
-      }
-      return {...node,label:labels.join("/"),children:compact(node.children)};
+      while (!node.rows.length && node.children.length === 1) node = node.children[0];
+      return {...node,children:compact(node.children)};
     }).sort((a,b) => a.label.localeCompare(b.label));
   }
-  return compact(roots);
+  // The folder all projects of a machine share is the projects folder: when it holds no project itself, its
+  // categories are the top of the tree (Personal, Work), named relative to it.
+  let top = compact(roots);
+  while (top.length === 1 && !top[0].rows.length && top[0].children.length > 1) top = top[0].children;
+  return top;
 }
