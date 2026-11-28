@@ -8,7 +8,8 @@ const SCOPE_LABELS: Record<Scope, string> = {
   global: "Глобально",
 };
 
-export const NOT_CONFIGURED = "Укажите файл отметки в настройках плагина";
+export const NOT_CONFIGURED =
+  "Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина";
 export const NOT_LOCAL = "Охрана настраивается только на этом Mac";
 export const CLOSED = "Закрыто";
 

@@ -44,7 +44,7 @@ describe("rpc output", () => {
 
 describe("refusals", () => {
   it.each([
-    ["not_configured", "Укажите файл отметки в настройках плагина"],
+    ["not_configured", "Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина"],
     ["not_writable", "Файл отметки недоступен для записи"],
     ["locked", "Файл отметки занят другой записью, повторите"],
   ] as const)("maps %s to a conflict", (reason, message) => {

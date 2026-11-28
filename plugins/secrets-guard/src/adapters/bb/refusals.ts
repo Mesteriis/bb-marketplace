@@ -3,7 +3,8 @@ import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { NotLocal, StoreUnavailable, type StoreUnavailableReason } from "../../core/ports.ts";
 
 const UNAVAILABLE_MESSAGES: Record<StoreUnavailableReason, string> = {
-  not_configured: "Укажите файл отметки в настройках плагина",
+  not_configured:
+    "Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина",
   not_writable: "Файл отметки недоступен для записи",
   locked: "Файл отметки занят другой записью, повторите",
 };

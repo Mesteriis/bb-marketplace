@@ -16,7 +16,7 @@ import {
 import { collectDescendants } from "./tree.ts";
 
 export interface GuardView {
-  /** Whether the marker location is set. */
+  /** Whether the marker's location is known and writable. */
   configured: boolean;
   /** Whether the thread runs on the machine that holds the marker. */
   local: boolean;
@@ -40,7 +40,7 @@ export function createService(deps: {
 
   async function state(input: { threadId: string }): Promise<GuardView> {
     const local = await threads.isLocal(input.threadId);
-    const configured = store.configured && (await store.writable());
+    const configured = await store.writable();
     if (!local || !configured) return { configured, local, effective: null };
     return { configured, local, effective: effective(await store.read(), now(), input.threadId) };
   }
@@ -118,7 +118,6 @@ export function createService(deps: {
       return state({ threadId });
     },
     async resync() {
-      if (!store.configured) return;
       let unknown = 0;
       for (const root of treeRoots(await store.read(), now())) {
         if (!(await resyncRoot(root))) unknown += 1;
