@@ -180,3 +180,14 @@ test("the confirm button is absent without the wiring, and for an ordinary job w
   render(<Queue {...queueProps} jobs={[failed]} onConfirmArchive={vi.fn()} />);
   expect(screen.queryByRole("button", { name: "Подтвердить копию" })).toBeNull();
 });
+
+test("a failed item of an archive job shows the line of its code and reason with the entry name", () => {
+  const base = archiveJob("failed") as unknown as OperationJob;
+  const jobView = {
+    ...base, error: { code: "unsupported", reason: "link_escapes", message: "x", retryable: false },
+    plan: { ...base.plan, items: [{ ...base.plan.items[0], source: { endpoint: "archive:123e4567-e89b-42d3-a456-426614174000", path: { segments: [{ t: "ln" }] } } }] },
+    items: [{ outcome: "failed", error: "Links in archives are not extracted", code: "unsupported", reason: "link_escapes" }],
+  } as unknown as JobView;
+  render(<Queue {...queueProps} jobs={[jobView]} />);
+  expect(screen.getByText("ln: Ссылка выходит за каталог назначения")).toBeTruthy();
+});

@@ -83,6 +83,11 @@ function isBatchRename(plan: OperationPlan): boolean {
   return plan.kind === "rename" && plan.items.length > 1;
 }
 
+/** The code and the closed reason of an item's error, when it has a reason (S14). */
+function pairOf(error: CommanderError): { code: CommanderError["code"]; reason: NonNullable<CommanderError["reason"]> } | Record<string, never> {
+  return error.reason === undefined ? {} : { code: error.code, reason: error.reason };
+}
+
 function safeError(error: unknown): CommanderError {
   return isCommanderError(error) ? error : new CommanderError("internal", "Job execution failed");
 }
@@ -969,7 +974,7 @@ export class JobRunner {
     const latest = await this.requireJob(id);
     if (latest.state !== "running" && latest.state !== "cancel_requested") return;
     const items = latest.items.slice();
-    for (const [item, { outcome, error }] of outcomes) items[item] = { outcome, error: error.message };
+    for (const [item, { outcome, error }] of outcomes) items[item] = { outcome, error: error.message, ...pairOf(error) };
     const values = [...outcomes.values()];
     const unknown = values.some(({ outcome }) => outcome === "unknown");
     // The job error describes the item that stopped it, not an item that was merely not read.
@@ -1528,7 +1533,11 @@ export class JobRunner {
       await this.makeDirectory(target, entry, replace, context, unchanged, expected);
       return;
     }
-    if (item.kind !== "file") throw new CommanderError("unsupported", "Provider cannot transfer this entry kind");
+    if (item.kind !== "file") {
+      // An archive names why a link or special record is not extracted: reading it is refused with that pair.
+      if (source.provider.endpoint.provider === "archive") await source.provider.read(source.path, 0n, 1, null, signal);
+      throw new CommanderError("unsupported", "Provider cannot transfer this entry kind");
+    }
     const { provider, path } = target;
     const confirmSource = async () => {
       const actual = fingerprint(await observe(source, context, Boolean(expected.sha256)));
@@ -1793,7 +1802,7 @@ export class JobRunner {
   ): Promise<void> {
     if (job.state !== "running" && job.state !== "cancel_requested" && job.state !== "interrupted") return;
     const items = job.items.slice();
-    items[index] = { outcome, error: warning ?? error?.toShape().message ?? null };
+    items[index] = { outcome, error: warning ?? error?.toShape().message ?? null, ...(warning === undefined && error ? pairOf(error) : {}) };
     const progress = {
       ...this.progress(job, toBig(baseline) + this.itemBytes(job, index, outcome)),
       itemsDone: job.progress.itemsDone + 1,

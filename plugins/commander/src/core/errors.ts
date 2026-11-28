@@ -37,7 +37,7 @@ export const ErrorReason = z.enum([
 ]);
 export type ErrorReason = z.infer<typeof ErrorReason>;
 
-function reasonAllowed(code: ErrorCode, reason: ErrorReason): boolean {
+export function reasonAllowed(code: ErrorCode, reason: ErrorReason): boolean {
   const allowed = (ERROR_REASONS as Partial<Record<ErrorCode, readonly string[]>>)[code];
   return allowed?.includes(reason) ?? false;
 }
