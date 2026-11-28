@@ -12,7 +12,7 @@ import { isAncestorOrSelf, join, parent, samePath, type ResourcePath } from "./p
 import type { ChangedItem } from "./planner.ts";
 import { READ_CHUNK_MAX, type FileProvider, type WriteSession } from "./provider.ts";
 import {
-  confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, TransferHash, verifyCopy,
+  confirmVerified, fingerprint, isCaseOnlyPair, matches, nameSpelling, matchesTarget, observe, readChunks, reconcileItem, removeStagedTemp, tempNameFor, createTransferHash, verifyCopy,
   type Location, type VerifyContext,
 } from "./reconcile.ts";
 import { parentSkipNote } from "./retry-note.ts";
@@ -1591,7 +1591,7 @@ export class JobRunner {
         await recordTemp("0");
         // Archive sources and pack always hash the transferred bytes: commitIntent needs them as proof (S14).
         const proofNeeded = source.provider.endpoint.id.startsWith("archive:") || plan.kind === "pack";
-        const hash = verify === "sha256" || proofNeeded ? new TransferHash() : null;
+        const hash = verify === "sha256" || proofNeeded ? createTransferHash() : null;
         try {
           await readChunks(source, expected, this.chunkBytes, signal, call, async (bytes, offset) => {
             await mark("copying", { writing: { offset: fromBig(offset), length: bytes.length } });

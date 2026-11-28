@@ -152,6 +152,8 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
   return { state, update, endpoints, problem, refreshEndpoints };
 }
 
+const PARTIAL_MS = 250;
+
 function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number): Directory | undefined {
   const key = ref ? JSON.stringify(ref) : null;
   const [view, setView] = useState<{ key: string; directory: Directory } | null>(null);
@@ -163,6 +165,7 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
       const entries: Entry[] = [];
       const cursors = new Set<string>();
       let cursor: string | null = null;
+      let shown = 0, shownCount = 0;
       do {
         const page: { entries: Entry[]; cursor: string | null } = await rpc.call("dir_list", { ref: snapshot, cursor, limit: LIST_PAGE_MAX });
         if (!active) return;
@@ -173,6 +176,17 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
             throw new CommanderError("limit_exceeded", ru.unknownError);
           }
           cursors.add(cursor);
+          // The first page appears at once. Later updates come when the list has doubled and at least PARTIAL_MS has
+          // passed, so a 100 000-entry listing neither waits for its last page nor sorts again after each one.
+          // A refresh keeps the complete old listing.
+          const now = performance.now();
+          if (shown === 0 || (now - shown >= PARTIAL_MS && entries.length >= 2 * shownCount)) {
+            shown = now;
+            shownCount = entries.length;
+            const partial = entries.slice();
+            setView((previous) => previous?.key === key && !previous.directory.partial && !previous.directory.loading && !previous.directory.error
+              ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
+          }
         }
       } while (cursor !== null);
       if (active) setView({ key, directory: { entries, loading: false, error: null } });

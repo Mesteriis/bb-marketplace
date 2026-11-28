@@ -159,6 +159,7 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("AAA=")).toBe(2);
     expect(base64Bytes("AA==")).toBe(1);
     expect(base64Bytes("")).toBe(0);
+    expect(base64Bytes("AB==")).toBe(1); // trailing bits are not checked
   });
 
   it("refuses text that is not canonical base64: a URL-alphabet character, a padding in the middle, a bad length", () => {
@@ -166,6 +167,17 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("AB=C")).toBeNull();
     expect(base64Bytes("A===")).toBeNull();
     expect(base64Bytes("AAA")).toBeNull();
+    expect(base64Bytes("AAAA\n")).toBeNull();
+    expect(base64Bytes("AA\nA")).toBeNull();
+    expect(base64Bytes("AA=A")).toBeNull();
+    expect(base64Bytes("====")).toBeNull();
+  });
+
+  it("checks a 4 MiB chunk of base64 text in well under the cost of a transfer step", () => {
+    const text = encoded(4194304);
+    const start = performance.now();
+    expect(base64Bytes(text)).toBe(4194304);
+    expect(performance.now() - start).toBeLessThan(250);
   });
 
   it("accepts 4194303 and 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {

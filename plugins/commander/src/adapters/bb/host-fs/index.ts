@@ -27,6 +27,7 @@ import { childPath, decodeName, lstatOrNull, parseWindowsPath, recheckParent, re
 import { createEditPathPolicy } from "../edit-path-policy.ts";
 import { join, parent } from "../../../core/path.ts";
 import { WriteSessions, type WriteOptions } from "./writes.ts";
+import { ListSessions } from "./list-sessions.ts";
 
 interface Context {
   signal: AbortSignal;
@@ -57,6 +58,7 @@ function versionOf(stats: NonNullable<Awaited<ReturnType<typeof lstatOrNull>>>):
 export function createHostFs(options: WriteOptions & { platform?: NamePlatform } = {}) {
   const platform = options.platform ?? (process.platform === "win32" ? "win32" : "posix");
   const writes = new WriteSessions(platform, options);
+  const listings = new ListSessions();
   const shutdown = new AbortController();
   const pending = new Set<Promise<unknown>>();
   let lifecycle: AbortSignal | undefined;
@@ -68,6 +70,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     lifecycle?.removeEventListener("abort", onShutdown);
     disposing = (async () => {
       await Promise.allSettled(pending);
+      await listings.closeAll();
       await writes.dispose().catch((error) => { throw fsError(error); });
     })();
     return disposing;
@@ -131,16 +134,28 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       let seen = 0;
       let responseBytes = 0;
       let more = false;
+      // A page that stopped at its limit leaves its handle for the next page (see ListSessions).
+      const resumed = start > 0 ? listings.take(ListSessions.key(full, start, version)) : undefined;
       // Node accepts buffer encoding at runtime for byte-exact dirent names.
-      const directory = await opendir(full, { encoding: "buffer" as BufferEncoding });
+      const directory = resumed?.dir ?? await opendir(full, { encoding: "buffer" as BufferEncoding });
+      let carry = resumed?.carry ?? null;
+      if (resumed) seen = start;
+      let keep = false;
       try {
         while (true) {
           signal.throwIfAborted();
-          const item = await directory.read();
-          if (!item) break;
+          let rawName: Buffer;
+          if (carry) {
+            rawName = carry;
+            carry = null;
+          } else {
+            const item = await directory.read();
+            if (!item) break;
+            // Node returns Buffer names with encoding=buffer, despite its Dirent declaration.
+            rawName = Buffer.from(item.name);
+          }
           if (!editPaths && seen++ < start) continue;
-          // Node returns Buffer names with encoding=buffer, despite its Dirent declaration.
-          const name = decodeName(Buffer.from(item.name));
+          const name = decodeName(rawName);
           const child = childPath(full, name);
           const childStats = await lstatOrNull(child);
           if (!childStats) throw changed();
@@ -148,6 +163,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
           if (editPaths && (await editPaths.hidden(child, childStats) || seen++ < start)) continue;
           if (entries.length === limit) {
             more = true;
+            carry = rawName;
             break;
           }
           const entry = await describe(child, name, childStats);
@@ -155,14 +171,19 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
           // Leave space for the cursor and RPC envelope under BB's 8 MiB limit.
           if (responseBytes > 7 * 1024 * 1024) {
             more = true;
+            carry = rawName;
             break;
           }
           entries.push(entry);
         }
         const current = await lstatOrNull(full);
         if (!current || versionOf(current) !== version) throw changed();
+        if (more) {
+          listings.put(ListSessions.key(full, start + entries.length, version), { dir: directory, carry });
+          keep = true;
+        }
       } finally {
-        await directory.close();
+        if (!keep) await directory.close();
       }
       return { entries, cursor: more ? (start + entries.length) + ":" + version : null };
     }),

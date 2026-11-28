@@ -183,7 +183,7 @@ export function Pane(props: PaneProps) {
     {tab && <Address key={location} tab={tab} onPath={props.onPath} onFilter={props.onFilter}
       onParent={() => { if (above) props.onNavigate(above); }} onRefresh={props.onRefresh} onSearch={props.onSearch} />}
     <div className="cm-grid" ref={grid} role="grid" tabIndex={0} aria-label={ru[props.side]} aria-multiselectable="true"
-      aria-busy={!!directory?.loading} aria-rowcount={total + 1 + Number(!!status)}
+      aria-busy={!!directory?.loading || !!directory?.partial} aria-rowcount={total + 1 + Number(!!status)}
       aria-activedescendant={renderedCursor ? uid + "-" + cursorIndex : undefined}
       onScroll={(event) => { const value = event.currentTarget.scrollTop; setTop(value); if (!directory?.loading) props.onScroll(value); }}>
       <div className="cm-row cm-columns" role="row" aria-rowindex={1}>

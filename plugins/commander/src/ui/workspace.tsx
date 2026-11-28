@@ -239,7 +239,7 @@ export function Workspace(props: WorkspaceProps) {
   useLayoutEffect(() => {
     for (const pane of sides) {
       const position = cursor[pane], value = tabs[pane], directory = directories[pane];
-      if (!value || !directory || directory.loading || directory.error) continue;
+      if (!value || !directory || directory.loading || directory.partial || directory.error) continue;
       const rows = all[pane], above = parent(value.path), previous = previousRows.current[pane];
       previousRows.current[pane] = rows;
       if (!position) {
@@ -254,9 +254,9 @@ export function Workspace(props: WorkspaceProps) {
       setCursor((previous) => ({ ...previous, [pane]: replacement }));
       if (replacement) revealCursor(pane, next ? index + Number(!!above) : 0);
     }
-  }, [leftEntries, rightEntries, directories.left?.loading, directories.right?.loading, cursor]);
-  const targetReady = !!target && !target.readOnly && !directories[opposite]?.loading && !directories[opposite]?.error;
-  const ready = !!endpoint && !directories[side]?.error && !directories[side]?.loading;
+  }, [leftEntries, rightEntries, directories.left?.loading, directories.right?.loading, directories.left?.partial, directories.right?.partial, cursor]);
+  const targetReady = !!target && !target.readOnly && !directories[opposite]?.loading && !directories[opposite]?.partial && !directories[opposite]?.error;
+  const ready = !!endpoint && !directories[side]?.error && !directories[side]?.loading && !directories[side]?.partial;
   const selectedNames = useMemo(() => {
     if (!tab?.selection.length || !directories[side]) return [];
     const existing = new Set(directories[side].entries.map((entry) => keyOf(entry.name)));
@@ -745,7 +745,7 @@ export function Workspace(props: WorkspaceProps) {
           const targetPane = otherSide(pane);
           const targetTab = tabs[targetPane], copyTo = endpointsBySide[targetPane];
           const canCopy = !!targetTab && !!copyTo && !copyTo.readOnly && !searchRoot(targetPane)
-            && !directories[targetPane]?.loading && !directories[targetPane]?.error && !busy;
+            && !directories[targetPane]?.loading && !directories[targetPane]?.partial && !directories[targetPane]?.error && !busy;
           return <SearchPanel key={pane} side={pane} active={pane === side} root={where}
             label={endpoints.find(({ id }) => id === where.endpoint)?.label ?? where.endpoint}
             savedId={state.searchPanels?.[pane]?.scanId} grid={grids[pane]} api={props.search}
@@ -769,7 +769,7 @@ export function Workspace(props: WorkspaceProps) {
           onScroll={(scrollTop) => patch(pane, (item) => item.scrollTop === scrollTop ? item : { ...item, scrollTop })}
           onPoint={(entry, mark) => point(pane, entry, mark)}
           onOpen={(entry) => openEntry(pane, entry)} onRefresh={() => props.onRefresh(pane)}
-          onSearch={props.search && value && source && !directories[pane]?.error && !directories[pane]?.loading
+          onSearch={props.search && value && source && !directories[pane]?.error && !directories[pane]?.loading && !directories[pane]?.partial
             ? () => { setPane(pane); setSearchRoots((previous) => ({ ...previous, [pane]: currentRef(value) })); }
             : undefined}
           onAccess={() => { if (source) void perform(() => props.onAccess(source)); }} />;

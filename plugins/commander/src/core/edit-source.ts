@@ -3,7 +3,7 @@ import { CommanderError } from "./errors.ts";
 import type { Fingerprint } from "./model.ts";
 import type { ResourcePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
-import { fingerprint, matches, readChunks, TransferHash } from "./reconcile.ts";
+import { createTransferHash, fingerprint, matches, readChunks } from "./reconcile.ts";
 import { toBig } from "./size.ts";
 
 export const EDIT_LIMIT = 16 * 1024 * 1024;
@@ -43,7 +43,7 @@ export async function readEditSource(
   if (expected && !matches(base, expected)) throw changed;
 
   const validate = editTextValidator();
-  const hash = provider.sha256 ? new TransferHash() : undefined;
+  const hash = provider.sha256 ? createTransferHash() : undefined;
   const chunks: Uint8Array[] = [];
   await readChunks(location, base, chunkBytes, signal, async (call) => {
     signal.throwIfAborted();

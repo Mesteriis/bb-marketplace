@@ -118,6 +118,33 @@ test("F5 opens a copy plan from the grid and leaves foreign and address inputs a
   expect(within(plan).getByText("/приёмник")).toBeDefined();
 });
 
+test("shows the first page of a long directory at once and keeps operations off until the last page arrives", async () => {
+  files = Array.from({ length: 2500 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные" && input.cursor !== null) await gate;
+    return call(method, input);
+  });
+
+  mount();
+  fireEvent.click(await leftFile("файл-0000"));
+  const left = grid();
+  expect(left.getAttribute("aria-busy")).toBe("true");
+  // The pages after the first are still outstanding, so a plan would miss entries: F5 is not taken.
+  fireEvent.keyDown(left, { key: "F5" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.queryByRole("dialog", { name: "Копирование" })).toBeNull();
+
+  release();
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(2500);
+  fireEvent.click(await leftFile("файл-0000"));
+  fireEvent.keyDown(grid(), { key: "F5" });
+  expect(await screen.findByRole("dialog", { name: "Копирование" })).toBeDefined();
+});
+
 test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
   const readOnly = { ...endpoint, id: "host:archive", hostId: "archive", label: "Архив", readOnly: true };
   saved!.right.tabs[0]!.endpoint = "host:archive";

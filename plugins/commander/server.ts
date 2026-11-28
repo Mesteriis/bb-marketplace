@@ -15,6 +15,7 @@ import { MIGRATIONS } from "./src/adapters/bb/migrations.ts";
 import { createOperations, createRpcHandlers, refusal } from "./src/adapters/bb/rpc-handlers.ts";
 import type { JobStore } from "./src/core/job-store.ts";
 import { JobRunner } from "./src/core/job-runner.ts";
+import { installNativeSha256 } from "./src/adapters/bb/native-sha256.ts";
 import { revalidate, type PlannerDeps } from "./src/core/planner.ts";
 import { createSqliteScanStore } from "./src/adapters/bb/scan-store-sqlite.ts";
 import { ScanRunner } from "./src/core/scan-job.ts";
@@ -22,6 +23,7 @@ import { rpcSchemas } from "./src/core/wire/rpc.ts";
 
 export const rpcContract = defineRpcContract(rpcSchemas);
 export default function activate(bb: BbPluginApi) {
+  installNativeSha256();
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   // S16: recover durable edit sessions and receive queue receipts in the same database.

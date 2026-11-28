@@ -14,6 +14,7 @@ const heavy = [
   "src/core/planner.test.ts",
   "src/core/preview.test.ts",
   "tests/file-read.test.ts",
+  "tests/host-fs/list-pages.test.ts",
   "app.test.tsx",
 ];
 

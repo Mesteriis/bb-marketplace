@@ -31,12 +31,22 @@ export function levelAllows(granted: SftpLevel, needed: SftpLevel): boolean {
 
 /**
  * How many bytes canonical base64 text decodes to, or null when it is not canonical base64 (standard alphabet, length a
- * multiple of four, at most two `=` and only at the end). One pass over the text: a 4 MiB chunk is 5.6 million characters,
- * which a regular expression with a repeated group cannot take.
+ * multiple of four, at most two `=` and only at the end). A 4 MiB chunk is 5.6 million characters. A per-character check
+ * in JavaScript (a loop or a regular expression) costs about 100 ms per chunk on random data, 29 s of 48 s CPU on a
+ * 1 GiB read (S18). Instead the text is decoded and encoded again natively and compared: equal text is canonical by
+ * construction. Only text that differs takes the exact character loop; trailing bits of the last character are not
+ * checked, as before.
  */
 export function base64Bytes(text: string): number | null {
   const n = text.length;
   if (n % 4 !== 0) return null;
+  const decoded = Buffer.from(text, "base64");
+  if (decoded.toString("base64") === text) return decoded.length;
+  return base64BytesScan(text);
+}
+
+function base64BytesScan(text: string): number | null {
+  const n = text.length;
   let pad = 0;
   if (n > 0 && text.charCodeAt(n - 1) === 61) pad = text.charCodeAt(n - 2) === 61 ? 2 : 1;
   for (let i = 0; i < n - pad; i++) {

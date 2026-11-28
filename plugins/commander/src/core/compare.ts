@@ -2,7 +2,7 @@ import { CommanderError } from "./errors.ts";
 import type { Entry } from "./model.ts";
 import { join, type NameSegment, type ResourcePath } from "./path.ts";
 import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider } from "./provider.ts";
-import { matches, readChunks, TransferHash, type Location } from "./reconcile.ts";
+import { createTransferHash, matches, readChunks, type Sha256Stream, type Location } from "./reconcile.ts";
 import { toBig } from "./size.ts";
 
 export type FileCompareMode = "size" | "sha256" | "bytes";
@@ -22,7 +22,7 @@ export interface DirDiff {
 
 interface ReadOptions {
   onBytes?(bytes: bigint): void;
-  createHash?(): Pick<TransferHash, "update" | "finish">;
+  createHash?(): Sha256Stream;
 }
 
 export function estimateRead(entries: readonly Entry[]): bigint {
@@ -53,7 +53,7 @@ async function hashFile(location: Location, expected: Entry, signal: AbortSignal
     opts.onBytes?.(toBig(expected.size));
     return hex;
   }
-  const hash = opts.createHash?.() ?? new TransferHash();
+  const hash = opts.createHash?.() ?? createTransferHash();
   await readChunks(location, expected, READ_CHUNK_MAX, signal, async (call) => {
     signal.throwIfAborted();
     const value = await call();

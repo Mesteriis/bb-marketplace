@@ -13,7 +13,11 @@ export type PlanCheck = { ok: true; checkedAt: string } | {
   ok: false; checkedAt: string; changed: { index: number; reason: "source_changed" | "target_changed" }[];
 };
 export interface Problem { code: string; message: string }
-export interface Directory { entries: Entry[]; loading: boolean; error: Problem | null }
+/**
+ * `partial`: the first pages of a long listing, shown while the rest is still being read. Rows are drawn, but
+ * anything that acts on the whole directory (copy, search, selection checks) waits for the last page.
+ */
+export interface Directory { entries: Entry[]; loading: boolean; error: Problem | null; partial?: boolean }
 export const unloaded: Directory = { entries: [], loading: true, error: null };
 export const sides = ["left", "right"] as const;
 export const otherSide = (side: Side): Side => side === "left" ? "right" : "left";
@@ -66,23 +70,34 @@ export function problemOf(error: unknown): Problem {
 }
 
 const collator = new Intl.Collator("ru", { numeric: true });
-function byNumber(a: string | null, b: string | null) {
+function byNumber(a: bigint | null, b: bigint | null) {
   if (a === b) return 0;
   if (a === null) return -1;
   if (b === null) return 1;
-  const x = BigInt(a), y = BigInt(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  return a < b ? -1 : a > b ? 1 : 0;
 }
+const toBig = (value: string | null) => value === null ? null : BigInt(value);
+
+/**
+ * Display name, sort key and number are computed once per entry, not on every comparison: a 100 000-entry panel
+ * spent most of its main-thread time in `nameOf` (a regular-expression replace) inside the comparator (S19a).
+ */
 export function visibleEntries(entries: Entry[], tab: Tab): Entry[] {
   const filter = tab.filter.toLocaleLowerCase("ru");
   const { by, direction } = tab.sort;
-  return entries.filter((entry) => nameOf(entry.name).toLocaleLowerCase("ru").includes(filter)).sort((a, b) => {
-    if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
-    const names = collator.compare(nameOf(a.name), nameOf(b.name)) || keyOf(a.name).localeCompare(keyOf(b.name));
-    const value = by === "name" ? names : by === "kind" ? a.kind.localeCompare(b.kind)
-      : by === "size" ? byNumber(a.size, b.size) : byNumber(a.mtimeNs, b.mtimeNs);
+  const rows: { entry: Entry; name: string; number: bigint | null }[] = [];
+  for (const entry of entries) {
+    const name = nameOf(entry.name);
+    if (filter !== "" && !name.toLocaleLowerCase("ru").includes(filter)) continue;
+    rows.push({ entry, name, number: by === "size" ? toBig(entry.size) : by === "mtime" ? toBig(entry.mtimeNs) : null });
+  }
+  rows.sort((a, b) => {
+    if ((a.entry.kind === "dir") !== (b.entry.kind === "dir")) return a.entry.kind === "dir" ? -1 : 1;
+    const names = collator.compare(a.name, b.name) || keyOf(a.entry.name).localeCompare(keyOf(b.entry.name));
+    const value = by === "name" ? names : by === "kind" ? a.entry.kind.localeCompare(b.entry.kind) : byNumber(a.number, b.number);
     return (direction === "asc" ? value : -value) || names;
   });
+  return rows.map((row) => row.entry);
 }
 
 export function bytes(size: string | bigint) {
