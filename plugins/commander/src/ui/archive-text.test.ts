@@ -30,7 +30,7 @@ it("has a line for every allowed code and reason pair, and none for a pair the s
       expect(archiveReasonText(code, reason), `${code}+${reason}`).toEqual(expect.any(String));
     }
   }
-  expect(pairs).toBe(40);
+  expect(pairs).toBe(41);
   expect(archiveReasonText("invalid_archive", "ratio")).toBeNull();
   expect(archiveReasonText("limit_exceeded", "nope")).toBeNull();
 });

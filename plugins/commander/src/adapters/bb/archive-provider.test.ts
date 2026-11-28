@@ -419,3 +419,114 @@ describe("a stream stays with its reader until the barrier", () => {
     expect([...await provider.read(at("a"), 5n, 3, v(10), signal)]).toEqual([5, 6, 7]);
   });
 });
+
+describe("stream slots and releases (review 4)", () => {
+  function helper(sizes: Record<string, number>, hooks: { onRequest?: (body: Call, options?: { signal?: AbortSignal }) => void } = {}) {
+    const names = Object.keys(sizes);
+    const streams = new Map<number, { id: number; pos: number }>();
+    let next = 1;
+    let opens = 0;
+    let maxLive = 0;
+    const calls: Call[] = [];
+    const rpc: ArchiveRpc = {
+      request: vi.fn(async (body: Call, options?: { signal?: AbortSignal }) => {
+        calls.push(body);
+        hooks.onRequest?.(body, options);
+        await new Promise((r) => setTimeout(r, 2));
+        // Like the real client: a request whose signal is already aborted is refused before it is sent.
+        if (options?.signal?.aborted) throw new CommanderError("cancelled", "stopped");
+        const ok = (extra: Record<string, unknown>, data: Uint8Array[] = []) => ({ json: { t: "ok", req: 1, ...extra } as unknown as { t: string }, data });
+        switch (body.t) {
+          case "stat": {
+            const i = names.indexOf(Buffer.from(body.nameB64 as string, "base64").toString());
+            return ok({ entry: file(i, names[i]!, sizes[names[i]!]!) });
+          }
+          case "read_open": {
+            opens++;
+            if (streams.size >= 4) throw new CommanderError("invalid_path", "Too many open streams");
+            const stream = next++;
+            streams.set(stream, { id: body.id as number, pos: 0 });
+            maxLive = Math.max(maxLive, streams.size);
+            return ok({ stream, size: String(sizes[names[body.id as number]!]) });
+          }
+          case "read": {
+            const s = streams.get(body.stream as number);
+            if (!s) throw new CommanderError("invalid_path", "No such stream");
+            const n = Math.min(body.length as number, sizes[names[s.id]!]! - s.pos);
+            const bytes = Uint8Array.from({ length: n }, (_, i) => (s.id * 100 + s.pos + i) % 251);
+            s.pos += n;
+            return ok({ pos: s.pos }, [bytes]);
+          }
+          case "read_finish": return ok({ size: "0", crc32: 0, aes_auth: null });
+          case "read_close": streams.delete(body.stream as number); return ok({});
+          default: throw new Error(body.t);
+        }
+      }),
+    } as unknown as ArchiveRpc;
+    return { rpc, streams, calls, opens: () => opens, maxLive: () => maxLive };
+  }
+  const v = (size: number) => ({ size: String(size), mtimeNs: "1732665600000000000" });
+  const at = (name: string) => parsePosix("/" + name);
+
+  it("reserves the slot before asking the helper: two opens at the limit never show it a fifth stream", async () => {
+    const h = helper({ a: 10, b: 10, c: 10, d: 10, e: 10, f: 10 });
+    const provider = make(h.rpc);
+    // Three streams are open and free; two more readers arrive at once, only one slot is left for new work.
+    for (const n of ["a", "b", "c"]) await provider.read(at(n), 0n, 5, v(10), signal);
+    const results = await Promise.allSettled([
+      provider.read(at("d"), 0n, 5, v(10), signal), provider.read(at("e"), 0n, 5, v(10), signal), provider.read(at("f"), 0n, 5, v(10), signal),
+    ]);
+    expect(h.maxLive()).toBeLessThanOrEqual(4);
+    expect(results.filter((r) => r.status === "fulfilled").length).toBeGreaterThanOrEqual(1);
+    for (const r of results) {
+      if (r.status === "rejected") expect(r.reason).toMatchObject({ code: "limit_exceeded", reason: "too_many_streams", retryable: true });
+    }
+  });
+
+  it("when all four streams are being read, the fifth reader is refused plainly and the helper never sees it", async () => {
+    const h = helper({ a: 50, b: 50, c: 50, d: 50, e: 50 });
+    const provider = make(h.rpc);
+    // Hold four reads in flight: each stream is busy while its request runs.
+    const four = ["a", "b", "c", "d"].map((n) => provider.read(at(n), 0n, 5, v(50), signal));
+    await new Promise((r) => setTimeout(r, 1));
+    const fifth = provider.read(at("e"), 0n, 5, v(50), signal);
+    await expect(fifth).rejects.toMatchObject({ code: "limit_exceeded", reason: "too_many_streams", retryable: true });
+    await Promise.all(four);
+    expect(h.maxLive()).toBeLessThanOrEqual(4);
+    expect(h.calls.filter((c) => c.t === "read_open" && c.id === 4)).toHaveLength(0);
+  });
+
+  it("four cancelled barriers in a row leave no stream behind: the close is not cancelled with the read", async () => {
+    const controllers: AbortController[] = [];
+    const h = helper({ a: 10 }, {
+      onRequest: (body) => { if (body.t === "read_finish") controllers.at(-1)!.abort(); },
+    });
+    const provider = make(h.rpc);
+    for (let i = 0; i < 4; i++) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      await provider.read(at("a"), 0n, 10, v(10), controller.signal);
+      await expect(provider.finishRead!(at("a"), v(10), controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+    }
+    expect(h.streams.size).toBe(0);
+    // The fifth stream opens without trouble.
+    await expect(provider.read(at("a"), 0n, 10, v(10), signal)).resolves.toHaveLength(10);
+  });
+
+  it("keeps the stream busy from the skip to the first read, so nobody can take it in between", async () => {
+    const busyAtRead: boolean[] = [];
+    let providerRef: ArchiveProvider;
+    const h = helper({ a: 100 }, {
+      onRequest: (body) => {
+        if (body.t !== "read") return;
+        const streams = (providerRef as unknown as { streams: Array<{ stream: number; busy: boolean }> }).streams;
+        busyAtRead.push(streams.find((s) => s.stream === body.stream)?.busy ?? false);
+      },
+    });
+    const provider = make(h.rpc);
+    providerRef = provider;
+    expect([...await provider.read(at("a"), 40n, 3, v(100), signal)]).toEqual([40, 41, 42]);
+    expect(busyAtRead.length).toBeGreaterThanOrEqual(2);
+    expect(busyAtRead.every(Boolean)).toBe(true);
+  });
+});

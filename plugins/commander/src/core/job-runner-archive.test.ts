@@ -132,4 +132,48 @@ test("an interrupted archive job with a checkpoint waits for the copy confirmati
   await runner.recover();
   await vi.waitFor(async () => expect((await store.get(job.id))!.state).toBe("completed"));
   expect(to.contents(parsePosix("/b"))).toEqual(new Uint8Array(3).fill(42));
+  // The wait is over: its error does not stay on the finished job.
+  expect((await store.get(job.id))!.error).toBeNull();
+});
+
+test("a pending job that is not waiting for the owner, over an archive without a copy, waits instead of failing, and finishes clean", async () => {
+  const from = new FakeProvider(ARCHIVE);
+  const to = new FakeProvider("host:to");
+  from.put(parsePosix("/a"), new Uint8Array(3).fill(42), "1");
+  let available = false;
+  const provider = (id: string): FileProvider => {
+    if (id !== ARCHIVE) return to;
+    if (!available) throw new CommanderError("consent_required", "The archive must be estimated again", false, "archive_copy");
+    return from;
+  };
+  const unsigned: Omit<OperationPlan, "digest"> = {
+    id: "123e4567-e89b-42d3-a456-426614174002", createdAt: date, initiator: { kind: "owner" }, kind: "copy",
+    sourceEndpoint: ARCHIVE, targetEndpoint: "host:to", targetDir: { endpoint: "host:to", path: { segments: [] } },
+    items: [{
+      source: { endpoint: ARCHIVE as EndpointId, path: parsePosix("/a") }, target: { endpoint: "host:to", path: parsePosix("/b") },
+      kind: "file", fingerprint: { size: "3", mtimeNs: "1" }, expectTarget: "absent",
+    }],
+    route: "relay-server", conflictPolicy: "ask", verify: "size", totalBytes: "3",
+  };
+  const store = new MemoryJobStore();
+  const id = "323e4567-e89b-42d3-a456-426614174010";
+  await store.create({
+    id, plan: { ...unsigned, digest: await planDigest(unsigned) }, state: "pending", awaitsOwner: false, currentItem: null, pendingConflict: null, error: null,
+    progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "0", bytesTotal: "3" }, items: [{ outcome: "pending", error: null }], createdAt: date, updatedAt: date,
+  } as OperationJob);
+  let n = 0;
+  const runner = new JobRunner({
+    store, provider, now: () => new Date(date), uuid: () => "523e4567-e89b-42d3-a456-" + String(++n).padStart(12, "0"),
+    chunkBytes: 1024 * 1024, retryDelay: async () => {}, onEvent: () => {},
+  });
+  await runner.recover();
+  const waiting = (await store.get(id))!;
+  expect(waiting.state).toBe("pending");
+  expect(waiting.error).toMatchObject({ code: "consent_required", reason: "archive_copy" });
+  expect(to.contents(parsePosix("/b"))).toBeNull();
+  available = true;
+  await runner.recover();
+  await vi.waitFor(async () => expect((await store.get(id))!.state).toBe("completed"));
+  expect((await store.get(id))!.error).toBeNull();
+  expect(to.contents(parsePosix("/b"))).toEqual(new Uint8Array(3).fill(42));
 });

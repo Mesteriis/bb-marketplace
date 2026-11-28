@@ -538,6 +538,12 @@ export class JobRunner {
       if (!job || this.active.has(id)) return;
       if (job.state === "pending") {
         if (job.awaitsOwner) return;
+        // S14a: a job over an archive whose copy is gone waits, still pending, until the owner confirms a new copy.
+        if (await this.holdForArchive(job)) return;
+        if (job.error?.reason === "archive_copy") {
+          await this.patch(job, { error: null }, "progress");
+          continue;
+        }
         if (await this.start(job)) return "resumed";
         continue;
       }
@@ -554,12 +560,11 @@ export class JobRunner {
       // S14a: a job over an archive whose copy is gone waits, still interrupted and with its checkpoint, until the
       // owner confirms a new copy; a later recovery pass goes on from the checkpoint. It is not an unknown outcome.
       if (!cancelling) {
-        const waiting = this.archiveWait(job);
-        if (waiting) {
-          if (job.error?.code !== waiting.code || job.error.reason !== waiting.reason) {
-            await this.patch(job, { error: waiting.toShape() }, "progress");
-          }
-          return;
+        if (await this.holdForArchive(job)) return;
+        if (job.error?.reason === "archive_copy") {
+          // The copy is back: the wait's error does not stay on the job.
+          await this.patch(job, { error: null }, "progress");
+          continue;
         }
       }
       if (!cancelling && job.pendingConflict) {
@@ -607,6 +612,16 @@ export class JobRunner {
         return "resumed";
       }
     }
+  }
+
+  /** Marks the job as waiting for the owner's copy confirmation and reports whether it has to wait. */
+  private async holdForArchive(job: OperationJob): Promise<boolean> {
+    const waiting = this.archiveWait(job);
+    if (!waiting) return false;
+    if (job.error?.code !== waiting.code || job.error.reason !== waiting.reason) {
+      await this.patch(job, { error: waiting.toShape() }, "progress");
+    }
+    return true;
   }
 
   /** The refusal of a plan's archive endpoint that needs a new estimate, or null when none does. */

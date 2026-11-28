@@ -16,6 +16,7 @@ const lines: Record<string, string> = {
   "limit_exceeded/too_many_entries": unusual, "limit_exceeded/name_too_long": unusual,
   "limit_exceeded/total_bytes": "Превышен предел распаковки (общий размер)",
   "limit_exceeded/ratio": "Архив сжат сильнее допустимого коэффициента; возможно, это архивная бомба. Поднять предел можно в настройках",
+  "limit_exceeded/too_many_streams": "Слишком много одновременных чтений архива; повторите чуть позже",
   "limit_exceeded/too_many_open_archives": "Открыто слишком много архивов (максимум 4)",
   "auth_failed/password_required": "Архив зашифрован: введите пароль",
   "auth_failed/bad_password": "Неверный пароль или повреждённые данные",

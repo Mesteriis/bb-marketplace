@@ -20,7 +20,7 @@ export const ERROR_REASONS = {
   ],
   limit_exceeded: [
     "meta_too_large", "directory_too_large", "too_many_entries", "name_too_long", "ratio", "total_bytes",
-    "too_many_open_archives",
+    "too_many_open_archives", "too_many_streams",
   ],
   auth_failed: ["password_required", "bad_password"],
   consent_required: ["archive_copy"],

@@ -126,7 +126,6 @@ export class ArchiveProvider implements FileProvider {
    * is dropped and read again.
    */
   private readonly streams: OpenStream[] = [];
-  private freed: (() => void)[] = [];
 
   constructor(private readonly options: ArchiveProviderOptions) {
     this.endpoint = options.endpoint;
@@ -174,23 +173,25 @@ export class ArchiveProvider implements FileProvider {
     stream.busy = false;
     stream.used = Date.now();
     if (stream.idle) clearTimeout(stream.idle);
-    stream.idle = setTimeout(() => void this.drop(stream, new AbortController().signal), IDLE_MS);
+    stream.idle = setTimeout(() => void this.drop(stream), IDLE_MS);
     stream.idle.unref?.();
-    for (const wake of this.freed.splice(0)) wake();
   }
 
-  private async drop(stream: OpenStream, signal: AbortSignal): Promise<void> {
+  /**
+   * Closes a stream at the helper and forgets it. The close never carries the reader's signal: a cancelled read
+   * must still give its slot back, or four cancels in a row would leave the archive without a stream.
+   */
+  private async drop(stream: OpenStream): Promise<void> {
     const at = this.streams.indexOf(stream);
     if (at >= 0) this.streams.splice(at, 1);
     if (stream.idle) clearTimeout(stream.idle);
     stream.idle = null;
-    await this.options.rpc.request({ t: "read_close", stream: stream.stream }, { signal }).catch(() => undefined);
-    for (const wake of this.freed.splice(0)) wake();
+    if (stream.stream >= 0) await this.options.rpc.request({ t: "read_close", stream: stream.stream }).catch(() => undefined);
   }
 
-  /** A stream of the entry at exactly this position that nobody is reading, if there is one. */
+  /** A stream of the entry at exactly this position that nobody is reading, if there is one; it is claimed. */
   private take(id: number, pos: bigint): OpenStream | null {
-    const found = this.streams.find((stream) => stream.id === id && stream.pos === pos && !stream.busy) ?? null;
+    const found = this.streams.find((stream) => stream.id === id && stream.pos === pos && !stream.busy && stream.stream >= 0) ?? null;
     if (found) {
       found.busy = true;
       if (found.idle) clearTimeout(found.idle);
@@ -199,39 +200,42 @@ export class ArchiveProvider implements FileProvider {
     return found;
   }
 
+  /**
+   * A new stream, its slot reserved before the helper is asked (so concurrent opens cannot pass the limit). When no
+   * free stream can make room because all are being read, the reader gets a plain, retryable refusal.
+   */
   private async openStream(entry: ArchiveEntry, signal: AbortSignal): Promise<OpenStream> {
     if (entry.id === null) throw new CommanderError("is_a_directory", "Archive entry is a directory");
-    // Room: the least recently used free stream goes; when all four are being read, wait for one to be released.
     while (this.streams.length >= STREAM_LIMIT) {
       const free = this.streams.filter((stream) => !stream.busy).sort((a, b) => a.used - b.used)[0];
-      if (free) {
-        await this.drop(free, signal);
-      } else {
-        await new Promise<void>((resolve, reject) => {
-          this.freed.push(resolve);
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        });
-      }
+      if (!free) throw new CommanderError("limit_exceeded", "Too many archive streams are being read at once", true, "too_many_streams");
+      await this.drop(free);
     }
-    const { json } = await this.options.rpc.request(
-      { t: "read_open", id: entry.id },
-      { signal, ...(this.options.password ? { password: this.options.password } : {}) },
-    );
-    const stream: OpenStream = {
-      id: entry.id, stream: json.stream as number, pos: 0n, size: BigInt(json.size as string), busy: true, used: Date.now(), idle: null,
-    };
+    const stream: OpenStream = { id: entry.id, stream: -1, pos: 0n, size: 0n, busy: true, used: Date.now(), idle: null };
     this.streams.push(stream);
-    return stream;
+    try {
+      const { json } = await this.options.rpc.request(
+        { t: "read_open", id: entry.id },
+        { signal, ...(this.options.password ? { password: this.options.password } : {}) },
+      );
+      stream.stream = json.stream as number;
+      stream.size = BigInt(json.size as string);
+      return stream;
+    } catch (error) {
+      const at = this.streams.indexOf(stream);
+      if (at >= 0) this.streams.splice(at, 1);
+      throw error;
+    }
   }
 
-  /** Runs the action on a stream; an error or a cancel releases (closes) it, success keeps it for its reader. */
-  private async using<T>(stream: OpenStream, signal: AbortSignal, action: () => Promise<T>): Promise<T> {
+  /** Runs the action on a claimed stream; success keeps the stream for its reader, an error or a cancel closes it. */
+  private async using<T>(stream: OpenStream, action: () => Promise<T>): Promise<T> {
     try {
       const result = await action();
       this.release(stream);
       return result;
     } catch (error) {
-      await this.drop(stream, new AbortController().signal);
+      await this.drop(stream);
       throw error;
     }
   }
@@ -240,22 +244,16 @@ export class ArchiveProvider implements FileProvider {
     const entry = await this.entryForRead(path, expect, signal);
     const size = BigInt(entry.size);
     if (offset >= size) return new Uint8Array(0);
-    const id = entry.id!;
-    let stream = this.take(id, offset);
-    if (!stream) {
-      stream = await this.openStream(entry, signal);
-      const fresh = stream;
-      await this.using(fresh, signal, async () => {
-        while (fresh.pos < offset) {
-          const skip = Number(offset - fresh.pos < 4_194_304n ? offset - fresh.pos : 4_194_304n);
-          await this.pull(fresh, skip, signal);
-        }
-      }).catch((error: unknown) => { throw error; });
-      stream = this.take(id, offset) ?? fresh;
-      stream.busy = true;
-    }
-    const live = stream;
-    return this.using(live, signal, () => this.pull(live, Math.min(length, Number(size - live.pos)), signal));
+    const claimed = this.take(entry.id!, offset);
+    const stream = claimed ?? await this.openStream(entry, signal);
+    // The skip to the offset and the first read are one unit: the stream is not given up in between.
+    return this.using(stream, async () => {
+      while (stream.pos < offset) {
+        const skip = Number(offset - stream.pos < 4_194_304n ? offset - stream.pos : 4_194_304n);
+        await this.pull(stream, skip, signal);
+      }
+      return this.pull(stream, Math.min(length, Number(size - stream.pos)), signal);
+    });
   }
 
   private async pull(stream: OpenStream, length: number, signal: AbortSignal): Promise<Uint8Array> {
@@ -279,25 +277,16 @@ export class ArchiveProvider implements FileProvider {
   async finishRead(path: ResourcePath, expect: Fingerprint | null, signal: AbortSignal): Promise<void> {
     const entry = await this.entryForRead(path, expect, signal);
     const size = BigInt(entry.size);
-    const id = entry.id!;
     // The reader's own stream, if it was read to the end; otherwise the entry is read through on a stream of its own.
-    let stream = this.take(id, size);
-    if (!stream) {
-      stream = await this.openStream(entry, signal);
-      const fresh = stream;
-      await this.using(fresh, signal, async () => {
-        while (fresh.pos < size) {
-          await this.pull(fresh, Number(size - fresh.pos < 4_194_304n ? size - fresh.pos : 4_194_304n), signal);
-        }
-      });
-      stream = this.take(id, size) ?? fresh;
-      stream.busy = true;
-    }
-    const done = stream;
+    const claimed = this.take(entry.id!, size);
+    const stream = claimed ?? await this.openStream(entry, signal);
     try {
-      await this.options.rpc.request({ t: "read_finish", stream: done.stream }, { signal });
+      while (stream.pos < size) {
+        await this.pull(stream, Number(size - stream.pos < 4_194_304n ? size - stream.pos : 4_194_304n), signal);
+      }
+      await this.options.rpc.request({ t: "read_finish", stream: stream.stream }, { signal });
     } finally {
-      await this.drop(done, signal);
+      await this.drop(stream);
     }
   }
 

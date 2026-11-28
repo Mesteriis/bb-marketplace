@@ -74,7 +74,7 @@ it("rejects a reason outside its code's closed set, an unknown reason and a reas
 it("accepts every documented reason under its own code", () => {
   const sets = {
     invalid_archive: "bad_tar bad_zip bad_eocd bad_zip64 bad_range bad_pax count_mismatch scan_mismatch overlapping_entries local_name_mismatch multi_volume truncated size_overflow duplicate_name crc_mismatch size_mismatch aes_auth_failed name_collision",
-    limit_exceeded: "meta_too_large directory_too_large too_many_entries name_too_long ratio total_bytes too_many_open_archives",
+    limit_exceeded: "meta_too_large directory_too_large too_many_entries name_too_long ratio total_bytes too_many_open_archives too_many_streams",
     auth_failed: "password_required bad_password",
     consent_required: "archive_copy",
     unsupported: "link_not_supported link_escapes encryption_unsupported v7_tar pax_size unsupported_format unsupported_compression archives_unavailable",
@@ -87,5 +87,5 @@ it("accepts every documented reason under its own code", () => {
       expect(CommanderErrorShape.safeParse(shape(code, reason)).success, `${code}+${reason}`).toBe(true);
     }
   }
-  expect(total).toBe(40);
+  expect(total).toBe(41);
 });
