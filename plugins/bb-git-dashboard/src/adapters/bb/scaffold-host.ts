@@ -6,7 +6,8 @@ import { gitRunner } from "./git-process.ts";
 import { assertWorktree, exchangeHttps, httpsOrigin, worktreeIdentity } from "./local-git.ts";
 
 const fail = (code: string): never => { throw new Error(code); };
-export type ScaffoldFileWrite = {path: string; text: string; executable: boolean};
+/** A file of a new project: its text, or with `base64` its bytes (written as they are, never executable). */
+export type ScaffoldFileWrite = {path: string; text: string; executable: boolean; base64?: true};
 
 /** A relative path of plain segments inside the project, never into `.git`. */
 const relative = (path: string) => {
@@ -39,7 +40,10 @@ export async function scaffoldCreate(projectsRoot: string, category: string, nam
       await mkdir(dirname(path), {recursive: true});
       // "wx" refuses a path that exists, a link included; the mode is set on the handle, past the umask.
       const handle = await open(path, "wx", 0o600);
-      try { await handle.writeFile(file.text); await handle.chmod(file.executable ? 0o755 : 0o644); }
+      try {
+        await handle.writeFile(file.base64 ? Buffer.from(file.text, "base64") : file.text);
+        await handle.chmod(file.executable && !file.base64 ? 0o755 : 0o644);
+      }
       finally { await handle.close(); }
     }
     const git = gitRunner(target, signal);

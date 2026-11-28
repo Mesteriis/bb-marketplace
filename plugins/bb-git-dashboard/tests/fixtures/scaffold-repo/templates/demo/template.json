@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "id": "demo",
+  "title": {"en": "Demo service", "ru": "Демо-сервис"},
+  "description": {"en": "A service to test the loader.", "ru": "Сервис для проверки загрузчика."},
+  "params": [
+    {"name": "variant", "kind": "choice", "default": "plain", "choices": ["plain", "web"], "label": {"en": "Kind", "ru": "Вид"}},
+    {"name": "docker", "kind": "flag", "default": false, "label": {"en": "Docker", "ru": "Docker"}}
+  ],
+  "when": {"docker/**": "docker", "src/service/web.py": "variant=web"},
+  "rename": {"src/service/app.py": "src/service/{{name}}.py"},
+  "verbatim": ["src/service/*.vue"],
+  "ignore": [".venv/"],
+  "editorconfig": "[*.py]\nindent_size = 4\n",
+  "ci": {"make": true}
+}

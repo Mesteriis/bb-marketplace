@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { answer } from "../answer.ts";
 import { ciForge } from "../ci-templates/render.ts";
-import { scaffold } from "./model.ts";
+import { scaffold, scaffoldFile } from "./model.ts";
 
 const id = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/);
 const value = z.union([z.string().max(200), z.boolean()]);
 const source = z.enum(["builtin", "settings", "folder"]);
 export const scaffoldsView = z.object({
-  offered: z.array(z.object({key: z.string(), source, scaffold})),
+  offered: z.array(z.object({key: z.string(), source, scaffold,
+    /** The common layer of the templates repository the scaffold comes from. */
+    common: z.object({files: z.array(scaffoldFile).max(100)}).optional()})),
   rejected: z.array(z.object({source, name: z.string(), issues: z.array(z.string())})),
   /** Values suggested for every scaffold: the current year. */
   suggested: z.record(z.string(), value),

@@ -187,3 +187,12 @@ test("a token or address that could change the helper's input is refused before 
   } finally { fake.restore(); }
   assert.equal(existsSync(fake.calls), false);
 });
+
+test("a binary file is written as its bytes and never executable", async () => {
+  const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0xff, 0x0a]);
+  await scaffoldCreate(join(base, "projects"), "Personal", "icons", [...files,
+    {path: "public/icon.png", text: bytes.toString("base64"), executable: true, base64: true}], author, "Initial");
+  const path = join(base, "projects/Personal/icons/public/icon.png");
+  assert.deepEqual([...readFileSync(path)], [0x89, 0x50, 0x4e, 0x47, 0, 0xff, 0x0a]);
+  assert.equal(statSync(path).mode & 0o777, 0o644);
+});

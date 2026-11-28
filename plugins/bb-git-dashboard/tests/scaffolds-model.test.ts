@@ -75,7 +75,7 @@ test("the project name is a folder and package name, and the common parameters c
 
 test("a scaffold is checked as a whole: it renders with every choice and flag, and has no secret-like text", () => {
   assert.deepEqual(scaffoldIssues(tiny), []);
-  assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "x.md", body: "{{#docker}}\n{{nope}}\n{{/docker}}\n"}]}), ["The scaffold does not render: unknown name nope."]);
+  assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "x.md", body: "{{#docker}}\n{{nope}}\n{{/docker}}\n"}]}), ["The scaffold does not render: x.md: unknown name nope."]);
   assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "deploy.md", body: "ssh admin@10.1.2.3\n"}]}), ["deploy.md has an IP address."]);
 });
 
@@ -89,7 +89,7 @@ test("offered scaffolds: built-in ones, then own ones from the settings list and
   ]);
   assert.deepEqual(offered.map(entry => [entry.key, entry.source]), [["builtin:tiny", "builtin"], ["settings:own", "settings"], ["folder:own", "folder"]]);
   assert.deepEqual(rejected, [
-    {source: "folder", name: "bad.json", issues: ["The scaffold does not render: unknown name nope."]},
+    {source: "folder", name: "bad.json", issues: ["The scaffold does not render: x.md: unknown name nope."]},
     {source: "folder", name: "broken.json", issues: ["The file is not JSON."]},
   ]);
   assert.deepEqual(ownScaffolds("settings", "[1"), [{source: "settings", name: "settings", raw: null, error: "The scaffolds setting is not a JSON list."}]);

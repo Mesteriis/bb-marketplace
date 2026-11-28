@@ -24,6 +24,7 @@ import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { catalogGit, catalogLocal } from "./src/adapters/bb/catalog-host.ts";
 import { ciStack, ciTemplateFolder } from "./src/adapters/bb/ci-template-host.ts";
+import { readScaffoldTree } from "./src/adapters/bb/scaffold-tree.ts";
 import { publishFirst, saveCredential, scaffoldCreate } from "./src/adapters/bb/scaffold-host.ts";
 
 /** The watches of copies whose Review is open; built on the first renewal, with that call's context. */
@@ -130,6 +131,11 @@ export default experimental_defineHostEntry({
         const found = await ciStack(root, branch ?? undefined, signal);
         return {ok:true as const, ...found, paths:found.paths.slice(0, 5000)};
       } catch (error) { return failureFor(error,"GIT_REJECTED"); }
+    },
+    async scaffoldTree({folder}) {
+      const path = folder === "~" || folder.startsWith("~/") ? homedir() + folder.slice(1) : folder;
+      try { return {ok:true as const, ...await readScaffoldTree(path)}; }
+      catch (error) { return failureFor(error,"SCAFFOLDS_INVALID"); }
     },
     async ciTemplateFolder({folder}) {
       try { const found = await ciTemplateFolder(folder); return {ok:true as const, files:found.files, skipped:found.skipped.slice(0, 1000)}; }

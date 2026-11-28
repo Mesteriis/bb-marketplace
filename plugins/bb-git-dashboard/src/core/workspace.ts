@@ -101,6 +101,7 @@ const next: Record<string, string> = {
   VISIBILITY_MISMATCH: "An Azure repository takes its project's visibility: choose the project's visibility, or another project.",
   BRANCH_EXISTS: "Choose a branch name that is not on the forge yet: the file goes into a new branch.",
   TEMPLATE_INVALID: "Check the template and its values: the detail names what does not fit.",
+  SCAFFOLDS_INVALID: "Check the templates folder: the detail names the file and what does not fit.",
 };
 /** An error with a code `failureFor` knows and a `detail` for the agent. */
 export class CodedError extends Error {

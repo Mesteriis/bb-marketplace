@@ -13,7 +13,8 @@ import type { TemplateParam, TemplateValues } from "../../core/templating/engine
 import { CodedError } from "../../core/workspace.ts";
 import { message } from "../ci/ci-api.ts";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
-import { useT } from "../i18n/use-t.tsx";
+import { useLanguage, useT } from "../i18n/use-t.tsx";
+import type { Scaffold } from "../../core/scaffolds/model.ts";
 import { PageHead } from "../shell/page-head.tsx";
 import { Icon } from "../system/icon.tsx";
 import type { CatalogApi } from "./catalog-api.ts";
@@ -26,15 +27,20 @@ const sourceKey = {builtin: "np.src.builtin", settings: "np.src.settings", folde
 const commonLabel = (name: string): MessageKey | null => commonParams.some(param => param.name === name) ? ("np.p." + name) as MessageKey : null;
 type Created = Awaited<ReturnType<CatalogApi["createScaffold"]>>;
 
+/** A scaffold's own words in the interface language, where its template gives them; English otherwise. */
+const own = (scaffold: Scaffold, language: string) => language === "ru" ? scaffold.i18n?.ru : undefined;
+
 function Field({label, children}: {label: string; children: ReactNode}) {
   return <label className="git-np-field"><span>{label}</span>{children}</label>;
 }
 
 /** One scaffold parameter: a short list as a segment, a longer one as a select, a flag as a checkbox, else a field. */
-function Param({scaffold, param, value, onChange, t}: {scaffold: string; param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T}) {
-  // The common values and the plugin's own scaffolds are labelled in the chosen language; an owner's scaffold as written.
-  const own = commonLabel(param.name) ?? scaffoldLabelKey(scaffold, param.name);
-  const label = own ? t(own) : param.label;
+function Param({scaffold, param, value, onChange, t, translated}: {scaffold: string; param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T;
+  /** The template's own label in the interface language, when it gives one. */
+  translated?: string}) {
+  // The common values and the plugin's own scaffolds are labelled in the chosen language; a template by its own labels.
+  const key = commonLabel(param.name) ?? scaffoldLabelKey(scaffold, param.name);
+  const label = key ? t(key) : translated ?? param.label;
   if (param.kind === "flag") return <label className="git-np-check"><input type="checkbox" checked={value === true} onChange={event => onChange(event.target.checked)}/>
     <span>{label}</span></label>;
   if (param.kind === "choice" && param.choices.length <= 4) return <div className="git-np-field" role="group" aria-label={label}><span>{label}</span>
@@ -79,7 +85,9 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   const file = built.ok ? built.files.find(item => item.path === shown) ?? built.files.find(item => item.path === "README.md") ?? built.files[0] : undefined;
   const lines = file ? (file.text.endsWith("\n") ? file.text.slice(0, -1) : file.text).split("\n") : [];
   const set = (name: string) => (value: string | boolean) => setValues(previous => ({...previous, [name]: value}));
-  const param = (item: TemplateParam) => <Param key={item.name} scaffold={entry.scaffold.id} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
+  const {language} = useLanguage();
+  const words = own(entry.scaffold, language);
+  const param = (item: TemplateParam) => <Param key={item.name} scaffold={entry.scaffold.id} translated={words?.labels?.[item.name]} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
   const common = (name: string) => params.find(item => item.name === name);
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -90,9 +98,9 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   };
   const nameParam = common("name");
   return <div className="git-np">
-    <form id="git-np-form" className="git-np-form" aria-label={t("np.form", {title: entry.scaffold.title})} onSubmit={submit}>
+    <form id="git-np-form" className="git-np-form" aria-label={t("np.form", {title: words?.title ?? entry.scaffold.title})} onSubmit={submit}>
       {picker}
-      {entry.scaffold.description && <p className="g-muted git-np-about">{entry.scaffold.description}</p>}
+      {(words?.description ?? entry.scaffold.description) && <p className="g-muted git-np-about">{words?.description ?? entry.scaffold.description}</p>}
       <div className="git-np-field" role="group" aria-label={t("np.category")}><span>{t("np.category")}</span>
         <div className="g-seg git-np-wrap">{categories.map(value => <button key={value} type="button" aria-pressed={category === value} onClick={() => setCategory(value)}>
           {value || t("ct.category-root")}</button>)}</div></div>
@@ -174,6 +182,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
 export function NewProject({api, hostId, root, categories, onClose, onCreated}: {api: CatalogApi; hostId: string; root: string;
   categories: string[]; onClose(): void; onCreated(made: Created): void}) {
   const t = useT();
+  const {language} = useLanguage();
   const [view, setView] = useState<ScaffoldsView | null>(null);
   const [error, setError] = useState("");
   const [key, setKey] = useState("");
@@ -185,7 +194,7 @@ export function NewProject({api, hostId, root, categories, onClose, onCreated}: 
   const entry = view?.offered.find(item => item.key === key);
   const picker = view && <Field label={t("np.scaffold")}><span className="git-np-pick">
     <select className="g-inp" value={key} onChange={event => setKey(event.target.value)}>
-      {view.offered.map(item => <option key={item.key} value={item.key}>{item.scaffold.title}</option>)}</select>
+      {view.offered.map(item => <option key={item.key} value={item.key}>{own(item.scaffold, language)?.title ?? item.scaffold.title}</option>)}</select>
     {entry && <span className="g-chip line">{t(sourceKey[entry.source])}</span>}</span></Field>;
   return <div className="g-page git-new-project" role="region" aria-label={t("np.title")}>
     <nav className="git-ci-path git-np-crumbs" aria-label={t("np.path")}>

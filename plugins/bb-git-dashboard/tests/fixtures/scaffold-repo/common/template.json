@@ -1,0 +1,5 @@
+{
+  "format": 1,
+  "rename": {"LICENSE.MIT": "LICENSE", "LICENSE.Apache-2.0": "LICENSE"},
+  "when": {"LICENSE.MIT": "license=MIT", "LICENSE.Apache-2.0": "license=Apache-2.0", "CONTRIBUTING.md": "contributing"}
+}

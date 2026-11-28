@@ -1,8 +1,9 @@
-import { scaffold, scaffoldIssues, type Scaffold } from "./model.ts";
+import { scaffold, scaffoldIssues, type CommonLayer, type Scaffold } from "./model.ts";
 
 export type ScaffoldSource = "builtin" | "settings" | "folder";
 export type OwnScaffold = {source: Exclude<ScaffoldSource, "builtin">; name: string; raw: unknown; error?: string};
-export type OfferedScaffold = {key: string; source: ScaffoldSource; scaffold: Scaffold};
+/** A scaffold offered; one from a templates repository renders with its repository's common layer. */
+export type OfferedScaffold = {key: string; source: ScaffoldSource; scaffold: Scaffold; common?: CommonLayer};
 
 /** Own scaffolds from the settings' JSON list, or from one JSON file of the scaffolds folder. */
 export function ownScaffolds(source: OwnScaffold["source"], text: string, file?: string): OwnScaffold[] {

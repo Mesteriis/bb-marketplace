@@ -65,6 +65,13 @@ const placeholder = /(?<!\$)\{\{([A-Za-z][A-Za-z0-9]*)(?:\|([a-z]+))?\}\}/g;
 /** Substitutes one line; `raw` allows free text without |json (Markdown and plain text). */
 export function substitute(text: string, params: Map<string, TemplateParam>, values: TemplateValues, raw: boolean) {
   if (/(?<!\$)\{\{[#^/]/.test(text)) throw invalid("a section tag must stand on its own line");
+  // Any other {{ is someone else's syntax (Vue, Jinja, Handlebars): refused, not passed through silently.
+  for (const match of text.matchAll(/(?<!\$)\{\{/g)) {
+    if (!/^\{\{[A-Za-z][A-Za-z0-9]*(?:\|[a-z]+)?\}\}/.test(text.slice(match.index))) {
+      const shown = /^\{\{[^\n]{0,40}?\}\}/.exec(text.slice(match.index))?.[0] ?? text.slice(match.index, match.index + 20);
+      throw invalid(JSON.stringify(shown) + " is no template value; list the file under verbatim, or write ${{ for an expression");
+    }
+  }
   return text.replace(placeholder, (_, key: string, filter: string | undefined) => {
     const param = params.get(key);
     if (!param) throw invalid("unknown name " + key);

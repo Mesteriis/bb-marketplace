@@ -58,11 +58,14 @@ export const hostContract = defineRpcContract({
     ref:z.string().max(260),head:z.string().nullable(),
     paths:z.array(z.string().max(4096)).max(5000),manifests:z.record(z.string(),z.string().max(64*1024))})])},
   /** The own CI templates folder's JSON files. */
+  /** A templates folder in the layout of the templates repository: its common/ and templates/ files, text or base64. */
+  scaffoldTree: {input:z.object({folder:z.string().min(1).max(1000)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),
+    files:z.array(z.object({path:z.string().max(400),text:z.string().max(352*1024),base64:z.literal(true).optional(),executable:z.boolean()})).max(2000)})])},
   ciTemplateFolder: {input:z.object({folder:z.string().min(1).max(1000)}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true),
     files:z.array(z.object({name:z.string().max(255),text:z.string().max(64*1024)})).max(50),skipped:z.array(z.string().max(255)).max(1000)})])},
   /** Makes a new project from a scaffold's files inside the projects folder: git init and the first commit. */
   scaffoldCreate: {input:z.object({projectsRoot:z.string().min(1).max(4096),category:z.string().max(1024),name:z.string().min(1).max(100),
-    files:z.array(z.object({path:z.string().min(1).max(200),text:z.string().max(2*1024*1024),executable:z.boolean()})).max(400),
+    files:z.array(z.object({path:z.string().min(1).max(200),text:z.string().max(3*1024*1024),executable:z.boolean(),base64:z.literal(true).optional()})).max(400),
     author:z.object({name:z.string().trim().min(1).max(200),email:z.string().trim().min(3).max(200)}),message:z.string().min(1).max(200)}),
     output:rootResponse},
   /** The first push of a project made from a scaffold to its new forge repository (HTTPS, the system credential helper). */
