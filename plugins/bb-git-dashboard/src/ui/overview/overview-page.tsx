@@ -200,30 +200,68 @@ function Board({data, merged, now, api}: {data: OverviewData; merged: InboxPr[];
   const t = useT();
   const {language} = useLanguage();
   const stages = useMemo(() => overviewStages({...data.input, merged}), [data, merged]);
-  const card = (item: BoardCard) => {
-    const target = targetOf(item);
-    const blockers = item.pr ? blockerList(item.pr).map(blocker => blockerText(t, blocker)).join(" · ") : "";
-    return <li key={item.key}>
-      <button type="button" className="git-overview-card" disabled={!target} onClick={() => { if (target) api.open(target); }}>
-        <span className="g-muted git-overview-meta g-ell">{item.pr ? item.pr.repo + " #" + item.pr.number : item.copy ? item.copy.branch ?? "" : item.repository ?? ""}</span>
-        <span className="git-overview-card-title">{titleOf(item)}</span>
-        <span className="g-muted git-overview-meta">{item.pr ? blockers || ago(language, now, item.at)
-          : item.copy ? metaOf(t, item) : ago(language, now, item.at)}</span>
-      </button>
-    </li>;
-  };
-  const columns: [MessageKey, BoardCard[]][] = [["ov.stage.local", stages.local], ["ov.stage.open", stages.open], ["ov.stage.review", stages.review],
-    ["ov.stage.ready", stages.ready], ["ov.stage.merged", stages.merged]];
+  const columns: [MessageKey, BoardCard[], boolean][] = [["ov.stage.local", stages.local, false], ["ov.stage.open", stages.open, false],
+    ["ov.stage.review", stages.review, false], ["ov.stage.ready", stages.ready, false], ["ov.stage.merged", stages.merged, true]];
   return <div className="git-overview-board">
     <section className="git-overview-now" aria-label={t("ov.stage.ci")}>
-      <h2 className="g-sec">{t("ov.stage.ci")} <span className="g-num">{stages.ciNow.length}</span></h2>
-      {stages.ciNow.length ? <ul>{stages.ciNow.map(card)}</ul> : <p className="g-muted">{t("ov.stage.none")}</p>}
+      <h2 className="git-overview-now-title"><Icon name="Workflow" small/>{t("ov.stage.ci")}</h2>
+      {stages.ciNow.length ? <ul>{stages.ciNow.map(item => {
+        const target = targetOf(item);
+        const failedRun = item.kind === "ci-failed";
+        const label = (item.pr ? item.pr.repo + " #" + item.pr.number : (item.repository ?? "") + " · " + (item.run?.workflow ?? ""))
+          + " · " + (failedRun ? t("ov.ci.failed", {when: ago(language, now, item.at)}) : t("ov.ci.running", {when: ago(language, now, item.at)}));
+        return <li key={"now-" + item.key}>
+          <button type="button" className={"git-overview-now-item" + (failedRun ? " g-bad" : "")} disabled={!target} onClick={() => { if (target) api.open(target); }}>
+            <Icon name={failedRun ? "CircleX" : "Clock"} small/>{label}
+          </button>
+        </li>;
+      })}</ul> : <p className="g-muted">{t("ov.stage.none")}</p>}
+      <button type="button" className="g-btn ghost sm git-overview-all-runs" onClick={() => api.open({kind: "ci"})}>{t("ov.all-runs")}<Icon name="ArrowRight" small/></button>
     </section>
     <div className="git-overview-columns g-scroll">
-      {columns.map(([label, cards]) => <section key={label} className="git-overview-column" aria-label={t(label)}>
-        <h2 className="g-sec">{t(label)} <span className="g-num">{cards.length}</span></h2>
-        {cards.length ? <ul>{cards.map(card)}</ul> : <p className="g-muted">{t("ov.stage.none")}</p>}
+      {columns.map(([label, cards, old]) => <section key={label} className="git-overview-column" aria-label={t(label)}>
+        <h2 className="git-overview-column-head">{t(label)} <span className="g-num g-muted">{cards.length}</span></h2>
+        {cards.length ? <ul>{cards.map(card => <Card key={card.key} card={card} old={old} now={now} api={api}/>)}</ul>
+          : <p className="g-muted">{t("ov.stage.none")}</p>}
       </section>)}
     </div>
   </div>;
+}
+
+/**
+ * A card of the board: where it is from, its title, its state as a word with an icon (and a coloured edge), and the
+ * same one action as the list's row. A click anywhere on the card takes the action too; the keyboard reaches the button.
+ */
+function Card({card, old, now, api}: {card: BoardCard; old: boolean; now: number; api: OverviewApi}) {
+  const t = useT();
+  const {language} = useLanguage();
+  const target = targetOf(card);
+  const pr = card.pr;
+  const tone = card.kind ? tones[card.kind] : "";
+  const action: MessageKey = card.kind ? actionOf({...card, kind: card.kind, group: "action"}) : pr ? "ov.do.open-pr" : "ov.do.copy";
+  const state = (() => {
+    if (old && pr) return t("ov.card.merged", {when: ago(language, now, card.at)});
+    if (card.kind === "review" && pr) return t("ov.card.waiting-you", {author: pr.author});
+    if (card.copy) {
+      const parts = [card.copy.upstream === null && card.copy.branch !== null ? t("ov.card.unpublished") : card.copy.ahead ? t("ov.card.ahead", {n: card.copy.ahead}) : "",
+        card.copy.behind ? t("ov.card.behind", {n: card.copy.behind}) : ""].filter(Boolean);
+      return parts.join(" · ");
+    }
+    // The card's state first, then what else blocks it; a blocker that is the state itself is not said twice.
+    const same: Partial<Record<OverviewKind, Blocker["key"]>> = {"ci-failed": "ci-failing", conflict: "conflicts", changes: "changes", "ci-running": "ci-running", threads: "threads"};
+    if (pr) return [card.kind ? t(("ov.kind." + card.kind) as MessageKey) : "",
+      ...blockerList(pr).filter(blocker => !card.kind || blocker.key !== same[card.kind]).map(blocker => blockerText(t, blocker))].filter(Boolean).join(" · ");
+    return "";
+  })();
+  const open = () => { if (target) api.open(target); };
+  return <li className={"git-overview-card" + (old ? " old" : "") + (tone ? " " + tone : "")} onClick={open}>
+    <span className="g-muted git-overview-meta g-ell">{pr ? pr.repo + " #" + pr.number : card.copy ? card.copy.name : card.repository ?? ""}</span>
+    <span className="git-overview-card-title">{pr ? pr.title : card.copy?.branch ?? "HEAD"}</span>
+    {pr && pr.headRefName && !old ? <span className="g-branch">{pr.headRefName}</span> : null}
+    {state && <span className={"git-overview-card-state " + (tone ? "g-" + tone : "g-muted")}>
+      <Icon name={old ? "GitMerge" : card.kind ? icons[card.kind] : "GitPullRequestDraft"} small/>{state}</span>}
+    {!old && <span className="g-muted git-overview-meta">{ago(language, now, card.at)}</span>}
+    {target && <span><button type="button" className={"g-btn sm" + (old ? " ghost" : "")} onClick={event => { event.stopPropagation(); open(); }}
+      onKeyDown={event => { if (event.key === "Enter") event.stopPropagation(); }}>{t(action)}</button></span>}
+  </li>;
 }

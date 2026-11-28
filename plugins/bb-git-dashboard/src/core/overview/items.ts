@@ -53,7 +53,7 @@ export function blockerList(pr: InboxPr): Blocker[] {
 export const isReady = (pr: InboxPr) => !pr.isDraft && pr.blockers.length === 0 && pr.ci === "passing" && pr.reviewDecision === "APPROVED";
 
 /** The reason one of my open pull requests is in the list, most pressing first; null when it only waits (a draft). */
-function reasonOf(pr: InboxPr): OverviewKind | null {
+export function reasonOf(pr: InboxPr): OverviewKind | null {
   if (pr.ci === "failing") return "ci-failed";
   if (pr.conflicts) return "conflict";
   if (pr.reviewDecision === "CHANGES_REQUESTED") return "changes";

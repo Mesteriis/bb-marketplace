@@ -8,8 +8,9 @@ export type OverviewSource = "mine" | "requested" | "merged" | "ci" | "copies";
  * answer, how many copies it covers and whether some were left out, when.
  */
 export type OverviewData = {input: Omit<OverviewInput, "merged">; failed: OverviewSource[]; copiesFailed: number; copies: number; limited: number | null; at: number};
-/** Where an item's main action is: a pull request page, a copy's code, or its CI/CD. */
-export type OverviewTarget = {kind: "pr"; accountId: string; repo: string; number: number} | {kind: "copy"; copyId: string; section: "code" | "actions"};
+/** Where an item's main action is: a pull request page, a copy's code or its CI/CD; or the CI/CD section. */
+export type OverviewTarget = {kind: "pr"; accountId: string; repo: string; number: number} | {kind: "copy"; copyId: string; section: "code" | "actions"}
+  | {kind: "ci"};
 export type OverviewApi = {
   /** The overview's data; `refresh` reads every source again instead of this session's recent copy. */
   load(refresh: boolean): Promise<OverviewData>;

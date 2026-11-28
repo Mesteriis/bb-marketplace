@@ -34,6 +34,8 @@ try {
         && await visible(failing.getByText(/stand\/beta #3/)));
       await failing.click();
       const details = page.getByRole("complementary", { name: "Details" });
+      await details.getByText("What keeps it from merging").waitFor({ timeout: 10000 }).catch(() => {});
+      await page.screenshot({ path: out + "/overview-details-ci-failed-light.png" });
       check("its details list what keeps it from merging, with one main action", await visible(details.getByText("What keeps it from merging"))
         && await visible(details.getByText(/CI failing/)) && await details.locator(".g-btn.pri").count() === 1
         && await details.getByRole("button", { name: "Checks" }).count() === 1);
@@ -55,8 +57,22 @@ try {
       await page.screenshot({ path: out + "/overview-list-light.png" });
       // Board, kept after a reload.
       await page.getByRole("button", { name: "Board", exact: true }).click();
-      check("the board shows the same pull requests by stage, with CI now", await visible(page.getByRole("region", { name: "CI now" }))
-        && await visible(page.getByRole("region", { name: "PR open" }).or(page.getByRole("region", { name: "In review" })).getByText("Add greeting check")));
+      const now = page.getByRole("region", { name: "CI now" });
+      const review = page.getByRole("region", { name: "In review" });
+      check("the board shows the same pull requests by stage", await visible(page.getByRole("region", { name: "PR open" }).getByText("Add greeting check")));
+      check("a review asked of me stands in In review, waiting for me, with Review", await visible(review.locator(".git-overview-card", { hasText: "Rename variables" })
+        .filter({ hasText: "waiting for you" }).getByRole("button", { name: "Review" })));
+      check("CI now shows my pull requests' CI as the list does, and leads to all runs", await visible(now.getByRole("button", { name: /stand\/gamma #5 · running/ }))
+        && await visible(now.getByRole("button", { name: /stand\/beta #3 · failed/ })) && await visible(now.getByRole("button", { name: /All runs/ })));
+      check("a card's state is a word next to its colour", await visible(page.getByRole("region", { name: "PR open" }).locator(".git-overview-card.bad", { hasText: "CI failed" })));
+      // Keyboard: Tab reaches a card's button, Enter takes it.
+      const cardButton = page.getByRole("region", { name: "PR open" }).locator(".git-overview-card", { hasText: "Add greeting check" }).getByRole("button");
+      await cardButton.focus();
+      check("Tab reaches a card's button", await cardButton.evaluate(button => button.tabIndex >= 0 && document.activeElement === button));
+      await page.keyboard.press("Enter");
+      check("Enter on it opens the pull request", await page.waitForURL(/\/git\/pr\/stand-gitea\/3\//, { timeout: 15000 }).then(() => true, () => false), page.url());
+      await side(page).getByRole("button", { name: /^Overview\b/ }).click();
+      await now.waitFor({ timeout: 30000 });
       await page.waitForTimeout(1500);
       await page.reload({ waitUntil: "load" });
       saved = await page.getByRole("button", { name: "Board", exact: true }).waitFor({ timeout: 30000 }).then(async () =>

@@ -88,7 +88,7 @@ export function useOverviewApi(copies: Copy[]): OverviewApi {
       return mergedSession.data;
     },
     open(target) {
-      navigate.toPluginPanel("git", {subPath: target.kind === "pr" ? refPath("pr", target)
+      navigate.toPluginPanel("git", {subPath: target.kind === "pr" ? refPath("pr", target) : target.kind === "ci" ? "ci"
         : target.copyId + (target.section === "actions" ? "/actions" : "")});
     },
     async saveView(view) {
