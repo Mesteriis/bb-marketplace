@@ -17,8 +17,10 @@ export interface GuardButtonProps extends Omit<ComponentPropsWithoutRef<"button"
   onOpen?(): void;
 }
 
-const CLOSED = "text-muted-foreground hover:bg-accent hover:text-accent-foreground";
-const OPEN = "bg-warning/15 text-warning-text hover:bg-warning/25";
+// `data-[state=open]` is the popover's: the lock stays highlighted while its window is open.
+const CLOSED =
+  "text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground";
+const OPEN = "bg-warning/15 text-warning-text hover:bg-warning/25 data-[state=open]:bg-warning/25";
 
 /**
  * Takes a ref and any button props, so a popover can use it as its trigger.

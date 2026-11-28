@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-makosh-secrets-guard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Кнопка у поля ввода открывает охрану секретов Claude Code на 10, 30 или 60 минут: для чата, чата с субтредами или глобально.",
   "private": true,
   "type": "module",

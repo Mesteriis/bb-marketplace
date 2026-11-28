@@ -2,10 +2,12 @@
 // the real components, the host's theme tokens, canned states.
 //
 //   ?theme=dark|light|mock   the host's themes, or the palette the mockup was drawn in
-//   ?view=mock|states|popover   the mockup's three sections, every state, or the composer with its popover
+//   ?view=mock|states|popover|app   the mockup's three sections, every state, a bare composer with its
+//                                   popover, or a page laid out like BB: a sidebar and a composer column
+//   ?composer=<px>                  the composer's width in the app view (default 1130)
 //
 // The popover here is the npm copy of the popover library; in BB the host provides its own instance.
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Ellipsis, Mic, Plus, Zap } from "lucide-react";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import type { GuardView } from "../src/core/service.ts";
@@ -220,6 +222,131 @@ function WithPopover() {
   );
 }
 
+/** A plain toolbar control of the host, for context only. */
+function HostControl({ children, wide }: { children: ReactNode; wide?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        display: "inline-flex",
+        height: 32,
+        minWidth: 32,
+        padding: wide ? "0 10px" : 0,
+        gap: 6,
+        flex: "none",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 8,
+        color: "var(--muted-foreground)",
+        fontSize: 13,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * The page as in BB: a sidebar with the thread list on the left, the thread in
+ * the middle, and a composer that is narrower than its column. The lock is not
+ * the last control of the toolbar: skills, more, the microphone and send follow it.
+ */
+function AppLike() {
+  const [view, setView] = useState(params.get("guard") === "open" ? open("global", 47) : closed);
+  const width = Number(params.get("composer") ?? 1130);
+  return (
+    <div style={{ display: "flex", margin: "-28px -32px -36px", minHeight: "100vh" }}>
+      <aside
+        data-stand="sidebar"
+        style={{
+          width: 340,
+          flex: "none",
+          borderRight: "1px solid var(--border)",
+          background: "var(--sidebar, var(--canvas))",
+          padding: 16,
+          color: "var(--muted-foreground)",
+          fontSize: 13,
+          boxSizing: "border-box",
+        }}
+      >
+        <div style={{ ...heading, marginBottom: 14 }}>Треды</div>
+        {["Спланировать новый плагин", "Разрешить работу с секретами", "План интеграции GitWand"].map((title) => (
+          <div key={title} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+            {title}
+          </div>
+        ))}
+      </aside>
+      <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "24px 32px 20px" }}>
+        <div style={{ flex: 1, maxWidth: width, width: "100%", margin: "0 auto", color: "var(--muted-foreground)" }}>
+          <p>Окно у замка в настоящем BB я не вижу, а это ровно та часть, которую стенд проверить не мог.</p>
+          <p>Переоткройте тред и нажмите на замок.</p>
+        </div>
+        <div
+          data-stand="app-composer"
+          style={{
+            maxWidth: width,
+            width: "100%",
+            margin: "0 auto",
+            background: "var(--popover)",
+            border: "1px solid var(--border)",
+            borderRadius: 14,
+            boxSizing: "border-box",
+          }}
+        >
+          <textarea
+            aria-label="Сообщение"
+            placeholder="Напишите сообщение…"
+            rows={3}
+            style={{
+              display: "block",
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "14px 16px 6px",
+              border: 0,
+              outline: "none",
+              resize: "none",
+              background: "transparent",
+              color: "var(--foreground)",
+              font: "inherit",
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px 10px" }}>
+            <HostControl>
+              <Plus size={16} />
+            </HostControl>
+            <HostControl wide>Fable 5.2 Medium</HostControl>
+            <span style={{ flex: 1 }} />
+            <GuardToggle
+              view={view}
+              now={NOW}
+              busy={false}
+              error={null}
+              onOpen={(scope: Scope, minutes: Minutes) => setView(open(scope, minutes))}
+              onClose={() => setView(closed)}
+              scopeProps={SCOPE_PROPS}
+            />
+            <HostControl wide>
+              <Zap size={16} />
+              Навыки 232
+            </HostControl>
+            <HostControl>
+              <Ellipsis size={16} />
+            </HostControl>
+            <HostControl>
+              <Mic size={16} />
+            </HostControl>
+            <SendButton />
+          </div>
+        </div>
+        <div style={{ maxWidth: width, width: "100%", margin: "10px auto 0", color: "var(--muted-foreground)", fontSize: 13 }}>
+          Personal workspace
+        </div>
+      </main>
+    </div>
+  );
+}
+
 function Mock() {
   return (
     <>
@@ -277,7 +404,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <div data-bb-plugin="makosh-secrets-guard" data-bb-plugin-root="" style={page}>
-      {which === "states" ? <States /> : which === "popover" ? <WithPopover /> : <Mock />}
+      {which === "states" ? <States /> : which === "popover" ? <WithPopover /> : which === "app" ? <AppLike /> : <Mock />}
     </div>,
   );
 }
