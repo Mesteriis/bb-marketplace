@@ -9,6 +9,8 @@ import type { AgentGrant, SavedUiScan, UiState } from "../core/wire/rpc.ts";
 import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
 import type { ViewKind, ViewResult } from "../core/preview.ts";
 import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
+import { BatchRenameDialog } from "./batch-rename.tsx";
+import type { RenamePattern } from "../core/rename-pattern.ts";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
 import { activeTab, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
@@ -26,6 +28,8 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
   | { kind: "scan"; subject: ScanSubject }
   | { kind: "content"; source: string; target: string; returnTo: ConflictView }
+  // S12: батч-переименование выбранной пачки; sources — настоящие ссылки на выбранные объекты.
+  | { kind: "batch-rename"; entries: Entry[]; sources: ResourceRef[]; caseSensitive: boolean }
   | { kind: "view"; ref: ResourceRef; title: string; mode: ViewKind | "auto"; result: ViewResult | null; problem: Problem | null }
   | { kind: "sync"; paths: Parameters<SyncActions["estimate"]>[0]; labels: [string, string] }
   | { kind: "settings" };
@@ -394,6 +398,22 @@ export function Workspace(props: WorkspaceProps) {
     try { props.onPreview({ endpoint: value.endpoint, path: join(value.path, entry.name) }); }
     catch (error) { setProblem(problemOf(error)); }
   }
+  // S12: the selected entries of the pane, renamed as one batch by a pattern.
+  function openBatchRename(value: Tab) {
+    const chosen = entries.filter((entry) => selectedNames.some((name) => keyOf(name) === keyOf(entry.name)));
+    open({
+      kind: "batch-rename", entries: chosen, caseSensitive: endpoint?.caseSensitive ?? true,
+      sources: chosen.map((entry) => ({ endpoint: value.endpoint, path: join(value.path, entry.name) })),
+    });
+  }
+  function createBatchRename(sources: ResourceRef[], pattern: RenamePattern) {
+    void perform(async () => {
+      const plan = await props.onCreate({
+        kind: "rename", sources, targetDir: null, newName: null, conflictPolicy: "ask", verify: "size", pattern,
+      });
+      open({ kind: "plan", plan });
+    });
+  }
   function create(kind: PlanRequest["kind"], name: string | null = null) {
     if (!tab) return;
     const result = name === null ? null : NameSegment.safeParse({ t: name });
@@ -459,6 +479,7 @@ export function Workspace(props: WorkspaceProps) {
     else if (can[action] && tab) {
       if (action === "preview") { if (current) view(tab, current); }
       else if (action === "edit") { if (current) preview(tab, current); }
+      else if (action === "rename" && selectedNames.length > 1) openBatchRename(tab);
       else if (action === "mkdir" || action === "rename") open({
         kind: "text", title: shortcutText[action], label: ru.fileName,
         initial: action === "rename" && current && "t" in current.name ? current.name.t : "",
@@ -676,6 +697,9 @@ export function Workspace(props: WorkspaceProps) {
         <Icon name="Terminal" /><span>{compact ? ru.compactTerminal : ru.terminal}</span></Button>}
     </footer>
     {dialog?.kind === "text" && <TextDialog {...dialog} close={close} busy={busy} error={problem} />}
+    {dialog?.kind === "batch-rename" && <BatchRenameDialog entries={dialog.entries} directory={entries}
+      caseSensitive={dialog.caseSensitive} busy={busy} error={problem}
+      submit={(pattern) => createBatchRename(dialog.sources, pattern)} close={close} />}
     {dialog?.kind === "plan" && <PlanDialog plan={dialog.plan} job={dialog.job} endpoints={endpoints}
       inspect={props.onInspect} run={() => void perform(() => dialog.job ? props.onApprove(dialog.job) : props.onRun(dialog.plan), close)}
       reject={() => { if (dialog.job) void perform(() => props.onReject(dialog.job!), close); }}

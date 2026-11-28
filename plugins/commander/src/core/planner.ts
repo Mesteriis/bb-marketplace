@@ -24,13 +24,18 @@ import {
   type PlanItem,
   type Route,
 } from "./model.ts";
-import { NameSegment, join, parent, type ResourcePath } from "./path.ts";
+import { NameSegment, join, parent, samePath, type ResourcePath } from "./path.ts";
 import type { FileProvider } from "./provider.ts";
 import { LIST_PAGE_MAX } from "./provider.ts";
 import { fromBig, toBig, type Size } from "./size.ts";
+import { previewRename, RenamePattern, type RenameProblem } from "./rename-pattern.ts";
 
 /** The schema limit of OperationPlan.items; a configured maxItems cannot exceed it. */
 const SCHEMA_MAX_ITEMS = 100_000;
+/** S12: a batch rename plan holds at most this many renames (the artboard's limit). */
+export const BATCH_RENAME_MAX = 10_000;
+/** Listing cap for the directory a batch rename reads to check names. */
+const BATCH_LISTING_MAX = 200_000;
 const SIZE_MAX = 99_999_999_999_999_999_999n;
 
 export interface PlanRequest {
@@ -44,6 +49,8 @@ export interface PlanRequest {
   newName: NameSegment | null;
   conflictPolicy: ConflictPolicy;
   verify: Verify;
+  /** S12: a batch rename of every source by a pattern. Replaces newName; null or absent otherwise. */
+  pattern?: RenamePattern | null;
 }
 
 const PlanRequestInput = z.object({
@@ -54,6 +61,7 @@ const PlanRequestInput = z.object({
   newName: NameSegment.nullable(),
   conflictPolicy: ConflictPolicy,
   verify: Verify,
+  pattern: RenamePattern.nullable().optional(),
 }).strict();
 
 export interface PlannerDeps {
@@ -309,6 +317,21 @@ export async function buildPlan(
       break;
     }
     case "rename": {
+      // S12 batch: every source is renamed by the pattern; the names are checked in renameBatchItems.
+      if (req.pattern) {
+        if (req.sources.length === 0 || req.newName !== null || req.targetDir !== null) {
+          throw invalidRequest("a batch rename needs sources and a pattern, and no new name");
+        }
+        if (req.sources.length > BATCH_RENAME_MAX) {
+          throw new CommanderError("limit_exceeded", "The batch rename has too many entries");
+        }
+        targetEndpoint = sourceEndpoint;
+        assertWritable(deps.provider(sourceEndpoint!).endpoint);
+        for (const source of req.sources) {
+          assertRemovable(source, deps.protectedPathsFor(source.endpoint));
+        }
+        break;
+      }
       if (req.sources.length !== 1 || req.newName === null || req.targetDir !== null) {
         throw invalidRequest("rename needs exactly one source and a new name");
       }
@@ -357,6 +380,8 @@ export async function buildPlan(
       fingerprint: null,
       expectTarget: await expectationAt(provider, path, signal),
     });
+  } else if (req.kind === "rename" && req.pattern) {
+    items.push(...await renameBatchItems(req, deps, req.pattern, signal));
   } else if (req.kind === "rename") {
     const source = req.sources[0];
     const provider = deps.provider(source.endpoint);
@@ -401,7 +426,7 @@ export async function buildPlan(
       );
     }
   }
-  assertNoTargetOverlap(items, caseOf, req.kind);
+  checkTargets(items, caseOf, req.kind);
 
   const unsigned = {
     id: deps.uuid(),
@@ -419,6 +444,104 @@ export async function buildPlan(
   };
   const digest = await planDigest(unsigned);
   return OperationPlan.parse({ ...unsigned, digest });
+}
+
+/** Every listed name of one directory, read page by page within the listing cap. */
+async function listAll(provider: FileProvider, dir: ResourcePath, signal: AbortSignal): Promise<Entry[]> {
+  const entries: Entry[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await provider.list(dir, { cursor, limit: LIST_PAGE_MAX }, signal);
+    entries.push(...page.entries);
+    if (entries.length > BATCH_LISTING_MAX) throw new CommanderError("limit_exceeded", "The directory is too large to rename in one batch");
+    cursor = page.cursor;
+  } while (cursor !== null);
+  return entries;
+}
+
+/** The refusal for a name problem the preview found. The first problem refuses the whole plan. */
+function refusalFor(problem: RenameProblem): CommanderError {
+  switch (problem) {
+    case "exists": return new CommanderError("already_exists", "A new name is already taken in this directory");
+    case "duplicate": return new CommanderError("invalid_name", "Two entries would get the same new name");
+    case "empty": return new CommanderError("invalid_name", "A new name would be empty");
+    case "invalid_name": return new CommanderError("invalid_name", "A new name is not valid");
+    case "invalid_regex": return new CommanderError("invalid_name", "The regular expression is not valid");
+    case "unsafe_regex": return new CommanderError("invalid_name", "The regular expression is refused: only a flat expression with one repetition is allowed");
+  }
+}
+
+/**
+ * The renames of one batch: every source whose pattern result differs from its
+ * name, each with the sibling target. Refuses the whole batch on any name problem.
+ */
+async function renameBatchItems(
+  req: PlanRequest,
+  deps: PlannerDeps,
+  pattern: RenamePattern,
+  signal: AbortSignal,
+): Promise<PlanItem[]> {
+  const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
+  const dir = parent(req.sources[0].path);
+  if (dir === null) throw invalidRequest("The root cannot be renamed");
+  for (const source of req.sources) {
+    const sourceDir = parent(source.path);
+    if (sourceDir === null || !samePath(sourceDir, dir, caseOf(source.endpoint))) {
+      throw invalidRequest("A batch rename needs entries from one directory");
+    }
+  }
+  const provider = deps.provider(req.sources[0].endpoint);
+  const selected: Entry[] = [];
+  for (const source of req.sources) {
+    selected.push(await statExisting(provider, source.path, signal, "not_found"));
+  }
+  const directory = await listAll(provider, dir, signal);
+  const rows = previewRename(selected, pattern, { directory, caseSensitive: provider.endpoint.caseSensitive });
+  const failed = rows.find((row) => row.problem !== null);
+  if (failed?.problem) throw refusalFor(failed.problem);
+
+  const changed = rows.flatMap((row, index) => (row.to !== null && !sameNameExactly(row.from, row.to) ? [{ row, index }] : []));
+  if (changed.length === 0) throw new CommanderError("invalid_name", "The new names equal the current names");
+  if (changed.length > Math.min(deps.limits.maxItems, BATCH_RENAME_MAX)) {
+    throw new CommanderError("limit_exceeded", "The batch rename has too many entries");
+  }
+
+  const items: PlanItem[] = [];
+  for (const { row, index } of changed) {
+    const source: ResourceRef = { endpoint: req.sources[index].endpoint, path: req.sources[index].path };
+    const target: ResourceRef = { endpoint: source.endpoint, path: join(dir, row.to!) };
+    const entry = selected[index];
+    items.push({
+      source,
+      target,
+      kind: entry.kind,
+      fingerprint: { size: entry.size, mtimeNs: entry.mtimeNs },
+      // A target that is another batch source records that source's current state; execution
+      // checks it is absent once the batch has moved that source away.
+      expectTarget: sameEntryRef(source, target, caseOf) ? "absent" : await expectationAt(provider, target.path, signal),
+    });
+  }
+  return items;
+}
+
+/**
+ * Target checks for a plan. A batch rename may hold a target that is another item's
+ * source (a cycle such as a→b, b→a), because it moves through temporary names; only
+ * duplicate targets are refused. Every other kind keeps the overlap guard.
+ */
+function checkTargets(items: PlanItem[], caseOf: (id: EndpointId) => boolean, kind: OperationKind): void {
+  if (kind !== "rename" || items.length < 2) {
+    assertNoTargetOverlap(items, caseOf, kind);
+    return;
+  }
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (item.target === null) continue;
+    const endpointCase = caseOf(item.target.endpoint);
+    const key = item.target.endpoint + "\u0001" + item.target.path.segments.map((name) => segmentKey(name, endpointCase)).join("\u0000");
+    if (seen.has(key)) throw new CommanderError("invalid_path", "Two items would write to the same target");
+    seen.add(key);
+  }
 }
 
 /** Every write, removal and target directory the plan needs must still be allowed. */
@@ -476,7 +599,7 @@ export async function revalidate(
   // Targets were planned distinct under plan-time case rules. The endpoint may fold
   // them now, so the target overlap rules run again under the current rules.
   const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
-  assertNoTargetOverlap(snapshot.items, caseOf, snapshot.kind);
+  checkTargets(snapshot.items, caseOf, snapshot.kind);
   const changed: ChangedItem[] = [];
   for (const [index, item] of snapshot.items.entries()) {
     signal.throwIfAborted();

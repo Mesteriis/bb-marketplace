@@ -124,3 +124,35 @@ export const errorText: Record<string, string> = {
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
 };
+
+// S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.
+export const batchRenameText = {
+  title: "Переименовать пачку",
+  description: "Шаблон, поиск и замена, регистр и счётчик; проверка — до создания плана",
+  template: "Шаблон имени",
+  templateHint: "[N] — имя без расширения, [E] — расширение, [C] — счётчик, [C:3] — счётчик из 3 знаков, [N1-3] — срез имени",
+  find: "Найти", replace: "Заменить на", regex: "регулярное выражение",
+  counterStart: "Счётчик с", counterStep: "Шаг", counterWidth: "Знаков",
+  caseMode: "Регистр", caseKeep: "как есть", caseLower: "нижний", caseUpper: "ВЕРХНИЙ", caseTitle: "Заглавные слова",
+  preview: "Предпросмотр переименования", from: "Было", to: "Станет", state: "Состояние", ok: "Готово",
+  makePlan: "Создать план", pendingPlan: "План создаётся",
+  summary: (changed: number, conflicts: number) =>
+    changed + " к переименованию · " + conflicts + (conflicts === 1 ? " конфликт" : " конфликтов") + " · расширения сохраняются",
+  // Core messages (English, shown to the agent too) mapped to the owner text by exact match.
+  coreMessages: {
+    "Batch rename retry is not available: check the job": "Повтор пакетного переименования недоступен: сверьте задание",
+    "Batch rename cancel is unavailable: the second phase is running": "Отмена недоступна: идёт вторая фаза переименования",
+  } as Record<string, string>,
+  // A pending item of a finished batch was returned to its place, not renamed.
+  returnedPending: "Ожидающие элементы не переименованы",
+  tempNames: (paths: string[]) => "Файлы могли остаться под временными именами: " + paths.join(", ")
+    + ". Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
+  problems: {
+    empty: "Имя станет пустым",
+    invalid_name: "Недопустимое имя",
+    duplicate: "Совпадает с именем другого файла пачки",
+    exists: "Имя уже есть в каталоге и не входит в пачку",
+    invalid_regex: "Регулярное выражение не разобрано",
+    unsafe_regex: "Регулярное выражение отклонено: допустим плоский вид с одним повтором без групп и альтернатив",
+  } as Record<string, string>,
+};

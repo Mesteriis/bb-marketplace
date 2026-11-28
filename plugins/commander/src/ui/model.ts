@@ -2,7 +2,7 @@ import { CommanderError } from "../core/errors.ts";
 import type { Entry, Endpoint, OperationJob, ResourceRef } from "../core/model.ts";
 import { displayPath, type NameSegment, type ResourcePath } from "../core/path.ts";
 import { type DamagedJob, type RpcInput, type UiState } from "../core/wire/rpc.ts";
-import { errorText, ru } from "./strings.ts";
+import { batchRenameText, errorText, ru } from "./strings.ts";
 
 export type Side = UiState["activePane"];
 export type Tab = UiState[Side]["tabs"][number];
@@ -40,6 +40,9 @@ export function damaged(job: JobView): job is DamagedJob {
 }
 
 export function problemOf(error: unknown): Problem {
+  if (error instanceof CommanderError && Object.hasOwn(batchRenameText.coreMessages, error.message)) {
+    return { code: error.code, message: batchRenameText.coreMessages[error.message] };
+  }
   if (error instanceof CommanderError && [ru.compareLimit, ru.noPreview, ru.terminalUnavailable, ru.terminalOpenPage].includes(error.message)) {
     return { code: error.code, message: error.message };
   }
