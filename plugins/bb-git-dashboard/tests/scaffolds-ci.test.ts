@@ -83,3 +83,31 @@ test("an application under src/<role>/ installs and checks there; make check sta
   assert.doesNotMatch(rooted, /working-directory/);
   assert.throws(() => resolveValues(github, {appDir: "../out", inApp: true}, {}));
 });
+
+test("a scaffold with its application under src/<role>/ gets CI that installs there and runs make check at the root", () => {
+  const pyproject = "[project]\nname = \"svc\"\n\n[dependency-groups]\ndev = [\"pytest==9.2.0\"]\n\n[tool.uv]\npackage = false\n";
+  const files = [{path: "Makefile", text: "check:\n\t$(MAKE) -C src/service check\n", executable: false},
+    {path: "src/service/Makefile", text: "check:\n\tuv run pytest\n", executable: false},
+    {path: "src/service/pyproject.toml", text: pyproject, executable: false},
+    {path: "src/service/main.py", text: "", executable: false}];
+  const scaffold = {...byId("python-service-uv"), ci: {pythonTool: "uv", lockfile: false, make: true}};
+  const made = scaffoldCi(files, scaffold, "github", {name: "svc", branch: "main"})!;
+  assert.equal(made.template, "python-github");
+  assert.match(made.text, /- name: Install\n {8}run: pip install uv==0\.13\.10 && uv sync\n {8}working-directory: src\/service\n/);
+  assert.match(made.text, /- name: Check\n {8}run: make check\n$/);
+});
+
+test("a Go service in src/service/ with its web UI in src/frontend/ gets Go's CI, with Node.js for the UI", () => {
+  const files = [{path: "Makefile", text: "check: layout\n\t$(MAKE) -C src/service check\n", executable: false},
+    {path: "src/service/go.mod", text: "module example.com/demo\n\ngo 1.26.0\n", executable: false},
+    {path: "src/frontend/package.json", text: "{\"name\": \"demo\", \"scripts\": {\"check\": \"vitest run\"}}\n", executable: false}];
+  const scaffold = {...byId("go-service-with-web"), ci: {make: true}};
+  const github = scaffoldCi(files, scaffold, "github", {name: "demo", branch: "main"})!;
+  assert.equal(github.template, "go-github");
+  assert.match(github.text, /go-version: "1\.26"/);
+  assert.match(github.text, /- uses: actions\/setup-node@v4\n/);
+  assert.match(github.text, /run: make check\n$/);
+  const gitlab = scaffoldCi(files, scaffold, "gitlab", {name: "demo", branch: "main"})!;
+  assert.match(gitlab.text, /^ {4}- make check WEB=0$/m);
+  assert.match(gitlab.text, /\nweb:\n {2}image: node:24\n/);
+});

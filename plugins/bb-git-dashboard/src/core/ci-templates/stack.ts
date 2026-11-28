@@ -12,7 +12,7 @@ export type StackInput = {paths: string[]; manifests: Record<string, string>};
 
 const manifests = new Set(["package.json", ".nvmrc", ".node-version", "pyproject.toml", "requirements.txt", ".python-version", "go.mod", "Cargo.toml", "Makefile"]);
 /** An application folder: `src/<role>`, one level under src/. */
-const appFile = /^(src\/[A-Za-z0-9_][A-Za-z0-9._-]*)\/([^/]+)$/;
+export const appFile = /^(src\/[A-Za-z0-9_][A-Za-z0-9._-]*)\/([^/]+)$/;
 /** The manifests worth reading — at the root and in the application folders src/<role>/ — in the order the project lists them. */
 export const manifestPaths = (paths: string[]) => paths.filter(path => manifests.has(path) || manifests.has(appFile.exec(path)?.[2] ?? ""));
 
