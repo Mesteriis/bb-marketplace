@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
+import { readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { localStand, pauseAfterWrite, waitForJob, waitForPart } from "./tests/s19b-fixture.ts";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { Entry, OperationJob } from "./src/core/model.ts";
+import { type Entry, OperationJob } from "./src/core/model.ts";
 import { CommanderError } from "./src/core/errors.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { MAX_VIEW_BYTES, readForView, replyFor, type WireView } from "./src/core/preview.ts";
 import { FakeProvider } from "./src/core/testing/fake-provider.ts";
-import type { UiState } from "./src/core/wire/rpc.ts";
+import { ScanJobView, type UiState } from "./src/core/wire/rpc.ts";
 
 const host = vi.hoisted(() => ({
   call: vi.fn(),
@@ -875,4 +878,66 @@ test.each(["network", "response body", "truncated JSON", "empty JSON", 401, 404]
     fireEvent.click(screen.getByRole("button", { name: "Закрыть поиск" }));
     expect(cancel).toHaveBeenCalledWith({ clientRequestId: request.clientRequestId });
   } finally { vi.unstubAllGlobals(); }
+});
+
+test("an App copy keeps the planned selection and survives unmount during staging", async () => {
+  const { openStage, release } = pauseAfterWrite();
+  const stand = await localStand({ openStage });
+  const allowPlanReply = Promise.withResolvers<void>();
+  const planCreated = Promise.withResolvers<unknown>();
+  const firstSession = new AbortController();
+  try {
+    await writeFile(join(stand.root, "b.txt"), "other");
+    const tab = { endpoint: "host:test", sort: { by: "name", direction: "asc" } as const, selection: [], filter: "", scrollTop: 0 };
+    await stand.rpc("ui_state_set", { state: {
+      left: { activeTab: 0, tabs: [{ ...tab, path: stand.ref().path }] },
+      right: { activeTab: 0, tabs: [{ ...tab, path: stand.ref("out").path }] },
+      activePane: "left", layout: "horizontal", split: 0.5,
+    } });
+    const job = Promise.withResolvers<OperationJob>();
+    host.call.mockImplementation(async (method, input) => {
+      const result = await stand.rpc(method, input, firstSession.signal);
+      if (method === "plan_create") {
+        planCreated.resolve(result);
+        await allowPlanReply.promise;
+      }
+      if (method === "plan_run") job.resolve(OperationJob.parse(result));
+      return result;
+    });
+    const view = mount();
+    fireEvent.click(await leftFile("a.txt"));
+    fireEvent.keyDown(grid(), { key: "F5" });
+    await waitFor(() => expect(host.call).toHaveBeenCalledWith("plan_create", expect.objectContaining({
+      sources: [stand.ref("a.txt")],
+    })));
+    expect(await planCreated.promise).toMatchObject({ items: [{ source: stand.ref("a.txt") }] });
+
+    const other = await leftFile("b.txt");
+    fireEvent.click(other, { ctrlKey: true });
+    expect(other.getAttribute("aria-selected")).toBe("true");
+    allowPlanReply.resolve();
+
+    const dialog = await screen.findByRole("dialog", { name: "Копирование" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Запустить" }));
+    await waitForPart(stand.out, 3);
+    const { id: jobId } = await job.promise;
+    view.unmount();
+    firstSession.abort();
+    release();
+
+    const secondSession = new AbortController();
+    const rpc = (method: Parameters<typeof stand.rpc>[0], input: unknown) => stand.rpc(method, input, secondSession.signal);
+    await waitForJob(rpc, jobId, { state: "completed", progress: { bytesDone: "3" } });
+    expect(await readdir(stand.out)).toEqual(["a.txt"]);
+    const scan = ScanJobView.parse(await rpc("scan_start", { kind: "checksum", ref: stand.ref("out/a.txt") }));
+    await vi.waitFor(async () => expect(await rpc("scan_get", { scanId: scan.id })).toMatchObject({
+      job: { state: "done" }, result: { sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
+    }));
+  } finally {
+    cleanup();
+    allowPlanReply.resolve();
+    release();
+    firstSession.abort();
+    await stand.close();
+  }
 });

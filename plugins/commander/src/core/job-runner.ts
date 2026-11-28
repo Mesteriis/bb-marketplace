@@ -43,6 +43,8 @@ const shutdownError = new CommanderError("internal", "runner is shutting down");
 const sourceRetained = "Source changed; source retained";
 const moveCancelled = "Move cancelled; source retained";
 
+class CopyInterrupted extends Error {}
+
 type Run = {
   controller: AbortController;
   done: Promise<void>;
@@ -789,8 +791,13 @@ export class JobRunner {
             await this.requestConflict(current, index, caught, this.progress(current, toBig(job.progress.bytesDone)));
             return;
           }
-          const error = safeError(caught);
           const cancelled = signal.aborted || current.state === "cancel_requested";
+          if (!cancelled && caught instanceof CopyInterrupted) {
+            // BB stops host workers before onDispose can stop the runner.
+            await this.change(current, "process_lost", { currentItem: null });
+            return;
+          }
+          const error = safeError(caught);
           if (error.code === "outcome_unknown") {
             // The checkpoint advances after stat confirms the acknowledged write.
             const checkpoint = await this.store.lastCheckpoint(id, index);
@@ -1543,7 +1550,14 @@ export class JobRunner {
     let sourceHash: string | undefined;
     const verify = expected.sha256 ? "sha256" : plan.verify;
     if (source.provider.endpoint.id === provider.endpoint.id && provider.copyWithin) {
-      committed = await commitTarget(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal));
+      try {
+        committed = await commitTarget(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal));
+      } catch (error) {
+        if (!signal.aborted && safeError(error).code === "cancelled") {
+          throw new CopyInterrupted("Host interrupted the copy", { cause: error });
+        }
+        throw error;
+      }
     } else {
       const { jobId, itemIndex } = context.saved();
       const tempName = tempNameFor(jobId, itemIndex);

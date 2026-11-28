@@ -12,7 +12,7 @@
  * for very large files.
  */
 import type { ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
-import { link, mkdir, opendir, rename, rmdir, unlink } from "node:fs/promises";
+import { link, mkdir, opendir, realpath, rename, rmdir, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { CommanderError } from "../../../core/errors.ts";
 import { type Entry } from "../../../core/model.ts";
@@ -57,6 +57,8 @@ function versionOf(stats: NonNullable<Awaited<ReturnType<typeof lstatOrNull>>>):
 export function createHostFs(options: WriteOptions & { platform?: NamePlatform } = {}) {
   const platform = options.platform ?? (process.platform === "win32" ? "win32" : "posix");
   const writes = new WriteSessions(platform, options);
+  // BB can replace the copy reply with AbortError. Keep recent proofs in this worker.
+  const cancelledCopies = new Set<string>();
   const shutdown = new AbortController();
   const pending = new Set<Promise<unknown>>();
   let lifecycle: AbortSignal | undefined;
@@ -287,24 +289,48 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         return {};
       });
     }),
-    copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget }, { signal, editPaths }) => {
+    copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget, operationId }, { signal, editPaths }) => {
       await editPaths?.check(from);
       await editPaths?.check(to);
       const source = await resolvePath(from, platform);
       return withRegularFile(source.full, source.stats, signal, async (file, opened) => {
         if (await editPaths?.hidden(source.full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
-        const { session } = await writes.open(to, undefined, signal);
+        const { session, tempName } = await writes.open(to, undefined, signal).catch((error) => {
+          if (signal.aborted) throw new CommanderError("outcome_unknown", "Copy staging could not be confirmed");
+          throw error;
+        });
         try {
           await forEachChunk(file, signal, (chunk, offset) => writes.write(session, offset, chunk, signal));
           if (!matches(await file.stat({ bigint: true }), {
             size: opened.size.toString(), mtimeNs: opened.mtimeNs.toString(),
           })) throw changed();
           return await writes.commit(session, replace, expectTarget, signal);
-        } finally {
-          await writes.abort(session);
+        } catch (error) {
+          const cleanup = await writes.abort(session);
+          if (cleanup.orphanedTempPath) {
+            throw new CommanderError("outcome_unknown", "Copy staging cleanup could not be confirmed");
+          }
+          if (signal.aborted || fsError(error).code === "cancelled") {
+            const absent = await resolvePath(to, platform).then(async (target) => {
+              if (target.stats || !target.parent) return false;
+              const staging = await lstatOrNull(childPath(target.parent, tempName));
+              await recheckParent(target);
+              return staging === null;
+            }).catch(() => false);
+            if (!absent) throw new CommanderError("outcome_unknown", "Copy destination or staging could not be confirmed absent");
+            if (operationId) {
+              cancelledCopies.add(operationId);
+              if (cancelledCopies.size > 128) cancelledCopies.delete(cancelledCopies.values().next().value!);
+            }
+            throw new CommanderError("cancelled", "Copy cancelled; destination and staging file are absent");
+          }
+          throw error;
         }
       });
     }),
+    copyCancelled: handle<"copyCancelled">(async ({ operationId }) => ({
+      confirmed: cancelledCopies.delete(operationId),
+    }), false, false),
     sha256: handle<"sha256">(async ({ path }, { signal, editPaths }) => {
       await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
@@ -314,12 +340,16 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       }) };
     }),
     home: handle<"home">(async () => {
-      const home = homedir();
-      if (platform === "win32") return { path: parseWindowsPath(home), caseSensitive: false };
-      const path = parsePosix(home);
+      const home = await realpath(homedir()).catch((error) => {
+        throw new CommanderError(fsError(error).code, "Could not resolve the host home directory");
+      });
+      const path = platform === "win32" ? parseWindowsPath(home) : parsePosix(home);
       const { parent, stats } = await resolvePath(path, platform);
+      if (!stats) throw new CommanderError("not_found", "Host home directory does not exist");
+      requireDirectory(stats);
+      if (platform === "win32") return { path, caseSensitive: false };
       const name = path.segments.at(-1);
-      if (!parent || !stats || !name || !("t" in name)) return { path, caseSensitive: process.platform !== "darwin" };
+      if (!parent || !name || !("t" in name)) return { path, caseSensitive: process.platform !== "darwin" };
       const toggled = name.t.replace(/[a-z]/iu, (letter) =>
         letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
       const alias = toggled === name.t ? null : await lstatOrNull(childPath(parent, { t: toggled }));
@@ -350,6 +380,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     rename: rpcHandler(handlers.rename),
     remove: rpcHandler(handlers.remove),
     copyWithin: rpcHandler(handlers.copyWithin),
+    copyCancelled: rpcHandler(handlers.copyCancelled),
     sha256: rpcHandler(handlers.sha256),
     home: rpcHandler(handlers.home),
   };

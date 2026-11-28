@@ -8,7 +8,7 @@ import type { FileProvider } from "../../core/provider.ts";
 import { HostFsContract } from "../../core/wire/host-fs.ts";
 import { SFTP_REFUSALS, SftpRefusal, sftpMethods, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
 import type { EndpointView } from "../../core/wire/rpc.ts";
-import { createLocalProvider } from "./local-provider.ts";
+import { createLocalProvider, translateHostFsError } from "./local-provider.ts";
 import { createSftpProvider, type SftpProvider } from "./sftp-provider.ts";
 import type { ArchiveManager } from "./archive-manager.ts";
 import { z } from "zod";
@@ -116,8 +116,8 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
       let home;
       try {
         home = await hostFs.call("home", {}, { hostId: endpoint.hostId!, signal });
-      } catch {
-        throw new CommanderError("connection_failed", "Host filesystem is unavailable", true);
+      } catch (error) {
+        throw translateHostFsError("home", error, signal);
       }
       hosts.set(id, { home: home.path, provider: createLocalProvider({ ...endpoint, caseSensitive: home.caseSensitive }, hostFs) });
     }));

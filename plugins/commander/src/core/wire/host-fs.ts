@@ -43,8 +43,12 @@ export const HostFsContract = {
   rename: { input: transfer.extend({ expectTarget }), output: publication.pick({ atomicNoReplace: true }) },
   remove: { input: path.extend({ kind: EntryKind, expect: Fingerprint.optional() }), output: empty },
   copyWithin: {
-    input: transfer.extend({ expectTarget }),
+    input: transfer.extend({ expectTarget, operationId: z.uuid().optional() }),
     output: publishedFile,
+  },
+  copyCancelled: {
+    input: z.object({ operationId: z.uuid() }).strict(),
+    output: z.object({ confirmed: z.boolean() }).strict(),
   },
   sha256: { input: path, output: z.object({ hex: z.string().regex(/^[0-9a-f]{64}$/) }).strict() },
   home: { input: empty, output: z.object({ path: ResourcePath, caseSensitive: z.boolean() }).strict() },

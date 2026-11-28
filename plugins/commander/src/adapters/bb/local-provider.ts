@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { experimental_PluginRpcCallError, type ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import { CommanderError, CommanderErrorShape } from "../../core/errors.ts";
 import { type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
@@ -20,11 +21,12 @@ type ResultNotice = {
   orphanedTempPath?: ResourcePath;
 };
 
-function translate(method: HostFsMethod, error: unknown, signal?: AbortSignal): CommanderError {
+export function translateHostFsError(method: HostFsMethod, error: unknown, signal?: AbortSignal): CommanderError {
   if (error instanceof Error && error.message.length <= 4096) {
     try {
       const shape = CommanderErrorShape.safeParse(JSON.parse(error.message));
-      if (shape.success && (shape.data.code !== "cancelled" || !mutations.has(method))) {
+      // The copy worker acknowledges cancellation after checking its staging and destination.
+      if (shape.success && (shape.data.code !== "cancelled" || !mutations.has(method) || method === "copyWithin")) {
         return new CommanderError(shape.data.code, shape.data.message, shape.data.retryable);
       }
     } catch {
@@ -39,6 +41,7 @@ function translate(method: HostFsMethod, error: unknown, signal?: AbortSignal): 
   }
   if (mutations.has(method)) return new CommanderError("outcome_unknown", "Host did not confirm the filesystem operation");
   if (signal?.aborted) return new CommanderError("cancelled", "Host filesystem call cancelled");
+  if (method === "home") return new CommanderError("connection_failed", "Host filesystem is unavailable", true);
   return new CommanderError("connection_failed", "Host filesystem call failed");
 }
 
@@ -58,7 +61,7 @@ export function createLocalProvider(
         ...(hashesFile || longCalls.has(method) ? { timeoutMs: LONG_CALL_TIMEOUT_MS } : {}),
       });
     } catch (error) {
-      throw translate(method, error, signal);
+      throw translateHostFsError(method, error, signal);
     }
   }
 
@@ -124,7 +127,16 @@ export function createLocalProvider(
       await call("remove", { path, ...opts }, signal, opts.expect?.sha256 !== undefined);
     },
     async copyWithin(from, to, opts, signal) {
-      return fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts }, signal));
+      const operationId = randomUUID();
+      try {
+        return await fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts, operationId }, signal));
+      } catch (error) {
+        if (signal.aborted && error instanceof CommanderError && error.code === "outcome_unknown") {
+          const receipt = await call("copyCancelled", { operationId }, AbortSignal.timeout(5000)).catch(() => null);
+          if (receipt?.confirmed) throw new CommanderError("cancelled", "Copy cancelled; destination and staging file are absent");
+        }
+        throw error;
+      }
     },
     async sha256(path, signal) { return (await call("sha256", { path }, signal)).hex; },
   } satisfies FileProvider;

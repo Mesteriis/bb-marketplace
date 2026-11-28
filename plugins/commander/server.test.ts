@@ -10,7 +10,7 @@ import { FakeProvider } from "./src/core/testing/fake-provider.ts";
 import * as sqliteStore from "./src/adapters/bb/job-store-sqlite.ts";
 import { OperationJob, type EntryKind, type Fingerprint } from "./src/core/model.ts";
 import { RemoteHubMock } from "./src/adapters/bb/testing/remote-hub-mock.ts";
-import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName } from "./src/core/wire/remote-hub-sftp.ts";
+import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName, sftpOpInputSchema } from "./src/core/wire/remote-hub-sftp.ts";
 
 
 const client = { experimental_caller: { kind: "client" }, experimental_signal: new AbortController().signal };
@@ -1322,5 +1322,52 @@ test("S11 a cancellation that arrives first prevents remote traversal", async ()
       content: { text: "needle", caseSensitive: true } })).rejects.toMatchObject({ message: expect.stringContaining("cancelled") });
     expect(fixture.remote.opCount("op:list")).toBe(0);
     expect(fixture.remote.opCount("op:read")).toBe(0);
+  } finally { await bb.dispose(); }
+});
+
+test.each(["channel_closed", "outcome_unknown"] as const)("copy handles %s on the SFTP data write", async (fault) => {
+  const fixture = remoteFixture();
+  const source = { endpoint: fixture.endpoint, path: parsePosix("/data/a") };
+  let disconnected = false;
+  const bb = await backend(undefined, async (args) => {
+    if (args.method === "hub_sftp_op") {
+      const input = sftpOpInputSchema.parse(args.input);
+      if (input.op === "write" && input.create === "existing" && !disconnected) {
+        disconnected = true;
+        if (fault === "channel_closed") fixture.remote.expireChannels();
+        else fixture.remote.dieNext("write");
+      }
+    }
+    return fixture.callRpc(args);
+  });
+  try {
+    const plan = ticket.parse(await bb.rpc("plan_create", {
+      ...request, sources: [source], targetDir: { endpoint: fixture.endpoint, path: parsePosix("/data/out") },
+    }));
+    const { id: jobId } = OperationJob.parse(await bb.rpc("plan_run", { planId: plan.id, digest: plan.digest }));
+    if (fault === "channel_closed") {
+      await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId })).toMatchObject({ state: "completed" }));
+      expect(fixture.remote.opCount("op:write")).toBe(3);
+      expect(fixture.remote.appliedCount("write")).toBe(2);
+      expect(fixture.remote.bytesAt("/data/out/a")).toEqual(new TextEncoder().encode("fixture"));
+      return;
+    }
+
+    await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId })).toMatchObject({
+      state: "unknown", error: { code: "outcome_unknown" },
+    }));
+    expect(fixture.remote.opCount("op:write")).toBe(2);
+    expect(fixture.remote.bytesAt("/data/out/a")).toBeUndefined();
+    const temp = `/data/out/.commander-${jobId}-0.part`;
+    expect(fixture.remote.bytesAt(temp)).toEqual(new TextEncoder().encode("fixture"));
+
+    const retry = await bb.rpc("job_retry", { jobId });
+    expect(retry).toMatchObject({ plan: { items: [{ source }] } });
+    expect(fixture.remote.bytesAt(temp)).toBeUndefined();
+    const next = ticket.parse((retry as { plan: unknown }).plan);
+    const { id: nextId } = OperationJob.parse(await bb.rpc("plan_run", { planId: next.id, digest: next.digest }));
+    await vi.waitFor(async () => expect(await bb.rpc("job_get", { jobId: nextId })).toMatchObject({ state: "completed" }));
+    expect(fixture.remote.bytesAt("/data/out/a")).toEqual(new TextEncoder().encode("fixture"));
+    expect(fixture.remote.opCount("op:rename")).toBe(1);
   } finally { await bb.dispose(); }
 });
