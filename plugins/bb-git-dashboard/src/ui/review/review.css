@@ -155,3 +155,10 @@
   .git-ws .git-pr-files-tab .git-pr-files { grid-template-columns: 1fr; } .git-ws .git-pr-files-tab .git-pr-file-list { position: static; border-right: 0; border-bottom: 1px solid var(--border); } }
 .git-ws .git-pr-thread-snippet { padding-left: 22px; }
 .git-ws .git-pr-main > section > .g-btn { justify-self: start; }
+/* The review outcome spans the column; each choice keeps to one line, a narrow column moves a whole choice down. */
+.git-ws .git-pr-side .g-seg { display: flex; flex-wrap: wrap; }
+.git-ws .git-pr-side .g-seg button { flex: 1 1 auto; justify-content: center; padding: 0 8px; }
+/* Open on the forge: a ghost button with the external-link mark, as on the reference, not an underlined link. */
+.git-ws .git-pr-forge > a { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 7px; color: var(--foreground); text-decoration: none; font-weight: 500; white-space: nowrap; }
+.git-ws .git-pr-forge > a:hover { background: var(--accent); }
+.git-ws .git-pr-forge > a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }

@@ -33,7 +33,7 @@ export function PrFiles({view, files, split, wrap, drafts, onSplit, onWrap, act,
         <button type="button" aria-pressed={!split} onClick={() => onSplit(false)}>{t("pr.unified")}</button>
         <button type="button" aria-pressed={split} onClick={() => onSplit(true)}>{t("pr.split")}</button>
       </div>
-      <button type="button" className="g-btn ghost sm" aria-pressed={wrap} onClick={() => onWrap(!wrap)}><Icon name="WrapText" small/>{t("pr.wrap")}</button>
+      <button type="button" className="g-btn ghost sm" aria-pressed={wrap} onClick={() => onWrap(!wrap)}><Icon name="TextWrap" small/>{t("pr.wrap")}</button>
       {!can.lineComment && <span className="g-muted">{limitations.lineComment}</span>}
       {drafts > 0 && <><span className="g-chip vio">{t("pr.in-review", {n: drafts})}</span>
         <button type="button" className="g-btn sm" onClick={onReview}>{t("pr.to-review")}</button></>}
@@ -53,7 +53,7 @@ export function PrFiles({view, files, split, wrap, drafts, onSplit, onWrap, act,
           })}
         </nav>
         <div className="git-pr-file-diffs">{files.map(file => <FileDiff key={file.path} file={file} wrap={wrap} split={split} canComment={open && can.lineComment} can={threadCan}
-          threads={threadsOf(file)} act={act} ask={ask} onDraft={onDraft}/>)}</div>
+          threads={threadsOf(file)} act={act} ask={ask} onDraft={onDraft} people={{viewer: detail.viewer, author: detail.author}}/>)}</div>
       </div>}
   </div>;
 }

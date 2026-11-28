@@ -1124,7 +1124,7 @@ export const ru: Record<MessageKey, string> = {
   "pr.outcome": "Итог ревью",
   "pr.ev.COMMENT": "Комментарий",
   "pr.ev.APPROVE": "Одобрить",
-  "pr.ev.REQUEST_CHANGES": "Запросить правки",
+  "pr.ev.REQUEST_CHANGES": "Нужны правки",
   "pr.summary": "Общий комментарий",
   "pr.summary-placeholder": "Общий комментарий к ревью",
   "pr.into-review": "{n|комментарий к строке войдёт|комментария к строкам войдут|комментариев к строкам войдут} в ревью",

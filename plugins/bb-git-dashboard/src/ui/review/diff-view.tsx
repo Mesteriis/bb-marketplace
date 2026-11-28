@@ -16,9 +16,9 @@ const threadKey = (thread: Thread) => (thread.side === "LEFT" ? "L" : "R") + thr
  * A file's patch as rows, unified or side by side, with the threads under their lines. Click a line number to comment,
  * Shift-click to extend the selection; the comment is posted at once or added to the pending review.
  */
-export function FileDiff({file, threads, wrap, split = false, canComment, act, ask, onDraft, can}: {
+export function FileDiff({file, threads, wrap, split = false, canComment, act, ask, onDraft, can, people}: {
   file: PrFileView; threads: Thread[]; wrap: boolean; split?: boolean; canComment: boolean; act(action: PrAction): void; ask(thread: Thread): void;
-  onDraft(comment: DraftComment): void; can: {reply: boolean; resolve: boolean; delete?: boolean};
+  onDraft(comment: DraftComment): void; can: {reply: boolean; resolve: boolean; delete?: boolean}; people?: {viewer: string; author: string};
 }) {
   const rows = useMemo(() => file.patch ? parsePatch(file.patch) : [], [file.patch]);
   const pairs = useMemo(() => split ? splitIndexes(rows) : null, [rows, split]);
@@ -51,7 +51,7 @@ export function FileDiff({file, threads, wrap, split = false, canComment, act, a
     {...(hidden ? {tabIndex: -1, "aria-hidden": true} : {"aria-label": label})} onClick={event => pick(index, event.shiftKey)}>{line ?? ""}</button>;
   const label = (row: DiffLine) => row.kind === "del" ? "Comment on old line " + row.oldLine : "Comment on line " + row.newLine;
   const below = (indexes: number[]) => indexes.flatMap(index => rows[index]?.kind === "hunk" ? [] : byLine.get(rowKey(rows[index]!)) ?? [])
-    .map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)} showPath={false}/>);
+    .map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)} showPath={false} people={people}/>);
   const composer = (indexes: number[]) => selection && indexes.includes(Math.max(selection.from, selection.to)) && <form className="git-review-composer"
     onSubmit={event => { event.preventDefault(); comment(true); }}>
     <p className="git-muted">{anchor ? "Comment on " + (anchor.startLine ? "lines " + anchor.startLine + "–" + anchor.line : "line " + anchor.line) +
@@ -71,7 +71,7 @@ export function FileDiff({file, threads, wrap, split = false, canComment, act, a
       <span className="git-inbox-plus">+{file.additions}</span><span className="git-inbox-minus">−{file.deletions}</span>
       {open > 0 && <span className="git-review-tag">{open} open</span>}
     </header>
-    {loose.map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)}/>)}
+    {loose.map(thread => <ThreadView key={keyOf(thread)} thread={thread} can={can} act={act} ask={() => ask(thread)} people={people}/>)}
     {!file.patch ? <p className="git-muted">No line diff for this file (binary, too large, or not provided by the forge).</p> :
       <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
         {pairs ? pairs.map((pair, index) => {

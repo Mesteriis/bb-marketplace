@@ -4,7 +4,7 @@ import { useLanguage, useT } from "../i18n/use-t.tsx";
 import { Icon } from "../system/icon.tsx";
 import type { PrView } from "./review-api.ts";
 
-const ciIcons = {failing: ["CircleX", "g-bad"], pending: ["Clock", "g-warn"], passing: ["CircleCheck", "g-good"], skipped: ["MinusCircle", "g-muted"]} as const;
+const ciIcons = {failing: ["CircleX", "g-bad"], pending: ["Clock", "g-warn"], passing: ["CircleCheck", "g-good"], skipped: ["Circle", "g-muted"]} as const;
 
 /** Commits: from the base to the head, newest first: hash (copied with its button), message, author, when, CI. */
 export function PrCommits({view, onCopy}: {view: PrView; onCopy(sha: string): void}) {

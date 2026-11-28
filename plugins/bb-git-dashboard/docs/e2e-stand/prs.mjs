@@ -32,6 +32,11 @@ try {
       && await visible(pr.getByRole("navigation", { name: "Path" })) && await tabs.getByRole("tab").count() === 5
       && await visible(pr.getByRole("complementary", { name: "What keeps it from merging" }).getByText(/Conflicts with main/)));
     await page.waitForTimeout(800);
+    if (theme === "light") {
+      const forge = await pr.getByRole("link", { name: "Open on Gitea" }).evaluate(link => ({line: getComputedStyle(link).textDecorationLine, display: getComputedStyle(link).display,
+        icon: Boolean(link.querySelector("[data-icon=ExternalLink]"))}));
+      check("Open on the forge is a ghost button with the external-link mark, not an underlined link", forge.line === "none" && forge.display === "inline-flex" && forge.icon, forge);
+    }
     await page.screenshot({ path: out + "/pr-overview-" + theme + ".png" });
     if (theme === "light") {
       const blockers = pr.getByRole("complementary", { name: "What keeps it from merging" });
@@ -50,6 +55,12 @@ try {
       await page.waitForTimeout(1000);
       check("in Russian the page's words are Russian", await visible(pr.getByRole("tab", { name: /^Проверки/ })));
       await page.screenshot({ path: out + "/pr-overview-ru-light.png" });
+      await page.getByRole("tab", { name: /^Комментарии/ }).click();
+      const outcome = page.getByRole("group", { name: "Итог ревью" }).getByRole("button");
+      await outcome.first().waitFor({ timeout: 15000 }).catch(() => {});
+      const heights = await outcome.evaluateAll(list => list.map(button => [button.textContent, button.getBoundingClientRect().height]));
+      check("in Russian each review outcome keeps to one line", heights.length === 3 && heights.every(([, height]) => height <= 28), heights);
+      await page.screenshot({ path: out + "/pr-comments-ru-light.png" });
       await side(page).getByRole("button", { name: /^Мои PR/ }).click();
       await page.waitForTimeout(1500);
       await page.screenshot({ path: out + "/my-prs-ru-light.png" });

@@ -4,7 +4,10 @@ import { message, type AgentDraft, type PrDetailView } from "./review-api.ts";
 import { PrBody } from "./pr-text.tsx";
 import { parsePatch } from "../../core/pulls/diff.ts";
 import { CodeText, useHighlight } from "../highlight/use-highlight.tsx";
-import { useT } from "../i18n/use-t.tsx";
+import { useLanguage, useT } from "../i18n/use-t.tsx";
+import { ago } from "../../core/i18n/time.ts";
+import { threadStatus } from "../../core/pulls/detail.ts";
+import type { MessageKey } from "../../core/i18n/dictionary.ts";
 
 type Thread = PrDetailView["threads"][number];
 
@@ -27,13 +30,16 @@ export function HunkSnippet({path, hunk}: {path: string; hunk: string}) {
   </div>;
 }
 
-export function ThreadView({thread, can, act, ask, showPath = true, drafts = [], onPost, onEdit, onDiscard, onShow}: {
+export function ThreadView({thread, can, act, ask, showPath = true, drafts = [], onPost, onEdit, onDiscard, onShow, people}: {
   thread: Thread; can: {reply: boolean; resolve: boolean; delete?: boolean}; act(action: PrAction): void; ask(): void; showPath?: boolean;
   drafts?: AgentDraft[]; onPost?(draft: AgentDraft, resolve: boolean): void; onEdit?(draft: AgentDraft, body: string): Promise<void>; onDiscard?(draft: AgentDraft): Promise<void>;
   /** Where the thread is read away from the diff: its diff fragment shows, and Show in diff goes to its line. */
   onShow?(): void;
+  /** On a pull request: who reads it and who wrote it, so the waiting tag says on whom, as the Comments tab does. */
+  people?: {viewer: string; author: string};
 }) {
   const t = useT();
+  const {language} = useLanguage();
   const [reply, setReply] = useState("");
   // A comment of an unsubmitted review exists only for its author until submitted on the forge.
   const live = !thread.isPending;
@@ -44,13 +50,15 @@ export function ThreadView({thread, can, act, ask, showPath = true, drafts = [],
       {showPath && <strong className="git-path">{thread.path}{where}{thread.side === "LEFT" ? t("tv.old") : ""}</strong>}
       {thread.isOutdated && <span className="git-review-tag">{t("pr.outdated")}</span>}
       {thread.isResolved && <span className="git-review-tag">{thread.resolvedBy ? t("pr.resolved-by", {name: thread.resolvedBy}) : t("pr.resolved")}</span>}
-      {!thread.isResolved && thread.awaitingReply && <span className="git-review-tag" data-waiting>{t("pr.waiting-author")}</span>}
+      {!thread.isResolved && thread.awaitingReply && <span className="git-review-tag" data-waiting>
+        {people ? t(("pr.st." + threadStatus(thread, people.viewer, people.author)) as MessageKey) : t("pr.waiting-author")}</span>}
       {thread.isPending && <span className="git-review-tag">{t("pr.pending-review")}</span>}
       {onShow && <button type="button" className="git-review-show" onClick={onShow}>{t("tv.show")}</button>}
     </header>
     {onShow && thread.diffHunk && <HunkSnippet path={thread.path} hunk={thread.diffHunk}/>}
     {thread.comments.map((comment, index) => <div key={comment.id || index} className="git-review-comment">
-      <div className="git-row git-muted">{comment.author} · {comment.createdAt.slice(0, 16).replace("T", " ")}
+      <div className="git-row git-muted">{comment.author} · <time dateTime={comment.createdAt}
+        title={comment.createdAt.slice(0, 16).replace("T", " ")}>{ago(language, Date.now(), comment.createdAt)}</time>
         {comment.canDelete && can.delete && <button type="button" className="git-link-button" aria-label={t("pr.delete-comment", {author: comment.author})}
           onClick={() => act({kind: "deleteComment", commentId: comment.id, threadId: thread.id, body: comment.body.slice(0, 8000)})}>{t("pr.delete")}</button>}</div>
       <PrBody content={comment.body}/>

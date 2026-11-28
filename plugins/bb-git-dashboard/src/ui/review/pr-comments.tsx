@@ -121,7 +121,7 @@ function ThreadRow({thread, view, drafts, act, ask, onShow, onPost, onEdit, onDi
       {drafts.map(item => <div key={item.commentId} className="git-pr-thread-actions git-pr-draft" role="group" aria-label={t("pr.draft-by", {name: item.authorName})}>
         {editingId !== item.commentId ? <>
           <span className="git-pr-draft-text" title={item.body}>{item.body}</span>
-          {live && can.reply && <button type="button" className="g-btn pri sm" onClick={() => onPost(item, false)}><Icon name="Send" small/>{t("pr.send")}</button>}
+          {live && can.reply && <button type="button" className="g-btn pri sm" onClick={() => onPost(item, false)}><Icon name="Sent" small/>{t("pr.send")}</button>}
           {live && can.reply && canResolve && !thread.isResolved && <button type="button" className="g-btn sm" onClick={() => onPost(item, true)}>{t("pr.send-resolve")}</button>}
           <button type="button" className="g-btn ghost sm" onClick={() => { setEditingId(item.commentId); setEditing(item.body); }}>{t("pr.edit")}</button>
           <button type="button" className="g-btn ghost sm" onClick={() => run(onDiscard(item))}>{t("pr.discard")}</button>

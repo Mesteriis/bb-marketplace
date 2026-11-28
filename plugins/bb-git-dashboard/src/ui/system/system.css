@@ -40,7 +40,7 @@
 .git-ws .g-seg { display: inline-flex; background: var(--accent); border-radius: 8px; padding: 2px; gap: 2px; }
 .git-ws .g-seg button {
   height: 26px; padding: 0 10px; display: flex; align-items: center; gap: 6px; border-radius: 6px; border: 0;
-  background: transparent; color: var(--muted-foreground); font: inherit; font-weight: 500; cursor: pointer;
+  background: transparent; color: var(--muted-foreground); font: inherit; font-weight: 500; cursor: pointer; white-space: nowrap;
 }
 .git-ws .g-seg button:hover { color: var(--foreground); }
 .git-ws .g-seg button[aria-pressed="true"], .git-ws .g-seg button[aria-checked="true"] {

@@ -55,6 +55,17 @@ try {
   await draft.getByRole("button", { name: "Save" }).click();
   check("the draft can be edited", await visible(draft.getByText("Fixed the typo in line 2.")));
   await draft.getByLabel("Edit the draft reply").waitFor({ state: "detached", timeout: 10000 }).catch(() => {});
+  await page.mouse.move(0, 0);
+  // The button's colours ease in (.12 s) once it appears; read them, and take the shot, after that.
+  await page.waitForTimeout(400);
+  const send = draft.getByRole("button", { name: "Send", exact: true });
+  const look = await send.evaluate(button => {
+    const paint = value => { const probe = document.createElement("i"); probe.style.color = value; button.after(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; };
+    return {disabled: button.disabled, color: getComputedStyle(button).color, background: getComputedStyle(button).backgroundColor,
+      foreground: paint("var(--primary-foreground)"), primary: (() => { const probe = document.createElement("i"); probe.style.backgroundColor = "var(--primary)"; button.after(probe);
+        const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; })()};
+  });
+  check("Send is the main button: enabled, its words in the primary foreground on the primary", !look.disabled && look.color === look.foreground && look.background === look.primary, look);
   await page.screenshot({ path: out + "/pr-comments-draft.png", fullPage: false });
   const before = log().length;
   await draft.getByRole("button", { name: "Send", exact: true }).click();

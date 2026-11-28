@@ -5,7 +5,7 @@ import { Icon } from "../system/icon.tsx";
 import type { PrView } from "./review-api.ts";
 
 type Check = PrView["detail"]["checks"][number];
-const icons = {failing: ["CircleX", "g-bad"], pending: ["Clock", "g-warn"], passing: ["CircleCheck", "g-good"], skipped: ["MinusCircle", "g-muted"]} as const;
+const icons = {failing: ["CircleX", "g-bad"], pending: ["Clock", "g-warn"], passing: ["CircleCheck", "g-good"], skipped: ["Circle", "g-muted"]} as const;
 
 /**
  * Checks: how many ran on the head commit and how they went, Fix with agent for all; a table of the checks, a failed

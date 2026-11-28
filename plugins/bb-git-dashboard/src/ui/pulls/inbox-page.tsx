@@ -148,7 +148,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
     <PageHead title={t("section.inbox")} sub={list ? t("in.sub", {accounts: list.groups.length, when: readAt === null ? "" : ago(language, now, new Date(readAt).toISOString())}) : undefined}
       actions={<>
         <input ref={search} className="g-inp" type="search" aria-label={t("in.search-label")} placeholder={t("in.search")} value={query} onChange={event => setQuery(event.target.value)}/>
-        {api.SettingsLink && <api.SettingsLink><Icon name="Bell" small/><span className="g-sr">{t("in.alerts")}</span></api.SettingsLink>}
+        {api.SettingsLink && <api.SettingsLink><Icon name="BellDot" small/><span className="g-sr">{t("in.alerts")}</span></api.SettingsLink>}
         <button type="button" className="g-btn" disabled={pending} onClick={() => void load(tab)}><Icon name="RotateCcw" small/>{t("ov.refresh")}</button>
       </>}/>
     <div className="g-views git-inbox-views">
@@ -169,7 +169,7 @@ export function InboxPage({api, alerts, onSeen, onOpen}: {api: InboxApi; alerts:
     </div>
     <div role="tabpanel" id="git-inbox-panel" aria-labelledby={"git-inbox-" + tab} className="git-inbox-body">
       {unseen.length > 0 && <section className="g-banner git-inbox-new" aria-label={t("in.new")}>
-        <Icon name="Bell" small/><strong>{t("in.new")}</strong>
+        <Icon name="BellDot" small/><strong>{t("in.new")}</strong>
         <span className="git-inbox-new-first g-bad">{unseen[0]!.url ? <a href={unseen[0]!.url} target="_blank" rel="noreferrer">{unseen[0]!.headline}</a> : unseen[0]!.headline}
           {unseen[0]!.detail ? " · " + unseen[0]!.detail : ""}</span>
         {unseen.length > 1 && <button type="button" className="g-btn ghost sm" aria-expanded={alertsOpen} onClick={() => setAlertsOpen(value => !value)}>{t("in.new-more", {n: unseen.length - 1})}</button>}

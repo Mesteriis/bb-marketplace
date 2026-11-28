@@ -146,9 +146,9 @@ export function PrPage({api, accountId, repo, number, onStep, position, revision
             <input className="g-inp" aria-label={t("pr.title")} value={title} onChange={change => setTitle(change.target.value)}/>
             <button type="submit" className="g-btn pri">{t("pr.save")}</button><button type="button" className="g-btn" onClick={() => setTitle(null)}>{t("pr.cancel")}</button></form>}
         <span className={"g-chip " + (state === "OPEN" ? "good" : state === "MERGED" ? "vio" : "line")}>{t(("pr.state." + state) as MessageKey)}</span>
-        {title === null && can.editTitle && detail.canEdit && <button type="button" className="g-btn ghost sm" aria-label={t("pr.edit-title")} onClick={() => setTitle(detail.title)}>✎</button>}
+        {title === null && can.editTitle && detail.canEdit && <button type="button" className="g-btn ghost sm" aria-label={t("pr.edit-title")} onClick={() => setTitle(detail.title)}><Icon name="Edit" small/></button>}
         <span className="git-pr-head-actions">
-          {detail.url && <api.Link href={detail.url}>{t("pr.on-forge", {forge: forgeNames[detail.forge]})}</api.Link>}
+          {detail.url && <span className="git-pr-forge"><api.Link href={detail.url}><Icon name="ExternalLink" small/>{t("pr.on-forge", {forge: forgeNames[detail.forge]})}</api.Link></span>}
           <PrMenu api={api} target={target} url={detail.url} onRefresh={() => { void load(); readDrafts(); }} onNotice={setNotice}/>
         </span>
       </div>
