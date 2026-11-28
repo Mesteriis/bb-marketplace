@@ -75,6 +75,25 @@ export const ru = {
   scanHideEqual: "Скрыть одинаковые", scanTolerance: "По размеру и времени изменения, допуск 2 с",
   scanPartial: "Результат неполный: достигнут предел записей",
   nameSort: "Имя", sizeSort: "Размер", dateSort: "Изменён",
+  sync: {
+    action: "Синхронизация", title: "План синхронизации", direction: "Направление",
+    directions: { "left-to-right": "Слева → направо", "right-to-left": "Справа → налево", both: "В обе стороны" },
+    compareHash: "Сравнить по SHA-256", planDeletes: "Рассчитать отдельный план удалений",
+    estimate: (size: string) => "Чтение для сравнения по SHA-256 · " + size,
+    files: (count: number) => "Показать список (" + count + ")",
+    update: "Обновить изменённые", copy: "Копировать новые", queued: "В очереди",
+    unchanged: (count: number) => "Оставить без изменений (" + count + ")",
+    reasons: { target_newer: "Файл в назначении новее", differs: "Версии различаются" },
+    deletes: "Удаления — отдельный набор", deletesQueued: "Удаления в очереди.",
+    selectDeletes: (count: number) => "Выбрать удаления (" + count + ")",
+    deletePermission: "Требуется право на удаление.", confirmDeletes: "Подтвердить удаления",
+    nothingToDelete: "Файлов для удаления нет.", deletesOff: "По умолчанию выключены.",
+    recheck: "Перед запуском файлы сверяются повторно. Изменившийся файл потребует решения.",
+    summary: (count: number, size: string) => count + " действий · " + size + " по сети",
+    confirmPlan: "Подтвердить план", confirmRead: "Подтвердить чтение",
+    preparing: "Сравнение…", build: "Построить план", estimateFailed: "Не удалось оценить объём чтения",
+    units: ["Б", "КБ", "МБ", "ГБ"],
+  },
   view: {
     truncated: "Показана только первая часть файла", changed: "Файл изменился во время просмотра", group: "Режим просмотра",
     text: "Текст", hex: "Hex", image: "Изображение",
@@ -104,4 +123,36 @@ export const errorText: Record<string, string> = {
   host_key_rejected: "Ключ хоста отклонён", auth_failed: "Вход отклонён", consent_required: "Требуется разрешение",
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
+};
+
+// S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.
+export const batchRenameText = {
+  title: "Переименовать пачку",
+  description: "Шаблон, поиск и замена, регистр и счётчик; проверка — до создания плана",
+  template: "Шаблон имени",
+  templateHint: "[N] — имя без расширения, [E] — расширение, [C] — счётчик, [C:3] — счётчик из 3 знаков, [N1-3] — срез имени",
+  find: "Найти", replace: "Заменить на", regex: "регулярное выражение",
+  counterStart: "Счётчик с", counterStep: "Шаг", counterWidth: "Знаков",
+  caseMode: "Регистр", caseKeep: "как есть", caseLower: "нижний", caseUpper: "ВЕРХНИЙ", caseTitle: "Заглавные слова",
+  preview: "Предпросмотр переименования", from: "Было", to: "Станет", state: "Состояние", ok: "Готово",
+  makePlan: "Создать план", pendingPlan: "План создаётся",
+  summary: (changed: number, conflicts: number) =>
+    changed + " к переименованию · " + conflicts + (conflicts === 1 ? " конфликт" : " конфликтов") + " · расширения сохраняются",
+  // Core messages (English, shown to the agent too) mapped to the owner text by exact match.
+  coreMessages: {
+    "Batch rename retry is not available: check the job": "Повтор пакетного переименования недоступен: сверьте задание",
+    "Batch rename cancel is unavailable: the second phase is running": "Отмена недоступна: идёт вторая фаза переименования",
+  } as Record<string, string>,
+  // A pending item of a finished batch was returned to its place, not renamed.
+  returnedPending: "Ожидающие элементы не переименованы",
+  tempNames: (paths: string[]) => "Файлы могли остаться под временными именами: " + paths.join(", ")
+    + ". Проверьте каталоги: если исходного имени нет, переименуйте файл вручную.",
+  problems: {
+    empty: "Имя станет пустым",
+    invalid_name: "Недопустимое имя",
+    duplicate: "Совпадает с именем другого файла пачки",
+    exists: "Имя уже есть в каталоге и не входит в пачку",
+    invalid_regex: "Регулярное выражение не разобрано",
+    unsafe_regex: "Регулярное выражение отклонено: допустим плоский вид с одним повтором без групп и альтернатив",
+  } as Record<string, string>,
 };

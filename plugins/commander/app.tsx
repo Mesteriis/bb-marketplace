@@ -1,6 +1,6 @@
 import type { SearchActions } from "./src/ui/search-panel.tsx";
 import { definePluginApp, experimental_PluginRpcCallError, experimental_usePluginId, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import { LIST_PAGE_MAX } from "./src/core/provider.ts";
 import { parsePosix } from "./src/core/path.ts";
 import { assembleImage, type ViewKind, type WireView } from "./src/core/preview.ts";
@@ -389,7 +389,19 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (!plan) return null;
     return rpc.call("plan_run", { planId: plan.id, digest: plan.digest });
   };
-  return <Workspace search={search} scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
+  // S13: the write tickets use the same queue and per-plan confirmation as other operations.
+  const sync: NonNullable<ComponentProps<typeof Workspace>["sync"]> = {
+    async estimate(paths) {
+      const estimate = await rpc.call("scan_start", {
+        kind: "dirs", ...paths, by: "sha256", mtimeToleranceMs: 0, limit: LIST_PAGE_MAX, estimateOnly: true,
+      });
+      if (!("estimateId" in estimate)) throw new CommanderError("internal", ru.sync.estimateFailed);
+      return estimate;
+    },
+    create: (request, estimateId) => rpc.call("sync_create", { ...request, estimateId }),
+    run: (plan) => mutate(rpc.call("plan_run", { planId: plan.id, digest: plan.digest })),
+  };
+  return <Workspace search={search} sync={sync} scans={scans} startingScans={startingScans} state={state} update={update} endpoints={endpoints} compact={compact} queue={queue} problem={problem}
     directories={{ left: leftDir, right: rightDir }} bindings={bindings}
     onBindings={(value) => {
       setBindings(value);

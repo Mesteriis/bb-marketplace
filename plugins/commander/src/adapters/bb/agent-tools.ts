@@ -54,7 +54,8 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
     });
   register("stat", "Get one entry's metadata within the owner's grant.", rpcSchemas.entry_stat.input,
     async ({ ref }, agent, signal) => metadata(await ops.stat(ref, agent, signal)));
-  register("plan", "Create a file operation plan and return its ticket. Show the requested operation to the owner before running.", rpcSchemas.plan_create.input,
+  // S12: a batch rename is a rename plan with a pattern and several sources of one directory (at most 10000).
+  register("plan", "Create a file operation plan and return its ticket. Show the requested operation to the owner before running. A batch rename passes a pattern and several sources of one directory.", rpcSchemas.plan_create.input,
     async (input, agent, signal) => {
       const { id, digest } = await ops.createPlan(input, agent, signal);
       return { id, digest, status: "planned" };
@@ -75,6 +76,15 @@ export function registerAgentTools(agents: BbPluginApi["agents"], ops: Operation
       return plan
         ? { id: plan.id, digest: plan.digest, status: "planned", excluded }
         : { id: null, digest: null, status: "nothing_to_retry", excluded };
+    });
+
+  // S13: tickets are executable only by their initiator; deletions wait for separate owner approval.
+  register("sync", "Plan synchronization of immediate directory entries. Show the owner the plan before submitting tickets. For remote SHA-256, first call commander_compare with kind dirs, limit 1000, mtimeToleranceMs 0 and estimateOnly, then pass the confirmed estimateId. Submit the delete ticket separately for owner approval.",
+    rpcSchemas.sync_create.input, async (input, agent, signal) => {
+      const sync = await ops.createSync(input, agent, signal);
+      const ticket = ({ id, digest }: { id: string; digest: string }) => ({ id, digest });
+      return { id: sync.id, copies: sync.copies.map(ticket), deletes: sync.deletes && ticket(sync.deletes),
+        conflicts: sync.conflicts.map(({ left, right, reason }) => ({ left: metadata(left), right: metadata(right), reason })) };
     });
 
   register("checksum", "Compute SHA-256 with read access. For a remote file, estimateOnly returns the byte count to show the owner; pass the issued estimateId after confirmation.",

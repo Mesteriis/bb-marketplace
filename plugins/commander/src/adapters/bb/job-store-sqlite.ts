@@ -218,6 +218,9 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
   const approvalRecorded = db.prepare<[string], number>(
     "SELECT 1 FROM commander_owner_approvals WHERE job_id = ?",
   ).pluck();
+  const recordPausedApproval = db.prepare<[string]>(
+    "INSERT OR IGNORE INTO commander_owner_approvals (job_id) VALUES (?)",
+  );
   const countApprovals = db.prepare<[string], { thread: number; total: number }>(`
     SELECT count(CASE WHEN thread_id = ? THEN 1 END) AS thread, count(*) AS total
     FROM jobs WHERE state = 'pending' AND awaits_owner = 1 AND initiator_kind = 'agent'
@@ -326,7 +329,12 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
     if (job.state === "pending" && next.state !== "pending" && patch.awaitsOwner === undefined) {
       next.awaitsOwner = false;
     }
-    return updateJob.run({ ...mutableColumns(OperationJob.parse(next)), id, expected }).changes === 1;
+    const updated = updateJob.run({ ...mutableColumns(OperationJob.parse(next)), id, expected }).changes === 1;
+    // S13: the running trigger covers ordinary approval. Record a direct pause in the same transaction.
+    if (updated && job.state === "pending" && job.awaitsOwner && next.state === "awaiting_decision") {
+      recordPausedApproval.run(id);
+    }
+    return updated;
   });
 
   return {
