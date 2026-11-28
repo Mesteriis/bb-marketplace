@@ -148,8 +148,9 @@ describe("refused entries", () => {
       ? { json: { t: "ok", cursor: null, entries } }
       : { json: { t: "ok", entry: entries[Number((body as unknown as { idx?: number }).idx ?? 0)] } });
     const page = await make(rpc).list(parsePosix("/"), { cursor: null, limit: 10 }, signal);
+    // "../x" has no addressable name: it is not listed at all.
     expect(page.entries.map((e) => [e.name, e.kind])).toEqual([
-      [{ t: "l" }, "symlink"], [{ t: "h" }, "other"], [{ t: "x" }, "other"], [{ t: "ok.txt" }, "file"],
+      [{ t: "l" }, "symlink"], [{ t: "h" }, "other"], [{ t: "ok.txt" }, "file"],
     ]);
     for (const [index, expected] of [
       [0, { code: "unsupported", reason: "link_escapes" }],

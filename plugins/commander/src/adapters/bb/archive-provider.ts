@@ -67,6 +67,9 @@ function refusalOf(entry: ArchiveEntry): RefusedReason | string | null {
   }, { hasPassword: true });
 }
 
+/** Refusals that leave no name a path can address (a raw non-UTF-8 name still is addressable as bytes). */
+const UNADDRESSABLE = new Set(["unsafe_name", "backslash"]);
+
 function refusalError(reason: string): CommanderError {
   if (reason === "link_not_supported" || reason === "link_escapes") {
     return new CommanderError("unsupported", "Links in archives are not extracted", false, reason);
@@ -121,7 +124,9 @@ export class ArchiveProvider implements FileProvider {
     const { json } = await this.options.rpc.request(
       { t: "list", prefix: pathB64(path), cursor: opts.cursor, limit: opts.limit }, { signal },
     );
-    const entries = (json.entries as ArchiveEntry[]).map(toEntry);
+    // A record with an unusable name has no name a plan could address (stat would not find it), and showing its
+    // last segment would mislead: it is left out of the listing. Links and special files stay visible, refused.
+    const entries = (json.entries as ArchiveEntry[]).filter((entry) => !UNADDRESSABLE.has(String(refusalOf(entry)))).map(toEntry);
     return { entries, cursor: (json.cursor as string | null) ?? null };
   }
 
