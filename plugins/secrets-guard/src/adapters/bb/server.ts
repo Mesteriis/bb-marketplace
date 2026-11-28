@@ -5,8 +5,9 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { StateStore, ThreadDirectory } from "../../core/ports.ts";
 import { createService } from "../../core/service.ts";
-import { GUARD_TAG, rpcContract, toRefusal } from "./contract.ts";
+import { GUARD_TAG, rpcContract } from "./contract.ts";
 import { createFileStore } from "./file-store.ts";
+import { toRefusal } from "./refusals.ts";
 
 const CHILD_PAGE = 200;
 const now = () => Math.floor(Date.now() / 1000);

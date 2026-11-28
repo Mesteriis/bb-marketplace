@@ -92,7 +92,7 @@ describe("import scanner", () => {
 });
 
 describe("host-agnostic layers", () => {
-  it.each([core])("$directory has source files to check", (layer) => {
+  it.each([core, ui])("$directory has source files to check", (layer) => {
     expect(sourceFiles(resolve(pluginRoot, layer.directory)).length).toBeGreaterThan(0);
   });
 

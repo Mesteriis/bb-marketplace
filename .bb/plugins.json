@@ -370,6 +370,10 @@
     {
       "name": "design-canvas",
       "source": "./plugins/design-canvas"
+    },
+    {
+      "name": "secrets-guard",
+      "source": "./plugins/secrets-guard"
     }
   ]
 }

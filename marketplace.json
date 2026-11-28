@@ -826,6 +826,26 @@
       }
     },
     {
+      "id": "makosh-secrets-guard",
+      "displayName": "Охрана секретов [Experimental]",
+      "description": "Кнопка у поля ввода открывает охрану секретов Claude Code на 10, 30 или 60 минут: для чата, чата с субтредами или глобально.",
+      "icon": {
+        "url": "./plugins/secrets-guard/assets/icon.svg"
+      },
+      "author": {
+        "name": "Mesteriis",
+        "github": "Mesteriis",
+        "url": "https://github.com/Mesteriis"
+      },
+      "source": {
+        "git": {
+          "url": "https://github.com/Mesteriis/bb-marketplace.git",
+          "subdir": "plugins/secrets-guard",
+          "ref": "main"
+        }
+      }
+    },
+    {
       "id": "makosh-remote-hub",
       "displayName": "Remote Hub [Experimental]",
       "description": "SSH, RDP and Proxmox VE sessions through a Rust helper, saved credentials in Credential Vault, SFTP for other plugins by your grant.",

@@ -1,6 +1,7 @@
 import { experimental_PluginRpcRefusal } from "@get-bb/plugin-sdk";
 import { describe, expect, it } from "vitest";
-import { closeInput, openInput, stateInput, toRefusal, viewOutput } from "../src/adapters/bb/contract.ts";
+import { closeInput, openInput, stateInput, viewOutput } from "../src/adapters/bb/contract.ts";
+import { toRefusal } from "../src/adapters/bb/refusals.ts";
 import { NotLocal, StoreUnavailable } from "../src/core/ports.ts";
 
 describe("rpc input", () => {
