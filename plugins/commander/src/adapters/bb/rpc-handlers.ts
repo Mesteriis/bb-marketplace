@@ -265,6 +265,22 @@ export function createOperations(deps: {
     return uncovered;
   }
 
+  async function recoverLocalCopies(endpoint: string, signal: AbortSignal) {
+    if (!endpoint.startsWith("host:")) return;
+    // The startup service owns the initial recovery pass.
+    if (!await deps.ready().then(() => true, () => false)) return;
+    await serializeAccess(async () => {
+      signal.throwIfAborted();
+      const jobs = (await store.list({ states: ["interrupted"], limit: Number.MAX_SAFE_INTEGER })).filter(({ plan }) =>
+        (plan.kind === "copy" || plan.kind === "move") && plan.sourceEndpoint === endpoint && plan.targetEndpoint === endpoint);
+      if (!jobs.length) return;
+      const uncovered = new Set((await uncoveredJobs(jobs)).map(({ id }) => id));
+      signal.throwIfAborted();
+      const ids = jobs.filter(({ id }) => !uncovered.has(id)).map(({ id }) => id);
+      if (ids.length) await runner.recover(ids);
+    });
+  }
+
   const cancellable: ReadonlySet<JobState> = new Set(activeStates);
   async function requestCancel(job: OperationJob) {
     let current: OperationJob | null = job;
@@ -594,12 +610,14 @@ export function createOperations(deps: {
     },
     async home(id: string, signal: AbortSignal) {
       await endpoints.prepare([id], signal);
+      await recoverLocalCopies(id, signal);
       return { path: endpoints.home(id) };
     },
     async list(input: RpcInput<"dir_list">, initiator: Initiator, signal: AbortSignal) {
       const { ref, cursor, limit } = input;
       await checkMetadata(initiator, ref);
       await endpoints.prepare([ref.endpoint], signal);
+      if (initiator.kind === "owner" && cursor === null) await recoverLocalCopies(ref.endpoint, signal);
       return endpoints.provider(ref.endpoint).list(ref.path, { cursor, limit }, signal);
     },
     async stat(ref: ResourceRef, initiator: Initiator, signal: AbortSignal) {

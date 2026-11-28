@@ -43,6 +43,8 @@ const shutdownError = new CommanderError("internal", "runner is shutting down");
 const sourceRetained = "Source changed; source retained";
 const moveCancelled = "Move cancelled; source retained";
 
+class CopyInterrupted extends Error {}
+
 type Run = {
   controller: AbortController;
   done: Promise<void>;
@@ -503,8 +505,8 @@ export class JobRunner {
     }
   }
 
-  recover(): Promise<{ resumed: string[]; unknown: string[] }> {
-    return this.accept(() => this.recoverJobs());
+  recover(jobIds?: readonly string[]): Promise<{ resumed: string[]; unknown: string[] }> {
+    return this.accept(() => this.recoverJobs(jobIds));
   }
 
   /** Notify a recovery pass after its cancellation request has been persisted. */
@@ -512,13 +514,15 @@ export class JobRunner {
     this.recovering.get(id)?.abort(cancelledError);
   }
 
-  private async recoverJobs(): Promise<{ resumed: string[]; unknown: string[] }> {
+  private async recoverJobs(jobIds?: readonly string[]): Promise<{ resumed: string[]; unknown: string[] }> {
     const result: { resumed: string[]; unknown: string[] } = { resumed: [], unknown: [] };
-    const jobs = await this.store.list({
+    const ids = jobIds ?? (await this.store.list({
       states: ["running", "cancel_requested", "awaiting_decision", "interrupted", "pending"],
       limit: Number.MAX_SAFE_INTEGER,
-    });
-    for (const { id } of jobs) {
+    })).map(({ id }) => id);
+    for (const id of ids) {
+      // A live interruption is visible to clients before its old run leaves the active map.
+      if (jobIds) await this.active.get(id)?.done;
       if (this.recovering.has(id)) continue;
       const cancellation = new AbortController();
       this.recovering.set(id, cancellation);
@@ -789,8 +793,13 @@ export class JobRunner {
             await this.requestConflict(current, index, caught, this.progress(current, toBig(job.progress.bytesDone)));
             return;
           }
-          const error = safeError(caught);
           const cancelled = signal.aborted || current.state === "cancel_requested";
+          if (!cancelled && caught instanceof CopyInterrupted) {
+            // BB stops host workers before onDispose can stop the runner.
+            await this.change(current, "process_lost");
+            return;
+          }
+          const error = safeError(caught);
           if (error.code === "outcome_unknown") {
             // The checkpoint advances after stat confirms the acknowledged write.
             const checkpoint = await this.store.lastCheckpoint(id, index);
@@ -1543,7 +1552,14 @@ export class JobRunner {
     let sourceHash: string | undefined;
     const verify = expected.sha256 ? "sha256" : plan.verify;
     if (source.provider.endpoint.id === provider.endpoint.id && provider.copyWithin) {
-      committed = await commitTarget(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal));
+      try {
+        committed = await commitTarget(() => provider.copyWithin!(source.path, path, { replace, expectTarget }, signal));
+      } catch (error) {
+        if (!signal.aborted && safeError(error).code === "cancelled") {
+          throw new CopyInterrupted("Host interrupted the copy", { cause: error });
+        }
+        throw error;
+      }
     } else {
       const { jobId, itemIndex } = context.saved();
       const tempName = tempNameFor(jobId, itemIndex);

@@ -16,7 +16,9 @@ export function fsError(error: unknown, signal?: AbortSignal): CommanderError {
   if (signal?.aborted) return new CommanderError("cancelled", "Filesystem operation cancelled");
   const errno = error instanceof Error && "code" in error ? error.code : undefined;
   const code = (typeof errno === "string" && errnoCodes.get(errno)) || "internal";
-  return new CommanderError(code, "Filesystem operation failed");
+  return new CommanderError(code, code === "no_space"
+    ? "Not enough space on the destination filesystem"
+    : "Filesystem operation failed");
 }
 
 export function linkUnavailable(error: unknown): boolean {
