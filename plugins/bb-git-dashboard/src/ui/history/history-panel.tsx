@@ -13,6 +13,21 @@ import "./history.css";
 const watchEvery = 10_000;
 const maxGraph = 220;
 const maxRefs = 3;
+/** The search and the branch choice of each copy's History, kept in this browser tab while the tab is left. */
+const kept = new Map<string, {query: string; current: boolean}>();
+function keptOf(copyId: string): {query: string; current: boolean} {
+  const own = kept.get(copyId);
+  if (own) return own;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("git-history/" + copyId) ?? "null") as {query?: unknown; current?: unknown} | null;
+    if (saved && typeof saved.query === "string" && typeof saved.current === "boolean") return {query: saved.query, current: saved.current};
+  } catch { /* nothing kept */ }
+  return {query: "", current: false};
+}
+function keep(copyId: string, value: {query: string; current: boolean}) {
+  kept.set(copyId, value);
+  try { sessionStorage.setItem("git-history/" + copyId, JSON.stringify(value)); } catch { /* kept in memory only */ }
+}
 /** Appends commits not already listed; a page may overlap the previous one when refs moved in between. */
 const unique = (current: CommitSummary[], next: CommitSummary[]) => {
   const known = new Set(current.map(commit => commit.hash));
@@ -32,8 +47,9 @@ export function HistoryPanel({api, copyId, graph = true}: {api: HistoryApi; copy
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
-  const [query, setQuery] = useState("");
-  const [current, setCurrent] = useState(false);
+  const [query, setQuery] = useState(() => keptOf(copyId).query);
+  const [current, setCurrent] = useState(() => keptOf(copyId).current);
+  useEffect(() => keep(copyId, {query, current}), [copyId, query, current]);
   const [refreshing, setRefreshing] = useState(false);
   const list = useRef<HTMLOListElement>(null);
   const commitsRef = useRef<CommitSummary[]>([]);

@@ -87,7 +87,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
   const provider = data?.repo && accounts.find(account => account.id === data.repo.accountId);
   const picker = (target === null || changing) && (accounts.length > 0
     ? <ConnectionPicker accounts={accounts} target={target} api={api} onChange={change}/>
-    : <div className="git-row"><button type="button" onClick={onAddConnection}>{section === "actions" ? t("ci.add-connection") : "Add connection"}</button></div>);
+    : <div className="git-row"><button type="button" onClick={onAddConnection}>{t("ci.add-connection")}</button></div>);
   if (section === "actions") {
     const account = forge?.candidates.find(row => row.id === forge.chosen) ?? accounts.find(item => item.id === target?.accountId);
     const kind = forge?.detection?.kind;
@@ -120,12 +120,12 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
         {section === "issues" && data?.repo && onOpenIssue && provider && provider.kind !== "azure" &&
           <button type="button" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,"new")}>New issue</button>}
         <button disabled={pending} type="button" onClick={() => setRevision(value => value + 1)}>Refresh</button>
-        <button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>Connection</button>
+        <button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>{t("cp.change")}</button>
       </div>}
     </div>
     {forge && <ForgeStatusLine key={copyId + ":" + forge.candidates.map(row => row.id).join(",")} status={forge} busy={pending} onChoose={choose}
       onRecheck={() => { setRecheck(true); setRevision(value => value + 1); }}/>}
-    {target === null && <p className="git-muted">Or connect an account repository matching this working copy’s origin by hand.</p>}
+    {target === null && <p className="git-muted">{t("cp.by-hand")}</p>}
     {picker}
     {notice && <p className="git-error" role="alert">{notice}</p>}
     {pending && <p role="status" className="git-muted">Loading {label.title.toLowerCase()}…</p>}
@@ -157,6 +157,7 @@ function ConnectionPicker({accounts,target,api,onChange}: {
   const [loading,setLoading] = useState(false);
   const [pending,setPending] = useState(false);
   const [error,setError] = useState("");
+  const t = useT();
   useEffect(() => {
     if (!account) return;
     let active = true;
@@ -187,16 +188,16 @@ function ConnectionPicker({accounts,target,api,onChange}: {
     if (account && items.some(repo => repo.id === repoId)) void submit({accountId:account,repoId});
   }}>
     <div className="git-row">
-      <select aria-label="Provider account" value={account} onChange={selectAccount}>
-        <option value="">Choose an account</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.label}</option>)}
+      <select aria-label={t("cp.account")} value={account} onChange={selectAccount}>
+        <option value="">{t("cp.choose-account")}</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.label}</option>)}
       </select>
-      <select aria-label="Provider repository" value={repoId} disabled={!account || loading} onChange={event => setRepoId(event.target.value)}>
-        <option value="">{loading ? "Loading repositories…" : "Choose a repository"}</option>
+      <select aria-label={t("cp.repository")} value={repoId} disabled={!account || loading} onChange={event => setRepoId(event.target.value)}>
+        <option value="">{t(loading ? "cp.loading" : "cp.choose-repository")}</option>
         {items.map(repo => <option key={repo.id} value={repo.id}>{repo.path}</option>)}
       </select>
-      {more && <button type="button" disabled={loading} onClick={() => setPage(value => value + 1)}>More repositories</button>}
-      <button className="git-primary" type="submit" disabled={loading || pending || !account || !items.some(repo => repo.id === repoId)}>Connect repository</button>
-      {target && <button type="button" disabled={pending} onClick={() => void submit(null)}>Disconnect</button>}
+      {more && <button type="button" className="g-btn" disabled={loading} onClick={() => setPage(value => value + 1)}>{t("cp.more")}</button>}
+      <button className="g-btn pri" type="submit" disabled={loading || pending || !account || !items.some(repo => repo.id === repoId)}>{t("cp.connect")}</button>
+      {target && <button type="button" disabled={pending} className="g-btn" onClick={() => void submit(null)}>{t("cp.disconnect")}</button>}
     </div>
     {error && <p role="alert" className="git-error">{error}</p>}
   </form>;

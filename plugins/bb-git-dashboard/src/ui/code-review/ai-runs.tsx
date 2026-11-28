@@ -39,15 +39,20 @@ export function ExecutionChoice({api, run, disabled}: {api: CodeReviewApi; run: 
   </div>;
 }
 
+/** What was typed into the AI review dialog of each view, kept until it starts or the dialog opens again. */
+const drafts = new Map<string, {mode: "review" | "summary"; focuses: string[]; instructions: string}>();
+
 /** "AI review": an agent reviews (with focuses) or summarizes the view in a thread of its own and comments here. */
 export function AiReviewForm({api, copyId, sessionId, viewer, onClose, onStarted}: {
   api: CodeReviewApi; copyId: string; sessionId: string; viewer: string | null; onClose(): void; onStarted(run: ReviewRun, text: string): void;
 }) {
   const t = useT();
   const run = useRunDefaults(api, copyId, viewer, true);
-  const [mode, setMode] = useState<"review" | "summary">("review");
-  const [focuses, setFocuses] = useState<string[]>([]);
-  const [instructions, setInstructions] = useState("");
+  // A dialog closed by Escape or the backdrop gives back what was in it when it opens again.
+  const [mode, setMode] = useState<"review" | "summary">(() => drafts.get(sessionId)?.mode ?? "review");
+  const [focuses, setFocuses] = useState<string[]>(() => drafts.get(sessionId)?.focuses ?? []);
+  const [instructions, setInstructions] = useState(() => drafts.get(sessionId)?.instructions ?? "");
+  useEffect(() => { drafts.set(sessionId, {mode, focuses, instructions}); }, [sessionId, mode, focuses, instructions]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const toggle = (focus: string) => setFocuses(value => value.includes(focus) ? value.filter(item => item !== focus) : [...value, focus]);
@@ -57,6 +62,7 @@ export function AiReviewForm({api, copyId, sessionId, viewer, onClose, onStarted
     try {
       const started = mode === "summary" ? await api.startSummary(sessionId, run.execution, viewer)
         : await api.startReview(sessionId, focuses, instructions, run.execution, viewer);
+      drafts.delete(sessionId);
       onStarted(started, started.status !== "running" ? started.summary ?? t("ai.closed-early") : t(mode === "summary" ? "ai.summary-started" : "ai.review-started"));
     } catch (cause) { setError(message(cause)); }
     finally { setPending(false); }

@@ -70,9 +70,31 @@ try {
         check("Escape closes the picker first, the dialog stays", await dialog.isVisible());
       } else check("the model picker is in the dialog", false);
     }
+    if (theme === "light" && language === "en") {
+      // Escape does not lose what was typed: the dialog gives it back when it opens again.
+      await dialog.locator("textarea").fill("probe draft");
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+      await review.getByRole("button", { name: w.ai, exact: true }).click();
+      check("the AI review dialog keeps what was typed after Escape", await visible(dialog) && await dialog.locator("textarea").inputValue() === "probe draft");
+    }
     await dialog.getByRole("button", { name: w.cancel, exact: true }).click();
     await page.getByRole("tablist", { name: w.sections }).getByRole("tab", { name: w.history }).click();
     check(tag + ": History shows the graph and the chosen change", await visible(page.locator(".git-history-row").first(), 30000) && await visible(page.locator(".git-history-change")));
+    if (theme === "light" && language === "en") {
+      // The search and the branch choice survive leaving the tab.
+      const find = page.getByRole("searchbox", { name: "Find in loaded commits" });
+      await find.fill("probe");
+      await page.locator(".git-history-panel .g-seg button").nth(1).click();
+      await page.getByRole("tablist", { name: w.sections }).getByRole("tab", { name: w.review }).click();
+      await page.waitForTimeout(500);
+      await page.getByRole("tablist", { name: w.sections }).getByRole("tab", { name: w.history }).click();
+      const kept = await visible(find, 20000) && await find.inputValue() === "probe"
+        && await page.locator(".git-history-panel .g-seg button").nth(1).getAttribute("aria-pressed") === "true";
+      check("History keeps its search and branch choice when the tab is left", kept);
+      await find.fill("");
+      await page.locator(".git-history-panel .g-seg button").nth(0).click();
+    }
     await page.waitForTimeout(800);
     await page.screenshot({ path: out + "/project-history-" + tag + ".png" });
     if (language !== "en") await side(page).getByRole("button", { name: "EN", exact: true }).click();
