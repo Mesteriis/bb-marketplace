@@ -182,6 +182,9 @@ describe("resyncTree", () => {
       },
     });
   });
+  it("returns the same state when the tree has not changed", () => {
+    expect(resyncTree(tree, 1000, "a", ["c", "b"])).toBe(tree);
+  });
   it("changes nothing when the root has expired", () => {
     expect(resyncTree(tree, 1600, "a", ["b", "d"])).toEqual(tree);
   });

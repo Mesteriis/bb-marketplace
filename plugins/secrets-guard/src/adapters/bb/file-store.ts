@@ -125,7 +125,7 @@ export function createFileStore(options: FileStoreOptions): StateStore {
         const changed = change(current);
         if (changed === current) return current;
         const next = prune(changed, options.now());
-        await write(raw, next, log, stateFile);
+        await write(raw, next, typeof log === "function" ? log(current) : log, stateFile);
         return next;
       } finally {
         await discard(lockPath);

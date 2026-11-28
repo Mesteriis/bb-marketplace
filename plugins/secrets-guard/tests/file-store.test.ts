@@ -134,6 +134,21 @@ describe("writing", () => {
       by: "plugin",
     });
   });
+  it("builds the journal line from the state it read under the lock", async () => {
+    await writeFile(file, '{"until":5000,"threads":{}}');
+    await store().update(
+      () => ({ threads: {} }),
+      (before) => ({ event: "close", scope: "global", root: null, until: before.until ?? null }),
+    );
+    expect(JSON.parse((await readFile(journal, "utf8")).trimEnd())).toEqual({
+      at: 1000,
+      event: "close",
+      scope: "global",
+      root: null,
+      until: 5000,
+      by: "plugin",
+    });
+  });
   it("leaves no temporary files or lock behind", async () => {
     await store().update(openA, OPEN_A);
     expect((await readdir(dir)).sort()).toEqual(["marker.json", "marker.log"]);

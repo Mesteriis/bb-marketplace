@@ -67,7 +67,8 @@ export function prune(state: GuardState, now: number): GuardState {
   return withGlobal(until, filterThreads(state, (_id, entry) => entry.until > now));
 }
 
-function deadline(now: number, minutes: Minutes): number {
+/** The deadline of an opening made now. */
+export function deadline(now: number, minutes: Minutes): number {
   return now + minutes * 60;
 }
 
@@ -140,7 +141,7 @@ export function treeRoots(state: GuardState, now: number): string[] {
     .map(([id]) => id);
 }
 
-/** Rewrites a live tree's entries to match its current descendants. */
+/** Rewrites a live tree's entries to match its current descendants; the same object when nothing changed. */
 export function resyncTree(
   state: GuardState,
   now: number,
@@ -149,5 +150,16 @@ export function resyncTree(
 ): GuardState {
   const entry = Object.hasOwn(state.threads, root) ? state.threads[root] : undefined;
   if (entry === undefined || entry.root !== root || !entry.tree || entry.until <= now) return state;
-  return writeTree(state, root, entry, descendants);
+  const next = writeTree(state, root, entry, descendants);
+  return sameThreads(state.threads, next.threads) ? state : next;
+}
+
+function sameThreads(left: Record<string, ThreadEntry>, right: Record<string, ThreadEntry>): boolean {
+  const ids = Object.keys(left);
+  if (ids.length !== Object.keys(right).length) return false;
+  return ids.every((id) => {
+    const a = left[id];
+    const b = Object.hasOwn(right, id) ? right[id] : undefined;
+    return a !== undefined && b !== undefined && a.until === b.until && a.root === b.root && a.tree === b.tree;
+  });
 }

@@ -22,6 +22,14 @@ export class StoreUnavailable extends Error {
   }
 }
 
+/** The thread runs on a machine that does not hold the marker. */
+export class NotLocal extends Error {
+  constructor() {
+    super("the thread does not run on the machine that holds the guard state");
+    this.name = "NotLocal";
+  }
+}
+
 export interface StateStore {
   /** Whether a marker location is set at all. */
   readonly configured: boolean;
@@ -29,9 +37,13 @@ export interface StateStore {
   read(): Promise<GuardState>;
   /**
    * Read, change, write under the lock. A change that returns its argument
-   * writes nothing and logs nothing.
+   * writes nothing and logs nothing. A journal line that depends on what was
+   * open is built from the state read under the lock.
    */
-  update(change: (state: GuardState) => GuardState, log: LogEvent): Promise<GuardState>;
+  update(
+    change: (state: GuardState) => GuardState,
+    log: LogEvent | ((before: GuardState) => LogEvent),
+  ): Promise<GuardState>;
 }
 
 export interface ThreadDirectory {
