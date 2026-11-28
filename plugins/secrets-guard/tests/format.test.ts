@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { pickScope, remainingLabel, scopeLabel, statusLine } from "../src/ui/format.ts";
+import {
+  nextScope,
+  openHeadline,
+  pickScope,
+  remainingLabel,
+  remainingShare,
+  scopeLabel,
+  scopeShortLabel,
+  statusLine,
+} from "../src/ui/format.ts";
 
 describe("remainingLabel", () => {
   it.each([
@@ -79,5 +88,55 @@ describe("pickScope", () => {
   });
   it("keeps the owner's own choice over what is open", () => {
     expect(pickScope("tree", { scope: "global", until: 1600, rootThreadId: null })).toBe("tree");
+  });
+});
+
+describe("scopeShortLabel", () => {
+  it("names the three segments", () => {
+    expect(scopeShortLabel("thread")).toBe("Этот чат");
+    expect(scopeShortLabel("tree")).toBe("С субтредами");
+    expect(scopeShortLabel("global")).toBe("Глобально");
+  });
+});
+
+describe("openHeadline", () => {
+  it("says how long the guard stays open, rounded up", () => {
+    expect(openHeadline(2440, 1000)).toBe("Открыто ещё 24 мин");
+    expect(openHeadline(1061, 1000)).toBe("Открыто ещё 2 мин");
+    expect(openHeadline(4600, 1000)).toBe("Открыто ещё 60 мин");
+  });
+});
+
+describe("remainingShare", () => {
+  it.each([
+    [2440, 1000, 0.4],
+    [1600, 1000, 1 / 6],
+    [4600, 1000, 1],
+    [2800, 1000, 0.5],
+    [9999, 1000, 1],
+    [1000, 1000, 0],
+    [900, 1000, 0],
+  ])("until %i at %i is %f of the longest term", (until, now, share) => {
+    expect(remainingShare(until, now)).toBeCloseTo(share, 10);
+  });
+});
+
+describe("nextScope", () => {
+  it.each([
+    ["thread", "ArrowRight", "tree"],
+    ["tree", "ArrowRight", "global"],
+    ["global", "ArrowRight", "thread"],
+    ["thread", "ArrowLeft", "global"],
+    ["tree", "ArrowLeft", "thread"],
+    ["tree", "ArrowDown", "global"],
+    ["tree", "ArrowUp", "thread"],
+    ["tree", "Home", "thread"],
+    ["tree", "End", "global"],
+  ] as const)("from %s, %s goes to %s", (from, key, to) => {
+    expect(nextScope(from, key)).toBe(to);
+  });
+  it("ignores other keys", () => {
+    expect(nextScope("tree", "Enter")).toBeNull();
+    expect(nextScope("tree", "a")).toBeNull();
   });
 });

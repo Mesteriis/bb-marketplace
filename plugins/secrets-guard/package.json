@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-makosh-secrets-guard",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Кнопка у поля ввода открывает охрану секретов Claude Code на 10, 30 или 60 минут: для чата, чата с субтредами или глобально.",
   "private": true,
   "type": "module",
@@ -43,9 +43,12 @@
   },
   "dependencies": {
     "@get-bb/plugin-sdk": "0.6.132",
+    "lucide-react": "^0.577.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
@@ -53,6 +56,7 @@
     "better-sqlite3": "^12.11.1",
     "cron-parser": "^5.10.7",
     "hono": "^4.13.23",
+    "jsdom": "^26.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "typescript": "^5.7.0",
