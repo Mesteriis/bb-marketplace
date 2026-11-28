@@ -79,25 +79,58 @@ function byNumber(a: bigint | null, b: bigint | null) {
 const toBig = (value: string | null) => value === null ? null : BigInt(value);
 
 /**
- * Display name, sort key and number are computed once per entry, not on every comparison: a 100 000-entry panel
- * spent most of its main-thread time in `nameOf` (a regular-expression replace) inside the comparator (S19a).
+ * Display name and numbers are computed once per entry and remembered, not on every comparison: a 100 000-entry
+ * panel spent most of its main-thread time in `nameOf` (a regular-expression replace) inside the comparator (S19a).
+ * Entries are never mutated, so the cache is keyed by the entry.
  */
-export function visibleEntries(entries: Entry[], tab: Tab): Entry[] {
-  const filter = tab.filter.toLocaleLowerCase("ru");
+interface SortFacts { name: string; size?: bigint | null; mtime?: bigint | null }
+const facts = new WeakMap<Entry, SortFacts>();
+function factsOf(entry: Entry): SortFacts {
+  let found = facts.get(entry);
+  if (!found) facts.set(entry, found = { name: nameOf(entry.name) });
+  return found;
+}
+function numberOf(entry: Entry, by: "size" | "mtime"): bigint | null {
+  const found = factsOf(entry);
+  if (by === "size") return found.size === undefined ? found.size = toBig(entry.size) : found.size;
+  return found.mtime === undefined ? found.mtime = toBig(entry.mtimeNs) : found.mtime;
+}
+
+function comparatorFor(tab: Tab): (a: Entry, b: Entry) => number {
   const { by, direction } = tab.sort;
-  const rows: { entry: Entry; name: string; number: bigint | null }[] = [];
-  for (const entry of entries) {
-    const name = nameOf(entry.name);
-    if (filter !== "" && !name.toLocaleLowerCase("ru").includes(filter)) continue;
-    rows.push({ entry, name, number: by === "size" ? toBig(entry.size) : by === "mtime" ? toBig(entry.mtimeNs) : null });
-  }
-  rows.sort((a, b) => {
-    if ((a.entry.kind === "dir") !== (b.entry.kind === "dir")) return a.entry.kind === "dir" ? -1 : 1;
-    const names = collator.compare(a.name, b.name) || keyOf(a.entry.name).localeCompare(keyOf(b.entry.name));
-    const value = by === "name" ? names : by === "kind" ? a.entry.kind.localeCompare(b.entry.kind) : byNumber(a.number, b.number);
+  return (a, b) => {
+    if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
+    const names = collator.compare(factsOf(a).name, factsOf(b).name) || keyOf(a.name).localeCompare(keyOf(b.name));
+    const value = by === "name" ? names : by === "kind" ? a.kind.localeCompare(b.kind)
+      : byNumber(numberOf(a, by === "size" ? "size" : "mtime"), numberOf(b, by === "size" ? "size" : "mtime"));
     return (direction === "asc" ? value : -value) || names;
-  });
-  return rows.map((row) => row.entry);
+  };
+}
+
+function matching(entries: readonly Entry[], tab: Tab): Entry[] {
+  const filter = tab.filter.toLocaleLowerCase("ru");
+  return filter === "" ? entries.slice() : entries.filter((entry) => factsOf(entry).name.toLocaleLowerCase("ru").includes(filter));
+}
+
+export function visibleEntries(entries: Entry[], tab: Tab): Entry[] {
+  return matching(entries, tab).sort(comparatorFor(tab));
+}
+
+/**
+ * `sorted` is the result of `visibleEntries` for earlier pages; `added` are the entries of the pages that arrived
+ * since. The new pages are sorted and merged in one pass, so the order equals `visibleEntries` of all of them
+ * while a long listing costs O(n) per page instead of a full sort.
+ */
+export function mergeVisible(sorted: Entry[], added: readonly Entry[], tab: Tab): Entry[] {
+  const fresh = visibleEntries(added as Entry[], tab);
+  if (fresh.length === 0) return sorted;
+  const compare = comparatorFor(tab);
+  const merged: Entry[] = new Array(sorted.length + fresh.length);
+  let i = 0, j = 0, k = 0;
+  while (i < sorted.length && j < fresh.length) merged[k++] = compare(sorted[i]!, fresh[j]!) <= 0 ? sorted[i++]! : fresh[j++]!;
+  while (i < sorted.length) merged[k++] = sorted[i++]!;
+  while (j < fresh.length) merged[k++] = fresh[j++]!;
+  return merged;
 }
 
 export function bytes(size: string | bigint) {

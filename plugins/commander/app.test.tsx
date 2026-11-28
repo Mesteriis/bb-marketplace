@@ -148,6 +148,42 @@ test("shows the first page of a long directory at once and keeps operations off 
   expect(await screen.findByRole("dialog", { name: "Копирование" })).toBeDefined();
 });
 
+test("keeps the cursor and the view on the same entry while later pages merge in above it, and reports progress", async () => {
+  // Page 1 holds the names that sort last, so every later page lands above the entries already shown.
+  files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(2999 - index).padStart(4, "0")));
+  const gates = [Promise.resolve(), Promise.resolve()] as Promise<void>[];
+  const releases: (() => void)[] = [];
+  gates[0] = new Promise<void>((resolve) => releases.push(resolve));
+  gates[1] = new Promise<void>((resolve) => releases.push(resolve));
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные" && input.cursor !== null) {
+      await gates[input.cursor === "1000" ? 0 : 1];
+    }
+    return call(method, input);
+  });
+
+  mount();
+  const row = await leftFile("файл-2000");
+  fireEvent.click(row);
+  const cursorName = () => within(grid()).getByRole("row", { selected: false, name: /файл-2000/ }).getAttribute("data-cursor");
+  expect(cursorName()).toBe("true");
+  expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Загружено 1000 записей…"))).toBe(true);
+  const topBefore = grid().scrollTop;
+
+  releases[0]!();
+  await waitFor(() => expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Загружено 2000 записей…"))).toBe(true));
+  expect(cursorName()).toBe("true");
+  // 1000 entries now sort above the cursor: the view moved down by their height, so the cursor row did not jump.
+  expect(grid().scrollTop).toBeGreaterThan(topBefore);
+
+  releases[1]!();
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  expect(cursorName()).toBe("true");
+  expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
+  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(3000);
+});
+
 test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
   const readOnly = { ...endpoint, id: "host:archive", hostId: "archive", label: "Архив", readOnly: true };
   saved!.right.tabs[0]!.endpoint = "host:archive";

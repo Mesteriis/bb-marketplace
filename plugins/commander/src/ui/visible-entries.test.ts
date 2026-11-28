@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Entry } from "../core/model.ts";
-import { visibleEntries, type Tab } from "./model.ts";
+import { mergeVisible, visibleEntries, type Tab } from "./model.ts";
 
 const entry = (t: string, kind: Entry["kind"] = "file", size = "1", mtimeNs: string | null = null): Entry => ({
   name: { t }, kind, size, mtimeNs, mtimePrecision: "unknown", mode: null, linkTarget: null, hidden: false,
@@ -40,4 +40,19 @@ test("reads each entry name a bounded number of times, not once per comparison",
   expect((sorted[0]!.name as { t: string }).t).toBe("item-0000");
   // Per entry: the display name once, the sort key for ties. A comparator that converts names runs about 2000 * 11 * 2 times.
   expect(reads).toBeLessThan(2000 * 8);
+});
+
+test.each([
+  [{ by: "name", direction: "asc" }, ""], [{ by: "name", direction: "desc" }, ""], [{ by: "size", direction: "asc" }, ""],
+  [{ by: "mtime", direction: "desc" }, ""], [{ by: "kind", direction: "asc" }, ""], [{ by: "name", direction: "asc" }, "7"],
+] as const)("merging pages one by one gives exactly the full sort (%j, filter %j)", (sort, filter) => {
+  let seed = 12345;
+  const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const rows = Array.from({ length: 900 }, (_, index) => entry(
+    "f" + Math.floor(random() * 400) + "-" + index, random() < 0.1 ? "dir" : "file",
+    String(Math.floor(random() * 50)), random() < 0.2 ? null : String(Math.floor(random() * 30))));
+  const view = tab({ ...sort }, filter);
+  let merged: Entry[] = [];
+  for (let at = 0; at < rows.length; at += 97) merged = mergeVisible(merged, rows.slice(at, at + 97), view);
+  expect(names(merged)).toEqual(names(visibleEntries(rows, view)));
 });

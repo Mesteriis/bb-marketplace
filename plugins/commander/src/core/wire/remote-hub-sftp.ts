@@ -31,24 +31,12 @@ export function levelAllows(granted: SftpLevel, needed: SftpLevel): boolean {
 
 /**
  * How many bytes canonical base64 text decodes to, or null when it is not canonical base64 (standard alphabet, length a
- * multiple of four, at most two `=` and only at the end). A 4 MiB chunk is 5.6 million characters. A per-character check
- * in JavaScript (a loop or a regular expression) costs about 40 ms per chunk on random data, 29 s of 48 s CPU on a
- * 1 GiB read (S18). Instead the text is decoded natively. The decoder skips what is not base64 and also accepts the
- * URL alphabet, so a decoded length equal to the expected one, with no `-` and no `_` in the text, proves that every
- * character before the padding was a standard one. Anything else takes the exact character loop. Trailing bits of
- * the last character are not checked, as before.
+ * multiple of four, at most two `=` and only at the end). One pass over the text: a 4 MiB chunk is 5.6 million characters,
+ * which a regular expression with a repeated group cannot take.
  */
 export function base64Bytes(text: string): number | null {
   const n = text.length;
   if (n % 4 !== 0) return null;
-  const decoded = Buffer.from(text, "base64");
-  const pad = n > 0 && text.charCodeAt(n - 1) === 61 ? (text.charCodeAt(n - 2) === 61 ? 2 : 1) : 0;
-  if (decoded.length === (n / 4) * 3 - pad && !text.includes("-") && !text.includes("_")) return decoded.length;
-  return base64BytesScan(text);
-}
-
-function base64BytesScan(text: string): number | null {
-  const n = text.length;
   let pad = 0;
   if (n > 0 && text.charCodeAt(n - 1) === 61) pad = text.charCodeAt(n - 2) === 61 ? 2 : 1;
   for (let i = 0; i < n - pad; i++) {

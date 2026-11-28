@@ -118,6 +118,28 @@ export function Pane(props: PaneProps) {
     setTop(node.scrollTop);
   // A refresh of the same directory must leave its scroll position alone.
   }, [grid, location, directory?.loading]);
+  // While pages of a long listing are merged into the rows, the anchor row (the cursor, else the row at the top of
+  // the view) keeps its place on screen: rows that arrive above it move the scroll position by their height.
+  const shownRows = useRef({ entries, location, partial: !!directory?.partial });
+  useLayoutEffect(() => {
+    const before = shownRows.current;
+    shownRows.current = { entries, location, partial: !!directory?.partial };
+    const node = grid.current;
+    if (!node || before.location !== location || before.entries === entries || before.entries.length === 0) return;
+    if (!before.partial && !directory?.partial) return;
+    const lead = tab && parent(tab.path) ? 1 : 0;
+    const indexOf = (rows: Entry[], key: string) => rows.findIndex((entry) => keyOf(entry.name) === key);
+    let anchor = cursor !== null && cursor !== upKey && indexOf(before.entries, cursor) >= 0 ? cursor : null;
+    if (anchor === null && node.scrollTop > 0) {
+      const row = before.entries[Math.floor(node.scrollTop / rowHeight) - lead];
+      anchor = row ? keyOf(row.name) : null;
+    }
+    if (anchor === null) return;
+    const delta = indexOf(entries, anchor) - indexOf(before.entries, anchor);
+    if (delta === 0 || indexOf(entries, anchor) < 0) return;
+    node.scrollTop += delta * rowHeight;
+    setTop(node.scrollTop);
+  }, [entries, location, directory?.partial]);
   useLayoutEffect(() => {
     const node = grid.current;
     if (!node || typeof ResizeObserver === "undefined") return;
@@ -210,6 +232,7 @@ export function Pane(props: PaneProps) {
         </div>}
       {status && <div role="row" aria-rowindex={total + 2}><div role="gridcell" aria-colspan={3}>{status}</div></div>}
     </div>
-    <div className="cm-summary">{info.count} {ru.outOf} {directory?.entries.length ?? 0} {ru.selected} · {info.size}</div>
+    <div className="cm-summary" role={directory?.partial ? "status" : undefined}>
+      {directory?.partial && <>{ru.loadedCount(directory.entries.length)} · </>}{info.count} {ru.outOf} {directory?.entries.length ?? 0} {ru.selected} · {info.size}</div>
   </section>;
 }
