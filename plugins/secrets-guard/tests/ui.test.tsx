@@ -16,9 +16,13 @@ function button(view: GuardView | null, now = 1000, problem: string | null = nul
   return renderToStaticMarkup(<GuardButton view={view} now={now} problem={problem} onOpen={noop} />);
 }
 
-function popup(view: GuardView | null, extra: { error?: string | null; busy?: boolean } = {}) {
+function popup(
+  view: GuardView | null,
+  extra: { error?: string | null; busy?: boolean; layout?: "fit" | "fill" } = {},
+) {
   return renderToStaticMarkup(
     <GuardPopup
+      layout={extra.layout}
       view={view}
       now={1000}
       busy={extra.busy ?? false}
@@ -33,21 +37,21 @@ describe("GuardButton", () => {
   it("is a closed lock without a timer when nothing is open", () => {
     const html = button(closed);
     expect(html).toContain('aria-label="Секреты: Закрыто"');
-    expect(html).toContain('data-state="closed"');
+    expect(html).toContain('data-guard="closed"');
     expect(html).not.toContain('disabled=""');
     expect(html).not.toContain(" м<");
     expect(html).not.toContain("bg-warning");
   });
   it("shows the remaining minutes and names the scope when open", () => {
     const html = button(openTree);
-    expect(html).toContain('data-state="open"');
+    expect(html).toContain('data-guard="open"');
     expect(html).toContain("24 м");
     expect(html).toContain("bg-warning");
     expect(html).toContain("whitespace-nowrap");
     expect(html).toContain('title="Открыто: этот чат и субтреды, осталось 24 мин"');
   });
   it("falls back to closed once the deadline has passed", () => {
-    expect(button(openTree, 2440)).toContain('data-state="closed"');
+    expect(button(openTree, 2440)).toContain('data-guard="closed"');
   });
   it("is inactive with an explanation when the marker location is missing", () => {
     const html = button({ configured: false, local: true, effective: null });
@@ -62,7 +66,7 @@ describe("GuardButton", () => {
   it("is inactive until the state is known", () => {
     const html = button(null);
     expect(html).toContain('disabled=""');
-    expect(html).toContain('data-state="closed"');
+    expect(html).toContain('data-guard="closed"');
   });
 });
 
@@ -159,5 +163,36 @@ describe("GuardPopup", () => {
     const html = popup(null);
     expect(html).toContain("Загрузка…");
     expect(html).not.toContain('role="radiogroup"');
+  });
+});
+
+describe("the two layouts of the window", () => {
+  it("is as wide as its content by default, with every segment labelled", () => {
+    const html = popup(closed);
+    expect(html).toContain('data-layout="fit"');
+    expect(html).toContain("w-fit");
+    expect(html).not.toContain("@container");
+  });
+  it("fills the host's window: the segments share the row and stay on one line", () => {
+    const html = popup(closed, { layout: "fill" });
+    expect(html).toContain('data-layout="fill"');
+    expect(html).toContain("@container");
+    expect(html).not.toContain("w-fit");
+    const group = /<div[^>]*role="radiogroup"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(group).toContain("flex-nowrap");
+    expect(group).toContain("w-full");
+  });
+  it("in a narrow host window only the selected segment keeps its label; the others keep their names", () => {
+    const html = popup(closed, { layout: "fill" });
+    const segment = (scope: string) => new RegExp(`<button[^>]*data-scope="${scope}"[^>]*>.*?</button>`).exec(html)?.[0] ?? "";
+    expect(segment("thread")).toContain('<span class="truncate">Этот чат</span>');
+    expect(segment("tree")).toContain('<span class="hidden truncate @md:inline">С субтредами</span>');
+    expect(segment("global")).toContain('<span class="hidden truncate @md:inline">Глобально</span>');
+    expect(segment("tree")).toContain('aria-label="С субтредами"');
+    expect(segment("tree")).toContain('title="С субтредами"');
+  });
+  it("in the content-wide window every segment shows its label", () => {
+    const html = popup(closed);
+    expect(html).not.toContain("hidden truncate");
   });
 });
