@@ -28,17 +28,17 @@ try {
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   const open = async () => {
     await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
-    let entry = page.locator("button.git-table-entry", { hasText: "gamma" }).first();
+    let entry = page.locator(".git-projects-table").getByRole("button", { name: "gamma", exact: true }).first();
     if (!await visible(entry, 8000)) {
-      await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
+      await page.getByRole("button", { name: "Attach a copy", exact: true }).click({ timeout: 30000 });
       const select = page.locator(".git-add-copy select").first();
       const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/gamma"))?.value ?? "");
       await select.selectOption(value);
-      await page.getByRole("button", { name: "Подключить и показать worktree" }).click();
-      entry = page.locator("button.git-table-entry", { hasText: "gamma" }).first();
+      await page.getByRole("button", { name: "Attach and open" }).click(); await page.waitForURL(address => !address.pathname.endsWith("/git/projects"), { timeout: 30000 }).catch(() => {}); await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
+      entry = page.locator(".git-projects-table").getByRole("button", { name: "gamma", exact: true }).first();
     }
     await entry.click({ timeout: 30000 });
-    await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "Review" }).click();
+    await page.getByRole("tablist", { name: "Project sections" }).getByRole("tab", { name: "Review" }).click();
     return page.getByRole("region", { name: "Review" });
   };
   let review = await open();

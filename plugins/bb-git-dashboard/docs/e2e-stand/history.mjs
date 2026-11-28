@@ -14,17 +14,17 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
-  let entry = page.locator("button.git-table-entry", { hasText: "alpha" }).first();
+  let entry = page.locator(".git-projects-table").getByRole("button", { name: "alpha", exact: true }).first();
   if (!await visible(entry, 8000)) {
-    await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
+    await page.getByRole("button", { name: "Attach a copy", exact: true }).click({ timeout: 30000 });
     const select = page.locator(".git-add-copy select").first();
     if (await select.count()) await select.selectOption(await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/alpha"))?.value ?? ""));
-    await page.getByRole("button", { name: "Подключить и показать worktree" }).click();
-    entry = page.locator("button.git-table-entry", { hasText: "alpha" }).first();
+    await page.getByRole("button", { name: "Attach and open" }).click(); await page.waitForURL(address => !address.pathname.endsWith("/git/projects"), { timeout: 30000 }).catch(() => {}); await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
+    entry = page.locator(".git-projects-table").getByRole("button", { name: "alpha", exact: true }).first();
   }
   check("copy listed", await visible(entry));
   await entry.click();
-  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "History" }).click();
+  await page.getByRole("tablist", { name: "Project sections" }).getByRole("tab", { name: "History" }).click();
   check("history counts commits on all branches", await visible(page.getByText("5 commits on all branches · on main")));
   const gap = await page.locator(".git-history-list").evaluate(list => list.getBoundingClientRect().left - (list.closest("main") ?? list.parentElement).getBoundingClientRect().left).catch(() => 0);
   check("history keeps the panel's inner spacing", gap >= 8, gap);

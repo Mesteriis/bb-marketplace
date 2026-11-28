@@ -1,0 +1,29 @@
+/* Projects: one table of the attached copies by category; the head and views stay, the table scrolls inside. */
+.git-ws .git-projects { height: 100%; min-height: 0; }
+.git-ws .git-projects-bar { justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.git-ws .git-projects-tabs { display: flex; align-items: center; gap: 4px; }
+.git-ws .git-projects-count { color: var(--muted-foreground); font-weight: 400; }
+.git-ws .git-projects-bulk { display: flex; align-items: center; gap: 8px; padding: 4px 0; color: var(--muted-foreground); }
+.git-ws .git-projects-scroll { flex: 1; min-height: 0; overflow: auto; }
+.git-ws .git-projects-table thead th { position: sticky; top: 0; z-index: 1; background: var(--background); }
+.git-ws .git-projects-table th, .git-ws .git-projects-table td { white-space: nowrap; }
+.git-ws .git-projects-table td:nth-child(2) { width: 30%; min-width: 180px; white-space: normal; }
+.git-ws .git-projects-table .g-branch { display: inline-block; max-width: 220px; vertical-align: middle; }
+.git-ws .git-projects-pick { width: 40px; }
+.git-ws .git-projects-table tr.sel td { background: var(--accent); }
+.git-ws .git-projects-group, .git-ws .git-projects-name {
+  border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; text-align: left;
+}
+.git-ws .git-projects-group { font-weight: 600; }
+.git-ws .git-projects-group .g-count { margin-left: 4px; }
+.git-ws .git-projects-name { font-weight: 600; }
+.git-ws .git-projects-name:hover { text-decoration: underline; }
+.git-ws :is(.git-projects-group, .git-projects-name, .git-projects-pr):focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
+.git-ws .git-projects-repo, .git-ws .git-projects-when { color: var(--muted-foreground); font-size: 12px; }
+.git-ws .git-projects-when { margin-left: 6px; }
+.git-ws .git-projects-sync span + span { margin-left: 6px; }
+.git-ws .git-projects-pr { border: 0; cursor: pointer; font: inherit; font-size: 12px; }
+.git-ws .git-projects-ci { display: inline-flex; align-items: center; gap: 5px; }
+.git-ws .git-projects-search { width: min(300px, 40vw); }
+.git-ws .git-projects-add { padding: 0 24px 12px; }
+.git-ws .git-projects-repo { max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

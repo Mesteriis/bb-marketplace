@@ -50,6 +50,14 @@ export function blockerList(pr: InboxPr): Blocker[] {
  * One merge away, on the forge's word: CI green, an approval or no review required, nothing blocking. A forge that does
  * not say (Gitea gives no review decision, Azure no CI state) is not taken as a yes.
  */
+/** What a blocker is: something failed, something to wait for, or something for someone to do. */
+export function blockerSense(blocker: Blocker): "failed" | "waiting" | "todo" {
+  switch (blocker.key) {
+    case "ci-failing": case "conflicts": return "failed";
+    case "ci-running": case "review-required": case "draft": case "stacked": return "waiting";
+    default: return "todo";
+  }
+}
 export const isReady = (pr: InboxPr) => !pr.isDraft && pr.blockers.length === 0 && pr.ci === "passing" && pr.reviewDecision === "APPROVED";
 
 /** The reason one of my open pull requests is in the list, most pressing first; null when it only waits (a draft). */

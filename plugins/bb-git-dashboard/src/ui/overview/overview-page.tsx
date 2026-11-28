@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { ago } from "../../core/i18n/time.ts";
-import { blockerList, overviewItems, type Blocker, type OverviewGroup, type OverviewItem, type OverviewKind } from "../../core/overview/items.ts";
+import { blockerList, blockerSense, overviewItems, type Blocker, type OverviewGroup, type OverviewItem, type OverviewKind } from "../../core/overview/items.ts";
 import { overviewStages, type BoardCard } from "../../core/overview/stages.ts";
+import { inCategory } from "../../core/overview/category.ts";
+import { copyRepositories } from "../../core/projects/table.ts";
 import type { InboxPr } from "../../core/pulls/model.ts";
 import { useLanguage, useT } from "../i18n/use-t.tsx";
 import { PageHead } from "../shell/page-head.tsx";
@@ -31,6 +33,8 @@ function targetOf(item: Pick<OverviewItem, "pr" | "copyId" | "run">): OverviewTa
   if (item.copyId) return {kind: "copy", copyId: item.copyId, section: item.run ? "actions" : "code"};
   return null;
 }
+// A blocker's icon and colour say what it is: failed, waiting, or for someone to do; nothing in the way is a check.
+const senses = {failed: {icon: "CircleX", tone: "g-bad"}, waiting: {icon: "Clock", tone: "g-muted"}, todo: {icon: "AlertCircle", tone: "g-warn"}} as const;
 function blockerText(t: T, blocker: Blocker): string {
   if (blocker.key === "note") return blocker.text;
   if (blocker.key === "ci-failing") return blocker.n ? t("ov.b.ci-failing-n", {n: blocker.n}) : t("ov.b.ci-failing");
@@ -38,7 +42,11 @@ function blockerText(t: T, blocker: Blocker): string {
 }
 
 /** The overview: what needs you, what you can finish and what goes on without you, as a list or a board by stage. */
-export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initialView: View;
+export function OverviewPage({api, initialView, ready, categories = new Map(), groups = new Map()}: {api: OverviewApi; initialView: View;
+  /** Each copy's Git directory (copy id → key): worktrees of one repository share its pull requests and runs. */
+  groups?: Map<string, string>;
+  /** Each copy's category (copy id → the top folder of its project), for the filter in the head. */
+  categories?: Map<string, string>;
   /** The copies are known: reading before that would read without them and again after. */
   ready: boolean}) {
   const t = useT();
@@ -50,6 +58,9 @@ export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initi
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [category, setCategory] = useState<string | null>(null);
+  const names = useMemo(() => [...new Set(categories.values())].filter(Boolean).sort((a, b) => a.localeCompare(b)), [categories]);
+  const chosen = category !== null && names.includes(category) ? category : null;
   const [now, setNow] = useState(() => Date.now());
   const request = useRef(0);
   const read = useCallback((refresh: boolean) => {
@@ -71,7 +82,13 @@ export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initi
     api.merged(false).then(value => { if (active) setMerged(value); }, () => { if (active) setMerged(null); });
     return () => { active = false; };
   }, [api, view, merged, ready]);
-  const items = useMemo(() => data ? overviewItems({...data.input, merged: []}) : [], [data]);
+  // The chosen category narrows what was read; reading again is not needed.
+  const shown = useMemo(() => {
+    if (!data) return null;
+    const narrowed = inCategory({...data.input, merged: merged ?? []}, chosen, categories, copyRepositories(data.input.runs, groups));
+    return {data: {...data, input: {...narrowed, merged: undefined}}, merged: narrowed.merged};
+  }, [data, merged, chosen, categories, groups]);
+  const items = useMemo(() => shown ? overviewItems({...shown.data.input, merged: []}) : [], [shown]);
   const current = items.find(item => item.key === selected) ?? items[0] ?? null;
   const choose = (next: View) => {
     setView(next);
@@ -84,6 +101,10 @@ export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initi
   return <div className="g-page git-overview">
     <PageHead title={t("section.overview")} sub={data ? t("ov.sub", {copies: data.copies, when: ago(language, now, new Date(data.at).toISOString())}) : undefined}
       actions={<>
+        {names.length > 1 && <div className="g-seg" role="group" aria-label={t("ov.category")}>
+          {[null, ...names].map(name => <button key={name ?? ""} type="button" aria-pressed={chosen === name} onClick={() => setCategory(name)}>
+            {name ?? t("ov.category.all")}</button>)}
+        </div>}
         <div className="g-seg" role="group" aria-label={t("ov.view")}>
           {(["list", "board"] as const).map(option => <button key={option} type="button" aria-pressed={view === option} onClick={() => choose(option)}>
             <Icon name={option === "list" ? "ListView" : "GridView"} small/>{t(option === "list" ? "ov.list" : "ov.board")}
@@ -102,7 +123,7 @@ export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initi
         <List items={items} current={current} now={now} onSelect={setSelected} onOpen={item => { const target = targetOf(item); if (target) api.open(target); }}/>
         {current && <Details item={current} api={api}/>}
       </div>)}
-    {data && view === "board" && <Board data={data} merged={merged ?? []} mergedLoading={merged === undefined} now={now} api={api}/>}
+    {data && view === "board" && <Board data={shown!.data} merged={shown!.merged} mergedLoading={merged === undefined} now={now} api={api}/>}
   </div>;
 }
 
@@ -185,8 +206,11 @@ function Details({item, api}: {item: OverviewItem; api: OverviewApi}) {
     </div>
     {pr && item.kind !== "review" && <section>
       <h3 className="g-sec">{t("ov.blockers")}</h3>
-      {blockers.length ? <ul className="git-overview-blockers">{blockers.map((blocker, index) => <li key={index}><Icon name="AlertCircle" small/>{blockerText(t, blocker)}</li>)}</ul>
-        : <p className="g-muted">{t("ov.no-blockers")}</p>}
+      {blockers.length ? <ul className="git-overview-blockers">{blockers.map((blocker, index) => {
+        const sense = senses[blockerSense(blocker)];
+        return <li key={index} className={sense.tone}><Icon name={sense.icon} small/><span>{blockerText(t, blocker)}</span></li>;
+      })}</ul>
+        : <p className="git-overview-clear g-good"><Icon name="CircleCheck" small/><span>{t("ov.no-blockers")}</span></p>}
       {pr.failingChecks.length > 0 && <div className="git-overview-chips">{pr.failingChecks.map(check => <span key={check.name} className="g-chip bad">{check.name}</span>)}</div>}
     </section>}
     <div className="git-overview-actions">

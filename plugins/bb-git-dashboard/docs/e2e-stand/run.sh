@@ -47,6 +47,10 @@ G="$STAND/home/projects/gamma"; rm -rf "$G"; mkdir -p "$G"
 git -C "$G" init -q -b main
 echo a > "$G/README.md"; git -C "$G" add .; git -C "$G" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
 git -C "$G" remote add origin "https://localhost:$GITLAB_PORT/stand/gamma.git"
+# A project in a folder below the projects folder: a second category (Work) for the Projects table and the overview's filter.
+D="$STAND/home/projects/Work/delta"; rm -rf "$D"; mkdir -p "$D"
+git -C "$D" init -q -b main
+echo a > "$D/README.md"; git -C "$D" add .; git -C "$D" -c user.email=stand@example.invalid -c user.name=stand commit -qm "first commit"
 
 # macOS: the stand's HOME has no keychain, so an agent started by the stand BB that saves a credential makes
 # the system show "A keychain cannot be found to store ..." on the desktop. An empty keychain of its own stops that.
@@ -109,6 +113,7 @@ id_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>consol
 PROJECT=$(cli project create --name stand-alpha --root "$R" --json | id_of)
 BETA=$(cli project create --name stand-beta --root "$B" --json | id_of)
 GAMMA=$(cli project create --name stand-gamma --root "$G" --json | id_of)
+cli project create --name stand-delta --root "$D" --json >/dev/null
 printf 'URL=%s/\nPROJECT=%s\nREPO=%s\nBETA=%s\nGAMMA=%s\nFORGE=https://localhost:%s\nGITLAB=https://localhost:%s\nDAEMON_PORT=%s\nBB_APP=%s\n' "$URL" "$PROJECT" "$R" "$BETA" "$GAMMA" "$FORGE_PORT" "$GITLAB_PORT" "$DAEMON_PORT" "$BB_APP" > "$STAND/facts.env"
 cat "$STAND/facts.env"
 mkdir -p "$STAND/out"

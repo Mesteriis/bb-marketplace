@@ -65,3 +65,6 @@
   .git-ws .git-overview-split { grid-template-columns: minmax(0, 1fr); }
   .git-ws .git-overview-details { border-left: 0; border-top: 1px solid var(--border); }
 }
+/* The icon carries the blocker's colour; its words stay in the text colour. */
+.git-ws .git-overview-blockers li > span, .git-ws .git-overview-clear > span { color: var(--foreground); }
+.git-ws .git-overview-clear { display: flex; gap: 8px; align-items: center; margin: 0; }

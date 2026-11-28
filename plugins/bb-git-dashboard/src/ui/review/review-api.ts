@@ -39,6 +39,8 @@ export type ReviewApi = {
   issue(ref: PrRef): Promise<IssueView>;
   issuePrepare(accountId: string, repo: string, action: IssueAction): Promise<Preview>;
   issueConfirm(previewId: string): Promise<{number: number}>;
+  /** Opens BB's composer for a new thread asking about the issue, its title and text fenced as data. */
+  issueAsk(ref: {accountId: string; repo: string; number: number}): Promise<void>;
 };
 
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";

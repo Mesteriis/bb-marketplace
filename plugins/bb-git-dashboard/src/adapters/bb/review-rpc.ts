@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { agentPlan, linkCandidates, projectsOfRepo, spawnHost, type AgentThread } from "../../core/pulls/agent-target.ts";
 import type { FixSubject } from "../../core/pulls/detail.ts";
-import { answerNote, findingsPrompt, fixPrompt, prPrompts } from "../../core/pulls/prompt.ts";
+import { answerNote, findingsPrompt, fixPrompt, issuePrompt, prPrompts } from "../../core/pulls/prompt.ts";
 import type { codeReviewService } from "./code-review-service.ts";
 import type { agentSubject } from "../../core/pulls/review-contract.ts";
 import type { Account } from "../../core/providers.ts";
@@ -111,6 +111,12 @@ export function reviewHandlers(bb: BbPluginApi, deps: {credential(id: string): P
       }
     }),
     issueDetail: handle(({accountId, repo, number}: Target) => service.issueDetail(accountId, repo, number)),
+    issueCompose: handle(async ({accountId, repo, number}: Target) => {
+      const {account} = await deps.credential(accountId);
+      const {issue} = await service.issueDetail(accountId, repo, number);
+      const projectId = projectsOfRepo(account.kind, repo, await bb.sdk.projects.list())[0] ?? null;
+      return {prompt: issuePrompt({...issue, repo}), projectId};
+    }),
     issuePrepare: handle(({accountId, repo, action}: {accountId: string; repo: string; action: Parameters<typeof service.issuePrepare>[2]}) =>
       service.issuePrepare(accountId, repo, action)),
     issueConfirm: handle(({previewId}: {previewId: string}) => service.issueConfirm(previewId)),

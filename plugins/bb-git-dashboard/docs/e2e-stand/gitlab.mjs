@@ -20,16 +20,16 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
-  await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
+  await page.getByRole("button", { name: "Attach a copy", exact: true }).click({ timeout: 30000 });
   const select = page.locator(".git-add-copy select").first();
   const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/gamma"))?.value ?? "");
   await select.selectOption(value);
-  await page.getByRole("button", { name: "Подключить и показать worktree" }).click();
-  const entry = page.locator("button.git-table-entry", { hasText: "gamma" }).first();
+  await page.getByRole("button", { name: "Attach and open" }).click(); await page.waitForURL(address => !address.pathname.endsWith("/git/projects"), { timeout: 30000 }).catch(() => {}); await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
+  const entry = page.locator(".git-projects-table").getByRole("button", { name: "gamma", exact: true }).first();
   check("copy attached", await visible(entry));
   await entry.click();
-  const sections = page.getByRole("navigation", { name: "Repository sections" });
-  await sections.getByRole("button", { name: "Actions" }).click();
+  const sections = page.getByRole("tablist", { name: "Project sections" });
+  await sections.getByRole("tab", { name: "CI/CD" }).click();
   check("GitLab and its account detected by port and connected", await visible(page.getByText(/GitLab · localhost\/stand\/gamma · stand \(stand\)/)));
   const failed = page.getByRole("button", { name: "Pipeline #2" });
   const listed = await visible(failed);
@@ -76,9 +76,9 @@ try {
   check("Run pipeline reached GitLab with its variable", started?.body?.ref === "main" &&
     JSON.stringify(started.body.variables) === JSON.stringify([{key: "DEPLOY_ENV", value: "production"}]), started);
 
-  await sections.getByRole("button", { name: "Issues" }).click();
+  await sections.getByRole("tab", { name: "Issues" }).click();
   check("issues listed", await visible(page.getByText("#4 Greeting is wrong")));
-  await sections.getByRole("button", { name: "Variables" }).click();
+  await sections.getByRole("tab", { name: "Variables" }).click();
   check("variables listed by name with flags", await visible(page.getByText("DEPLOY_TOKEN")) && await visible(page.getByText("protected, masked")) &&
     await visible(page.getByRole("columnheader", { name: "Settings" })) && await page.getByRole("columnheader", { name: "Value" }).count() === 0);
   check("variable values are not shown", await visible(page.getByText("Values are not shown.")) && !(await page.content()).includes("stand-variable-value"));

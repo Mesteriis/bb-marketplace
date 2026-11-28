@@ -92,19 +92,19 @@ try {
   check("and drops GitLab's Draft: prefix", JSON.stringify(gitlab().at(-1)?.body) === JSON.stringify({title: "Follow-up on retries"}), gitlab().at(-1));
 
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();
-  await page.getByRole("button", { name: "+ Подключить копию" }).click({ timeout: 30000 });
+  await page.getByRole("button", { name: "Attach a copy", exact: true }).click({ timeout: 30000 });
   const select = page.locator(".git-add-copy select").first();
   const value = await select.locator("option").evaluateAll(options => options.find(option => option.textContent.trim().endsWith("/gamma"))?.value ?? "");
   // gitlab.mjs may have attached it already: then the form is closed again rather than left over the page.
-  if (value) { await select.selectOption(value); await page.getByRole("button", { name: "Подключить и показать worktree" }).click(); }
-  else await page.getByRole("button", { name: "+ Подключить копию" }).click();
-  const sections = page.getByRole("navigation", { name: "Repository sections" });
+  if (value) { await select.selectOption(value); await page.getByRole("button", { name: "Attach and open" }).click(); await page.waitForURL(address => !address.pathname.endsWith("/git/projects"), { timeout: 30000 }).catch(() => {}); await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" }); }
+  else await page.getByRole("button", { name: "Attach a copy", exact: true }).click();
+  const sections = page.getByRole("tablist", { name: "Project sections" });
   const openGamma = async () => {
     for (let attempt = 0; attempt < 3 && await sections.count() === 0; attempt++) {
-      await page.locator("button.git-table-entry", { hasText: "gamma" }).first().click();
+      await page.locator(".git-projects-table").getByRole("button", { name: "gamma", exact: true }).first().click();
       await until(async () => await sections.count() > 0, 5000);
     }
-    await sections.getByRole("button", { name: "Issues" }).click();
+    await sections.getByRole("tab", { name: "Issues" }).click();
   };
   await openGamma();
   await page.getByRole("button", { name: "#4 Greeting is wrong" }).click({ timeout: 20000 });

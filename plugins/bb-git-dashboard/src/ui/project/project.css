@@ -1,0 +1,13 @@
+/* A copy's page: the head with its actions, the Code views with the copy's place, the outgoing commits. */
+.git-ws .git-project-head .g-branch { max-width: 280px; }
+.git-ws .git-project-head-error { flex-basis: 100%; margin: 0; }
+.git-ws .git-code-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 0; }
+.git-ws .git-code-bar .g-seg [role="tab"] { display: inline-flex; align-items: center; gap: 6px; }
+.git-ws .git-code-bar .g-seg [role="tab"][aria-selected="true"] { background: var(--background); color: var(--foreground); }
+.git-ws .git-code-place { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.git-ws .git-outgoing summary { cursor: pointer; }
+.git-ws .git-file input[type="checkbox"] { flex: none; }
+.git-ws .git-project > .git-project-main { padding: 0 24px 24px; }
+/* A file row of Changes: its check box (staged or not), then the file. The fields' own padding and border do not apply. */
+.git-ws .git-file:has(> input[type="checkbox"]) { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.git-ws .git-file > input[type="checkbox"] { width: 14px; height: 14px; padding: 0; margin: 0; border-radius: 3px; }

@@ -29,10 +29,10 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
-  const entry = page.locator("button.git-table-entry", { hasText: "beta" }).first();
+  const entry = page.locator(".git-projects-table").getByRole("button", { name: "beta", exact: true }).first();
   check("the attached copy is listed", await visible(entry, 30000));
   await entry.click();
-  await page.getByRole("navigation", { name: "Repository sections" }).getByRole("button", { name: "Actions" }).click();
+  await page.getByRole("tablist", { name: "Project sections" }).getByRole("tab", { name: "CI/CD" }).click();
   await page.getByRole("button", { name: "Templates", exact: true }).click({ timeout: 20000 });
   const section = page.getByRole("region", { name: "CI templates" });
   check("the stack is read at HEAD with its evidence", await visible(section.getByText("Found at HEAD: Node.js (package.json, pnpm-lock.yaml).")));

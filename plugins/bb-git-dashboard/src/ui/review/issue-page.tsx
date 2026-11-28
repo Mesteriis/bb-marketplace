@@ -10,6 +10,7 @@ import "./review.css";
 export function IssuePage({api, accountId, repo, number, onCreated}: {api: ReviewApi; accountId: string; repo: string; number: number | "new"; onCreated(number: number): void}) {
   const [issue, setIssue] = useState<IssueView | null>(null);
   const [error, setError] = useState("");
+  const [asking, setAsking] = useState(false);
   const [preview, setPreview] = useState<(Preview & {title: string; action: IssueAction}) | null>(null);
   const [comment, setComment] = useState("");
   const [title, setTitle] = useState("");
@@ -39,7 +40,9 @@ export function IssuePage({api, accountId, repo, number, onCreated}: {api: Revie
           {issue.url && <a href={issue.url} target="_blank" rel="noreferrer">Open on the forge</a>}</div>
         <p className="git-muted">{repo} · {issue.author} · {issue.createdAt.slice(0, 10)}{issue.labels.length ? " · " + issue.labels.join(", ") : ""}</p>
         <div className="git-row"><button type="button" onClick={() => void act({kind: "state", number: issue.number, open: !issue.open}, issue.open ? "Close issue" : "Reopen issue")}>
-          {issue.open ? "Close issue" : "Reopen issue"}</button></div>
+          {issue.open ? "Close issue" : "Reopen issue"}</button>
+          <button type="button" disabled={asking} onClick={() => { setError(""); setAsking(true);
+            api.issueAsk({accountId, repo, number: issue.number}).catch(failure => setError(message(failure))).finally(() => setAsking(false)); }}>Ask an agent</button></div>
       </header>
       {issue.body && <article className="git-review-comment"><p className="git-review-body">{issue.body}</p></article>}
       {issue.notice && <p className="git-muted" role="status">{issue.notice}</p>}

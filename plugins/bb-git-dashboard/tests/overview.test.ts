@@ -130,3 +130,10 @@ test("everything the list shows is on the board; the board adds only drafts and 
   assert.deepEqual([...listed].filter(key => !boarded.has(key)), []);
   assert.deepEqual([...boarded].filter(key => !listed.has(key)).sort(), ["pr:" + pr(30).url, "pr:" + pr(7).url].sort());
 });
+
+test("what keeps a pull request from merging says what kind of thing it is: failed, waiting or for someone to do", async () => {
+  const {blockerSense} = await import("../src/core/overview/items.ts");
+  assert.deepEqual(["ci-failing", "conflicts", "ci-running", "review-required", "draft", "stacked", "changes", "threads"]
+    .map(key => blockerSense({key} as never)), ["failed", "failed", "waiting", "waiting", "waiting", "waiting", "todo", "todo"]);
+  assert.equal(blockerSense({key: "note", text: "Needs rebase"}), "todo");
+});

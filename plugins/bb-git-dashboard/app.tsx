@@ -6,6 +6,7 @@ import type { GitAction } from "./src/core/git.ts";
 import type { Copy, Failure } from "./src/core/workspace.ts";
 import { projectTree, repositoryKey, nestedFolders, type FolderNode, type Source, type Project } from "./src/core/project-workspace.ts";
 import { ProjectWorkspace } from "./src/ui/project-workspace.tsx";
+import { ProjectHead } from "./src/ui/project/project-head.tsx";
 import type { ConnectionApi } from "./src/ui/connection-wizard.tsx";
 import type { RepositoryApi } from "./src/ui/repository-panel.tsx";
 import { Worktree } from "./src/ui/worktree.tsx";
@@ -26,6 +27,7 @@ import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
 import { ConnectionsPage } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
 import { useOverviewApi } from "./src/app/overview-data.tsx";
+import { ProjectsRoute, useCopyCategories } from "./src/app/projects-route.tsx";
 import { useT } from "./src/ui/i18n/use-t.tsx";
 import { accountsChanged, onAccountsChanged, withInterface } from "./src/app/interface.tsx";
 import "./src/ui/system/tokens.css";
@@ -92,6 +94,18 @@ function BoundWorktree({copy, client, host, attach, pin}: {
   return <Worktree copy={copy} host={host ?? copy.hostId} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin}/>;
 }
 
+function BoundHead({copy, client}: {copy: Copy; client: Client}) {
+  const [revision, setRevision] = useState(0);
+  const changed = useCallback(() => setRevision(value => value + 1), []);
+  useRealtime(signal, changed);
+  const run = useCallback(async (action: GitAction) => {
+    const result = await client.call("git", {copyId:copy.id, action});
+    if (!result.ok) return failed(result);
+    return result.value;
+  }, [client, copy.id]);
+  return <ProjectHead copy={copy} run={run} refresh={revision} onChanged={changed}/>;
+}
+
 /** Open comment threads over every line review, for the Reviews count. */
 function useOpenReviews(client: Client) {
   const revision = useReviewRevisions().any;
@@ -145,6 +159,8 @@ function Dashboard({subPath}: {subPath: string}) {
   const settingValues = useSettings().values;
   const historyGraph = settingValues?.historyGraph !== false;
   const overview = useOverviewApi(copies);
+  const categories = useCopyCategories(projects, copies);
+  const groups = useMemo(() => new Map(copies.map(copy => [copy.id, repositoryKey(copy)])), [copies]);
   const reviewRevisions = useReviewRevisions();
   const reviewRevision = reviewRevisions.any;
   const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
@@ -225,6 +241,10 @@ function Dashboard({subPath}: {subPath: string}) {
     issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
     issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),
     issueConfirm: async previewId => okValue(await client.call("issueConfirm",{previewId})),
+    issueAsk: async ref => {
+      const {prompt,projectId} = okValue(await client.call("issueCompose",ref));
+      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
+    },
   }), [client,navigate]);
   const [order,setOrder] = useState<InboxItem[]>([]);
   const [alerts,setAlerts] = useState<AlertSummary|null>(null);
@@ -285,7 +305,7 @@ function Dashboard({subPath}: {subPath: string}) {
     </> : subPath === "catalog" ? <>
       <CatalogPage api={catalogApi} hosts={hosts}/>
     </> : subPath === "" ? <>
-      <OverviewPage api={overview} ready={loaded} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
+      <OverviewPage api={overview} ready={loaded} categories={categories} groups={groups} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
     </> : subPath === "connections" ? <>
       <ConnectionsPage api={api} title={t("section.connections")} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
@@ -294,17 +314,16 @@ function Dashboard({subPath}: {subPath: string}) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
-    </> : <ProjectWorkspace copies={copies} hosts={hosts} projects={projects} locations={locations} subPath={subPath === "projects" ? "" : subPath}
-      loaded={loaded} error={error} api={api} onOpen={open} title={t("section.projects")} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
+    </> : subPath === "projects" || subPath.startsWith("project/") ? <>
+      <ProjectsRoute subPath={subPath} copies={copies} projects={projects} hosts={hosts} locations={locations} loaded={loaded} overview={overview} open={open}/>
+    </> : <ProjectWorkspace copies={copies} hosts={hosts} subPath={subPath}
+      loaded={loaded} error={error} api={api} onOpen={open} historyGraph={historyGraph} reviewRevisions={reviewRevisions.byCopy}
       onOpenIssue={(accountId,repo,number) => open(refPath("issue",{accountId,repo,number}))}
       onAttach={async (hostId,root,projectId) => {
         const result = await client.call("attach",{hostId,root,projectId});
         return result.ok ? result.value : failed(result);
       }}
-      onClone={async (hostId,source,destination,projectId) => {
-        const result = await client.call("cloneLocal",{hostId,source,destination,projectId});
-        return result.ok ? result.value : failed(result);
-      }}
+      renderHead={copy => <BoundHead key={copy.id} copy={copy} client={client}/>}
       renderWorktree={(copy,host,attach) => <BoundWorktree key={copy.id} copy={copy} client={client} host={host} attach={attach}
         pin={() => panel.openTab({tab:{...tab,context:{kind:"nav-panel",panelId:"git"}},params:{copyId:copy.id},title:copy.repositoryName})}/> }/>}
   </div></div>;
