@@ -47,7 +47,13 @@ function rig() {
   };
   const runner = new JobRunner({ store, provider, now: planner.now, uuid: planner.uuid, onEvent: () => {} });
   const ops = createOperations({
-    endpoints: { prepare: async () => {}, provider } as unknown as Endpoints,
+    endpoints: {
+      prepare: async () => {}, provider,
+      list: async () => [
+        { id: "host:abc", provider: "local", label: "Mac", machine: "Mac", hostId: "abc", readOnly: false, caseSensitive: true },
+        { id: ARCHIVE, provider: "archive", label: "secret-plans.zip", machine: "server", hostId: null, readOnly: true, caseSensitive: true },
+      ],
+    } as unknown as Endpoints,
     runner, store, planner, scans: {} as ScanRunner, grants: createAgentGrants(pluginKv), kv: pluginKv,
     publish: () => {}, ready: async () => {}, isManaged: () => false, archives,
   });
@@ -170,4 +176,14 @@ test("the estimate pool is bounded", async () => {
 test("a missing archive file or a directory is refused before any estimate", async () => {
   const { ops } = rig();
   await expect(ops.archiveOpen({ source: ref(SFTP, "/missing.zip"), estimateOnly: true }, owner, signal)).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("an agent's endpoint list never shows an open archive or its name; the owner's does", async () => {
+  const { ops, kv } = rig();
+  kv.set("agent-grants", [{ threadId: "thread-a", endpoint: "*", scope: parsePosix("/"), permissions: ["observe", "read"] }]);
+  const shown = await ops.endpointsList(agent, signal);
+  expect(shown.endpoints.map((e) => e.id)).toEqual(["host:abc"]);
+  expect(JSON.stringify(shown)).not.toContain("secret-plans");
+  const mine = await ops.endpointsList(owner, signal);
+  expect(mine.endpoints.map((e) => e.id)).toEqual(["host:abc", ARCHIVE]);
 });

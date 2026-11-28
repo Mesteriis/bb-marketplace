@@ -555,7 +555,8 @@ export function createOperations(deps: {
       const endpointsList = await endpoints.list(signal);
       if (initiator.kind === "owner") return { endpoints: endpointsList };
       const rows = await grants.forThread(initiator.threadId);
-      return { endpoints: endpointsList.filter(({ id }) => rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
+      // S14a: an agent never sees an archive endpoint or an archive's name, whatever its grants say.
+      return { endpoints: endpointsList.filter(({ id }) => !id.startsWith("archive:") && rows.some((grant) => grant.endpoint === id || grant.endpoint === "*")) };
     },
     async home(id: string, signal: AbortSignal) {
       await endpoints.prepare([id], signal);
