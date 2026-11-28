@@ -1,3 +1,5 @@
+// S16
+import { EDIT_SNAPSHOT_ENDPOINT } from "../../core/edit-session.ts";
 import { experimental_PluginRpcCallError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { CommanderError } from "../../core/errors.ts";
 import { EndpointId, type Endpoint } from "../../core/model.ts";
@@ -70,7 +72,7 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
     const endpoints: z.infer<typeof EndpointView>[] = [];
     for (const host of machines) {
       const id = "host:" + host.id;
-      if (!EndpointId.safeParse(id).success) continue;
+      if (id === EDIT_SNAPSHOT_ENDPOINT || !EndpointId.safeParse(id).success) continue;
       const name = bounded(host.name);
       endpoints.push({
         id, provider: "local", hostId: host.id, label: name, machine: name, readOnly: false,

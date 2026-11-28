@@ -9,11 +9,11 @@ import { createSqliteJobStore } from "./job-store-sqlite.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
 // The fixture is a database written by the stage-one code at main@b44884df (six migrations, one running job with
-// a copying checkpoint). It is opened by the current code with migrations 8 and 9 appended.
+// a copying checkpoint). It is opened by the current code with ten migrations.
 const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "testing/fixtures/stage1-b44884df.sqlite");
 const JOB = "123e4567-e89b-42d3-a456-426614174000";
 
-test("stage-one job and checkpoint rows load after migrations 8 and 9, with the stage-one journal untouched", async () => {
+test("stage-one job and checkpoint rows load after ten migrations, with the stage-one journal untouched", async () => {
   const dir = mkdtempSync(join(tmpdir(), "commander-fixture-"));
   const file = join(dir, "stage1.sqlite");
   copyFileSync(FIXTURE, file);
@@ -24,7 +24,7 @@ test("stage-one job and checkpoint rows load after migrations 8 and 9, with the 
     expect(before.map((row) => row.id)).toEqual([0, 1, 2, 3, 4, 5]);
     runPluginStorageMigrations(db, MIGRATIONS);
     const after = journal();
-    expect(after.map((row) => row.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(after.map((row) => row.id)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(after.slice(0, 6)).toEqual(before);
 
     const store = createSqliteJobStore(db);

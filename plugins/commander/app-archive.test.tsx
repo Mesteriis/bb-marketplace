@@ -69,6 +69,7 @@ function mount() {
   (app as unknown as (api: unknown) => void)({ slots: {
     navPanel: ({ component }: { component: ComponentType }) => { Page = component; },
     experimental_tab: () => {},
+    fileOpener: () => {},
   } });
   return render(<Page />);
 }
