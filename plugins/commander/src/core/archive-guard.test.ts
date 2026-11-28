@@ -51,6 +51,12 @@ describe("classifyEntry", () => {
     expect(classifyEntry(entry("hardlink"), { hasPassword: false })).toBe("link_escapes");
     expect(classifyEntry({ kind: "hardlink", name: "d/l", link: "a/../b", encrypted: false }, { hasPassword: false })).toBe("link_not_supported");
   });
+  it("an empty target and an encrypted link are link_escapes, an ordinary x is link_not_supported", () => {
+    const entry = { kind: "symlink" as const, name: "l", encrypted: false };
+    expect(classifyEntry({ ...entry, link: "" }, { hasPassword: false })).toBe("link_escapes");
+    expect(classifyEntry({ ...entry, link: "x", encrypted: true }, { hasPassword: false })).toBe("link_escapes");
+    expect(classifyEntry({ ...entry, link: "x" }, { hasPassword: false })).toBe("link_not_supported");
+  });
   it("a target longer than 4096 bytes, or one that is missing, counts as escaping", () => {
     const at = (link: string) => classifyEntry({ kind: "symlink", name: "l", link, encrypted: false }, { hasPassword: false });
     expect(at("a".repeat(4096))).toBe("link_not_supported");

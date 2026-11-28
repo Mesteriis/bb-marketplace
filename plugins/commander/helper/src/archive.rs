@@ -9,12 +9,12 @@ use crate::tarscan;
 use crate::zipscan::{self, CenInfo};
 use std::fs::File;
 use std::io::Read;
-
-/// The longest symlink target the scan reads to classify it.
-const LINK_TARGET_MAX: u64 = 4096;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use zeroize::Zeroizing;
+
+/// The longest symlink target the scan reads to classify it.
+const LINK_TARGET_MAX: u64 = 4096;
 
 /// Decode buffer: every counter check happens at most this many output bytes apart.
 pub const STEP: usize = 8 * 1024;
