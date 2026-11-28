@@ -1,7 +1,7 @@
 import { crc32 } from "node:zlib";
 
 /** Builds a stored (uncompressed) ZIP in memory for tests. Names are written as given, duplicates allowed. */
-export function storedZip(entries: Array<{ name: string; data?: Uint8Array | string }>): Uint8Array {
+export function storedZip(entries: Array<{ name: string; data?: Uint8Array | string; mode?: number }>): Uint8Array {
   const local: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
@@ -21,13 +21,15 @@ export function storedZip(entries: Array<{ name: string; data?: Uint8Array | str
     const record = Buffer.concat([header, name, data]);
     const dir = Buffer.alloc(46);
     dir.writeUInt32LE(0x02014b50, 0);
-    dir.writeUInt16LE(20, 4);
+    // With a Unix mode the entry is written by a Unix host (made-by 3), so the mode sits in the high external bits.
+    dir.writeUInt16LE(entry.mode === undefined ? 20 : 0x0314, 4);
     dir.writeUInt16LE(20, 6);
     dir.writeUInt16LE(0x0800, 8);
     dir.writeUInt32LE(crc, 16);
     dir.writeUInt32LE(data.length, 20);
     dir.writeUInt32LE(data.length, 24);
     dir.writeUInt16LE(name.length, 28);
+    if (entry.mode !== undefined) dir.writeUInt32LE(((entry.mode << 16) >>> 0), 38);
     dir.writeUInt32LE(offset, 42);
     central.push(Buffer.concat([dir, name]));
     local.push(record);

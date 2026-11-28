@@ -97,6 +97,11 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
     {job.error && <ProblemLine problem={{ code: job.error.code, message: (job.error.reason && archiveReasonText(job.error.code, job.error.reason)) || "" }} />}
+    {job.items.map((item, index) => {
+      const text = item.code && item.reason ? archiveReasonText(item.code, item.reason) : null;
+      const name = text ? job.plan.items[index]?.source?.path.segments.at(-1) : undefined;
+      return text ? <div key={index} className="cm-meta" role="note">{name ? displayPath({ segments: [name] }).replace(/^\//, "") + ": " : ""}{text}</div> : null;
+    })}
     {tempNameHint(job) && <div className="cm-meta" role="note">{tempNameHint(job)}</div>}
     {returnedPendingNote(job) && <div className="cm-meta" role="note">{batchRenameText.returnedPending}</div>}
     {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"

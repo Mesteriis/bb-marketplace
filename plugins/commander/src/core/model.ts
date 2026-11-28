@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CommanderErrorShape } from "./errors.ts";
+import { CommanderErrorShape, ErrorCode, ErrorReason, reasonAllowed } from "./errors.ts";
 import { NameSegment, ResourcePath, canonicalBase64, isAncestorOrSelf } from "./path.ts";
 import { Size, toBig } from "./size.ts";
 
@@ -205,7 +205,11 @@ export const OperationJob = z.object({
   currentItem: z.number().int().min(0).nullable(),
   pendingConflict: Conflict.nullable(),
   awaitsOwner: z.boolean(),               // план агента вне гранта или с удалением: ждёт plan_approve (S7)
-  items: z.array(z.object({ outcome: ItemOutcome, error: z.string().max(500).nullable() }).strict()),
+  // code and reason of a failed item travel as literals (S14: unsupported/link_not_supported), next to the message.
+  items: z.array(z.object({
+    outcome: ItemOutcome, error: z.string().max(500).nullable(), code: ErrorCode.optional(), reason: ErrorReason.optional(),
+  }).strict().refine((item) => item.reason === undefined || (item.code !== undefined && reasonAllowed(item.code, item.reason)),
+    { message: "reason is not allowed for this code" })),
   error: CommanderErrorShape.nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

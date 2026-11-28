@@ -45,6 +45,25 @@ describe("classifyEntry", () => {
     expect(classifyEntry({ kind: "hardlink", name: "h", link: "../x", encrypted: false }, { hasPassword: false })).toBe("link_escapes");
     expect(classifyEntry({ kind: "hardlink", name: "h", link: "x", encrypted: false }, { hasPassword: false })).toBe("link_not_supported");
   });
+  it("counts a hardlink target from the archive root and a symlink target from the entry's directory", () => {
+    const entry = (kind: "symlink" | "hardlink") => ({ kind, name: "d/l", link: "../x", encrypted: false });
+    expect(classifyEntry(entry("symlink"), { hasPassword: false })).toBe("link_not_supported");
+    expect(classifyEntry(entry("hardlink"), { hasPassword: false })).toBe("link_escapes");
+    expect(classifyEntry({ kind: "hardlink", name: "d/l", link: "a/../b", encrypted: false }, { hasPassword: false })).toBe("link_not_supported");
+  });
+  it("an empty target and an encrypted link are link_escapes, an ordinary x is link_not_supported", () => {
+    const entry = { kind: "symlink" as const, name: "l", encrypted: false };
+    expect(classifyEntry({ ...entry, link: "" }, { hasPassword: false })).toBe("link_escapes");
+    expect(classifyEntry({ ...entry, link: "x", encrypted: true }, { hasPassword: false })).toBe("link_escapes");
+    expect(classifyEntry({ ...entry, link: "x" }, { hasPassword: false })).toBe("link_not_supported");
+  });
+  it("a target longer than 4096 bytes, or one that is missing, counts as escaping", () => {
+    const at = (link: string) => classifyEntry({ kind: "symlink", name: "l", link, encrypted: false }, { hasPassword: false });
+    expect(at("a".repeat(4096))).toBe("link_not_supported");
+    expect(at("a".repeat(4097))).toBe("link_escapes");
+    expect(at("/" + "a".repeat(4096))).toBe("link_escapes");
+    expect(classifyEntry({ kind: "symlink", name: "l", encrypted: false }, { hasPassword: false })).toBe("link_escapes");
+  });
   it("refuses special files, unsafe names and encrypted entries without a password", () => {
     expect(classifyEntry({ kind: "special", name: "dev", encrypted: false }, { hasPassword: false })).toBe("special_file");
     expect(classifyEntry({ kind: "file", name: "../x", encrypted: false }, { hasPassword: false })).toBe("unsafe_name");

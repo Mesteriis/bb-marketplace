@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
+/// The longest symlink target the scan reads to classify it.
+const LINK_TARGET_MAX: u64 = 4096;
+
 /// Decode buffer: every counter check happens at most this many output bytes apart.
 pub const STEP: usize = 8 * 1024;
 
@@ -127,19 +130,28 @@ impl OpenArchive {
                 }
                 // One archive per process: the leaked box lives as long as the helper.
                 let ptr = Box::into_raw(Box::new(archive));
-                // Symlink targets decide link_escapes.
+                // Symlink targets decide link_escapes. A target that cannot be classified (longer than 4096 bytes,
+                // encrypted, unreadable) counts as escaping: the conservative answer.
                 for i in 0..index.entries.len() {
                     let e = &index.entries[i];
-                    if e.kind == Kind::Symlink && !e.encrypted && e.size <= 4096 {
+                    if e.kind != Kind::Symlink {
+                        continue;
+                    }
+                    let mut classified = None;
+                    if !e.encrypted && e.size <= LINK_TARGET_MAX {
                         // SAFETY: single-threaded access, no ZipFile alive at this point.
                         let archive = unsafe { &mut *ptr };
                         if let Ok(mut f) = archive.by_index(i) {
                             let mut target = Vec::new();
-                            if f.by_ref().take(4097).read_to_end(&mut target).is_ok() {
-                                let reason = links::classify(&e.name_raw, &target);
-                                index.set_link(i as u32, target, reason);
+                            if f.by_ref().take(LINK_TARGET_MAX + 1).read_to_end(&mut target).is_ok() && target.len() as u64 <= LINK_TARGET_MAX {
+                                let reason = links::classify(&e.name_raw, &target, false);
+                                classified = Some((target, reason));
                             }
                         }
+                    }
+                    match classified {
+                        Some((target, reason)) => index.set_link(i as u32, target, reason),
+                        None => index.set_link(i as u32, Vec::new(), "link_escapes"),
                     }
                 }
                 // Second line: the library's own name check, after our raw-segment check.

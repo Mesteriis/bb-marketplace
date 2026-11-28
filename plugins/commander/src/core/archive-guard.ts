@@ -64,12 +64,14 @@ export interface GuardedEntry {
   encrypted: boolean;
 }
 
-/** Whether a link target, resolved against the entry's directory, leaves the extraction root. */
-function linkEscapes(entryName: NameInput, link: NameInput): boolean {
+/** Whether a link target leaves the extraction root. */
+function linkEscapes(entryName: NameInput, link: NameInput, hard: boolean): boolean {
   const target = decode(link);
-  if (target === null || target.startsWith("/") || target.includes("\\") || /^[A-Za-z]:/.test(target)) return true;
+  // A target that cannot be read as text or is longer than the helper classifies (4096 bytes) counts as escaping.
+  if (target === null || target === "" || new TextEncoder().encode(target).length > 4096 || target.startsWith("/") || target.includes("\\") || /^[A-Za-z]:/.test(target)) return true;
   const entry = split(entryName);
-  const base = "segments" in entry ? entry.segments.slice(0, -1) : [];
+  // A symlink target counts from the directory of the entry, a hardlink target from the archive root.
+  const base = hard || !("segments" in entry) ? [] : entry.segments.slice(0, -1);
   const stack = [...base];
   for (const part of target.split("/")) {
     if (part === "" || part === ".") continue;
@@ -86,7 +88,8 @@ export function classifyEntry(entry: GuardedEntry, opts: { hasPassword: boolean 
   const name = nameRefusal(entry.name);
   if (name !== null) return name;
   if (entry.kind === "symlink" || entry.kind === "hardlink") {
-    return entry.link === undefined || linkEscapes(entry.name, entry.link) ? "link_escapes" : "link_not_supported";
+    // Like the helper: a link without a target, with an empty or an encrypted one cannot be classified, so it escapes.
+    return entry.link === undefined || entry.encrypted || linkEscapes(entry.name, entry.link, entry.kind === "hardlink") ? "link_escapes" : "link_not_supported";
   }
   if (entry.kind === "special") return "special_file";
   if (entry.encrypted && !opts.hasPassword) return "encrypted_no_password";
