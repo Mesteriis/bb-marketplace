@@ -173,6 +173,27 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("====")).toBeNull();
   });
 
+  it("agrees with the character-by-character rule for every character in every position of 4-character texts", () => {
+    const reference = (text: string): number | null => {
+      if (text.length % 4 !== 0) return null;
+      const pad = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+      const body = text.slice(0, text.length - pad);
+      return /^[A-Za-z0-9+/]*$/.test(body) ? (text.length / 4) * 3 - pad : null;
+    };
+    for (const base of ["AAAA", "AAA=", "AA==", "AAAAAAAA", "AAAAAAA=", "AAAAAA=="]) {
+      for (let at = 0; at < base.length; at++) {
+        for (let code = 0; code < 256; code++) {
+          const text = base.slice(0, at) + String.fromCharCode(code) + base.slice(at + 1);
+          expect(base64Bytes(text), JSON.stringify(text)).toBe(reference(text));
+        }
+        for (const char of ["\u0100", "\u2028", "\u00e9"]) {
+          const text = base.slice(0, at) + char + base.slice(at + 1);
+          expect(base64Bytes(text), JSON.stringify(text)).toBe(reference(text));
+        }
+      }
+    }
+  });
+
   it("counts the bytes of a full 4 MiB chunk", () => {
     expect(base64Bytes(encoded(4194304))).toBe(4194304);
   });

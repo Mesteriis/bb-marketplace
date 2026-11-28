@@ -163,6 +163,7 @@ function narrow<K extends SftpOpOutput["op"]>(output: SftpOpOutput, op: K): Extr
 }
 
 function concat(parts: Uint8Array[]): Uint8Array {
+  if (parts.length === 1) return parts[0]!;
   const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
   let offset = 0;
   for (const part of parts) {
@@ -632,7 +633,8 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
             ),
             "read",
           );
-          const chunk = new Uint8Array(Buffer.from(out.data, "base64"));
+          const decoded = Buffer.from(out.data, "base64");
+          const chunk = new Uint8Array(decoded.buffer, decoded.byteOffset, decoded.length);
           if (chunk.length > want) throw commanderError("internal");
           if (chunk.length === 0 && !out.eof) throw commanderError("internal");
           parts.push(chunk);
