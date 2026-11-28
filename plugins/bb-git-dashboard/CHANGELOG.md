@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 — 2026-11-28
+
+Fixes to the scaffolds on a machine with an older uv, and to the CI a new project gets.
+
+- The Python scaffolds' `required-version` is the lowest uv with what their pyproject uses — 0.5.14 (`[tool.uv] package` came in 0.4.0, `[dependency-groups]` in 0.4.27, `required-version` in 0.5.14) — not the version they were checked with (0.13.10), so a project made on a machine with uv 0.12 syncs at once.
+- An empty description leaves no empty paragraph in the README, README.ru.md or AGENTS.md of a new project.
+- The CI templates install uv and Poetry at pinned versions (uv 0.13.10, Poetry 2.5.2), as their actions are pinned.
+- The Gitea stand-in deletes a branch, for the clean-up of the CI templates' live check run against it.
+
 ## 0.15.0 — 2026-11-28
 
 Scaffolds, first of five slices: Python.
