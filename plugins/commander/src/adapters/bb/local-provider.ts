@@ -1,10 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { experimental_PluginRpcCallError, type ExperimentalHostClient } from "@get-bb/plugin-sdk";
 import { CommanderError, CommanderErrorShape } from "../../core/errors.ts";
 import { type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
 import { join, parent, type NameSegment, type ResourcePath } from "../../core/path.ts";
 import { type FileProvider } from "../../core/provider.ts";
 import { fromBig } from "../../core/size.ts";
-import { type HostFsContract, type HostFsInput, type HostFsMethod, type HostFsOutput } from "../../core/wire/host-fs.ts";
+import { CopyCancellationProof, type HostFsContract, type HostFsInput, type HostFsMethod, type HostFsOutput } from "../../core/wire/host-fs.ts";
 
 export type HostFsClient = Pick<ExperimentalHostClient<typeof HostFsContract>, "call">;
 
@@ -20,10 +22,18 @@ type ResultNotice = {
   orphanedTempPath?: ResourcePath;
 };
 
-function translate(method: HostFsMethod, error: unknown, signal?: AbortSignal): CommanderError {
+const confirmedCopyCancellation = () =>
+  new CommanderError("cancelled", "Copy cancelled; destination and staging file are absent");
+
+export function translateHostFsError(method: HostFsMethod, error: unknown, signal?: AbortSignal, operationId?: string): CommanderError {
   if (error instanceof Error && error.message.length <= 4096) {
     try {
-      const shape = CommanderErrorShape.safeParse(JSON.parse(error.message));
+      const reply: unknown = JSON.parse(error.message);
+      if (method === "copyWithin" && operationId) {
+        const proof = CopyCancellationProof.safeParse(reply);
+        if (proof.success && proof.data.copyCancelled === operationId) return confirmedCopyCancellation();
+      }
+      const shape = CommanderErrorShape.safeParse(reply);
       if (shape.success && (shape.data.code !== "cancelled" || !mutations.has(method))) {
         return new CommanderError(shape.data.code, shape.data.message, shape.data.retryable);
       }
@@ -39,6 +49,7 @@ function translate(method: HostFsMethod, error: unknown, signal?: AbortSignal): 
   }
   if (mutations.has(method)) return new CommanderError("outcome_unknown", "Host did not confirm the filesystem operation");
   if (signal?.aborted) return new CommanderError("cancelled", "Host filesystem call cancelled");
+  if (method === "home") return new CommanderError("connection_failed", "Host filesystem is unavailable", true);
   return new CommanderError("connection_failed", "Host filesystem call failed");
 }
 
@@ -58,7 +69,8 @@ export function createLocalProvider(
         ...(hashesFile || longCalls.has(method) ? { timeoutMs: LONG_CALL_TIMEOUT_MS } : {}),
       });
     } catch (error) {
-      throw translate(method, error, signal);
+      const operationId = method === "copyWithin" ? (input as HostFsInput<"copyWithin">).operationId : undefined;
+      throw translateHostFsError(method, error, signal, operationId);
     }
   }
 
@@ -124,7 +136,27 @@ export function createLocalProvider(
       await call("remove", { path, ...opts }, signal, opts.expect?.sha256 !== undefined);
     },
     async copyWithin(from, to, opts, signal) {
-      return fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts }, signal));
+      const operationId = randomUUID();
+      try {
+        return await fingerprintResult("copyWithin", to, await call("copyWithin", { from, to, ...opts, operationId }, signal));
+      } catch (error) {
+        if (signal.aborted && error instanceof CommanderError && error.code === "outcome_unknown") {
+          const proofSignal = AbortSignal.timeout(5000);
+          // BB may wait for the host to settle an aborted RPC. Bound the caller's wait independently.
+          const deadline = new Promise<null>((resolve) =>
+            proofSignal.addEventListener("abort", () => resolve(null), { once: true }));
+          while (!proofSignal.aborted) {
+            const receipt = await Promise.race([
+              call("copyCancelled", { operationId }, proofSignal).catch(() => null),
+              deadline,
+            ]);
+            if (receipt?.status === "confirmed") throw confirmedCopyCancellation();
+            if (receipt?.status !== "pending") break;
+            await delay(50, undefined, { signal: proofSignal }).catch(() => undefined);
+          }
+        }
+        throw error;
+      }
     },
     async sha256(path, signal) { return (await call("sha256", { path }, signal)).hex; },
   } satisfies FileProvider;
