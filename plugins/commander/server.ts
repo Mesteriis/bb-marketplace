@@ -95,8 +95,12 @@ export default function activate(bb: BbPluginApi) {
           await archives?.init(signal);
         } catch {
           // Archives stay off; everything else keeps working.
-          bb.log.warn("Commander archives are unavailable");
           archives = null;
+          try {
+            bb.log.warn("Commander archives are unavailable");
+          } catch {
+            // Logging must not fail the recovery.
+          }
         }
         await ops.prepareRecovery(signal);
         await runner.recover();
