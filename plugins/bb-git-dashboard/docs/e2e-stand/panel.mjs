@@ -114,7 +114,8 @@ try {
     const added = panel.locator(".git-changes-line[data-type='+']").first();
     const numbered = await visible(added, 20000) ? await added.evaluate(row => [row.children[1]?.textContent ?? "", row.children[2]?.textContent ?? ""]) : null;
     check(tag + ": the new file is a numbered diff: one added line, No. 1", numbered?.[0] === "1" && /a line for the panel/.test(numbered?.[1] ?? ""), numbered);
-    check(tag + ": no raw patch is shown", !/diff --git|^@@ -0,0/m.test(await panel.locator(".git-codeview").innerText()));
+    // The hunk's own @@ line belongs to the numbered diff; git's file header lines are the raw patch.
+    check(tag + ": no raw patch is shown", !/^(diff --git|new file mode|index [0-9a-f]+|--- \/dev\/null|\+\+\+ b\/)/m.test(await panel.locator(".git-codeview").innerText()));
     const place = panel.locator(".git-code-place");
     const placeTitle = await place.getAttribute("title").catch(() => "");
     check(tag + ": the copy's place names no host id", !/host_/.test((placeTitle ?? "") + (await place.innerText().catch(() => ""))), placeTitle);
