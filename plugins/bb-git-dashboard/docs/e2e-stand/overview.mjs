@@ -100,6 +100,9 @@ try {
       await page.screenshot({ path: out + "/overview-list-dark.png" });
       await page.getByRole("button", { name: "Board", exact: true }).click();
       await page.getByRole("region", { name: "CI now" }).waitFor({ timeout: 30000 }).catch(() => {});
+      // Merged pull requests come after the rest: the column says it is loading until they are read.
+      await page.getByRole("region", { name: "Merged this week" }).getByRole("status").waitFor({ state: "detached", timeout: 30000 }).catch(() => {});
+      check("dark: merged pull requests are on the board once read", await visible(page.getByRole("region", { name: "Merged this week" }).getByText("Initial import")));
       await page.screenshot({ path: out + "/overview-board-dark.png" });
       await page.getByRole("button", { name: "List", exact: true }).click();
       await page.waitForTimeout(1500);

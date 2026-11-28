@@ -102,7 +102,7 @@ export function OverviewPage({api, initialView, ready}: {api: OverviewApi; initi
         <List items={items} current={current} now={now} onSelect={setSelected} onOpen={item => { const target = targetOf(item); if (target) api.open(target); }}/>
         {current && <Details item={current} api={api}/>}
       </div>)}
-    {data && view === "board" && <Board data={data} merged={merged ?? []} now={now} api={api}/>}
+    {data && view === "board" && <Board data={data} merged={merged ?? []} mergedLoading={merged === undefined} now={now} api={api}/>}
   </div>;
 }
 
@@ -196,7 +196,9 @@ function Details({item, api}: {item: OverviewItem; api: OverviewApi}) {
   </aside>;
 }
 
-function Board({data, merged, now, api}: {data: OverviewData; merged: InboxPr[]; now: number; api: OverviewApi}) {
+function Board({data, merged, mergedLoading, now, api}: {data: OverviewData; merged: InboxPr[];
+  /** Merged pull requests are still being read: their column says so rather than "nothing here". */
+  mergedLoading: boolean; now: number; api: OverviewApi}) {
   const t = useT();
   const {language} = useLanguage();
   const stages = useMemo(() => overviewStages({...data.input, merged}), [data, merged]);
@@ -222,7 +224,7 @@ function Board({data, merged, now, api}: {data: OverviewData; merged: InboxPr[];
       {columns.map(([label, cards, old]) => <section key={label} className="git-overview-column" aria-label={t(label)}>
         <h2 className="git-overview-column-head">{t(label)} <span className="g-num g-muted">{cards.length}</span></h2>
         {cards.length ? <ul>{cards.map(card => <Card key={card.key} card={card} old={old} now={now} api={api}/>)}</ul>
-          : <p className="g-muted">{t("ov.stage.none")}</p>}
+          : <p className="g-muted" role={old && mergedLoading ? "status" : undefined}>{t(old && mergedLoading ? "common.loading" : "ov.stage.none")}</p>}
       </section>)}
     </div>
   </div>;
