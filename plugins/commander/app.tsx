@@ -76,7 +76,9 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
   const second = endpoints.find((endpoint) => endpoint.id !== preferred?.id) ?? preferred;
   const initialize = async (pane: Side, source: EndpointView | undefined, threadPath?: string) => {
     const existing = activeTab(state, pane);
-    if (existing && endpoints.some((item) => item.id === existing.endpoint)) return state[pane];
+    // A saved archive panel stays even when its endpoint is not listed (the copy is gone after a restart): the
+    // panel asks the owner for a new estimate instead of being replaced by a home directory.
+    if (existing && (existing.endpoint.startsWith("archive:") || endpoints.some((item) => item.id === existing.endpoint))) return state[pane];
     if (!source) return emptyState[pane];
     let path;
     if (threadPath) path = parsePosix(threadPath);
