@@ -21,6 +21,8 @@ const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
 const until = async (condition, timeout = 20000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 300)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
+// The review's View ▾ menu holds the switches and the rarer actions.
+const viewMenu = async (review, item) => { await review.getByRole("button", { name: "View", exact: true }).click(); await review.getByRole("menuitem", { name: item, exact: true }).click(); };
 try {
   writeFileSync(join(stand, "home/projects/beta/README.md"), "a\nfirst run line\nsecond run line\n");
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -37,8 +39,8 @@ try {
   let review = await openReview();
 
   await review.getByRole("button", { name: "AI review" }).click();
-  const dialog = review.getByRole("group", { name: "AI review" });
-  check("AI review offers review or summary with focuses", await visible(dialog.getByRole("button", { name: "Summarize" }))
+  const dialog = review.getByRole("dialog", { name: "AI review" });
+  check("AI review is a dialog: review or summary, with focuses", await visible(dialog.getByRole("button", { name: "Summary" }))
     && await dialog.getByRole("group", { name: /Focus/ }).getByRole("button").count() === 6);
   await until(async () => await dialog.getByText("Loading the providers…").count() === 0);
   const start = dialog.getByRole("button", { name: "Start review" });
@@ -59,11 +61,11 @@ try {
   const runs = review.getByRole("region", { name: "AI runs" });
   check("the run is listed in the review", await until(async () => {
     if (await runs.getByText(/^AI review/).count() > 0) return true;
-    await review.getByRole("button", { name: "Reload" }).click().catch(() => {});
+    await viewMenu(review, "Reload").catch(() => {});
     return false;
   }, 30000));
   const row = runs.locator(".git-code-review-run").first();
-  const status = await row.locator(".git-review-tag").innerText().catch(() => "");
+  const status = await row.locator(".g-chip").first().innerText().catch(() => "");
   check("the run has a thread and a state", await visible(row.getByRole("button", { name: "Open thread" })), status);
   await page.screenshot({ path: out + "/code-review-runs.png", fullPage: true });
 

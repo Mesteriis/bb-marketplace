@@ -100,3 +100,14 @@ describe("dayGroups across a daylight-saving change", () => {
     assert.deepEqual(groups.map(group => group.label), ["Today", "2026-07-02"]);
   });
 });
+
+it("Only current keeps the loaded commits reachable from HEAD, in their order", async () => {
+  const { reachableFromHead } = await import("../src/core/history/view.ts");
+  const commit = (hash: string, parents: string[], head = false) => ({hash, parents, authorName: "a", authorEmail: "a@example.invalid", authorDate: "2026-11-27T10:00:00Z",
+    committerDate: "2026-11-27T10:00:00Z", subject: hash, refs: head ? [{fullName: "refs/heads/feature", name: "feature", kind: "local" as const, isHead: true}] : []});
+  // side is another branch's tip; m is a merge of f1 and main's m1; root is shared.
+  const commits = [commit("side", ["m1"]), commit("f2", ["m"], true), commit("m", ["f1", "m1"]), commit("m1", ["root"]), commit("f1", ["root"]), commit("root", [])];
+  assert.deepEqual(reachableFromHead(commits).map(item => item.hash), ["f2", "m", "m1", "f1", "root"]);
+  // Without a HEAD among them (detached, or not loaded yet) nothing is hidden.
+  assert.deepEqual(reachableFromHead(commits.slice(2)).map(item => item.hash), ["m", "m1", "f1", "root"]);
+});

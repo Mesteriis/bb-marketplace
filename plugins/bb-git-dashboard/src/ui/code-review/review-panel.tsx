@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent }
 import { PATCH_BATCH, withPatches, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import { keepView, readView, viewScope, type ViewStorage } from "../../core/code-review/view-memory.ts";
 import { parseRange, rangeText } from "../../core/code-review/git-spec.ts";
-import { describeTarget, GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
+import { GENERAL_PATH, type ReviewRun, type TargetRequest } from "../../core/code-review/model.ts";
+import { changeRevision } from "../../core/code-review/diff.ts";
+import type { MessageKey } from "../../core/i18n/dictionary.ts";
+import { targetWords } from "../../core/code-review/target-words.ts";
+import { useT } from "../i18n/use-t.tsx";
+import { Dialog } from "../system/dialog.tsx";
+import { Icon } from "../system/icon.tsx";
+import { MenuButton } from "../system/menu.tsx";
 import type { ExplainPlace } from "../../core/code-review/run-prompts.ts";
 import { AiReviewForm, RunList } from "./ai-runs.tsx";
 import { KeptContext, useKeptState } from "./kept-state.tsx";
@@ -18,18 +25,18 @@ import { Composer, ThreadCard } from "./thread-card.tsx";
 import "./code-review.css";
 
 type Kind = TargetRequest["kind"];
-const kinds: {kind: Kind; label: string}[] = [
-  {kind: "uncommitted", label: "Uncommitted changes"}, {kind: "staged", label: "Staged"}, {kind: "unstaged", label: "Unstaged"},
-  {kind: "branch", label: "Branch commits since base"}, {kind: "all", label: "All changes since base"}, {kind: "commit", label: "A commit"}, {kind: "range", label: "A range"},
-  {kind: "files", label: "Any file"},
+const kindKeys: {kind: Kind; key: MessageKey}[] = [
+  {kind: "uncommitted", key: "cr.k.uncommitted"}, {kind: "staged", key: "cr.k.staged"}, {kind: "unstaged", key: "cr.k.unstaged"},
+  {kind: "branch", key: "cr.k.branch"}, {kind: "all", key: "cr.k.all"}, {kind: "commit", key: "cr.k.commit"}, {kind: "range", key: "cr.k.range"},
+  {kind: "files", key: "cr.k.files"},
 ];
 const workingViews = new Set<Kind>(["uncommitted", "unstaged", "all", "files"]);
 
 /** The view the picker's fields describe, or an error to show instead of reading it. */
-function request(kind: Kind, base: string, sha: string, range: string): TargetRequest | string {
+function request(kind: Kind, base: string, sha: string, range: string, t: (key: MessageKey) => string): TargetRequest | string {
   if (kind === "branch" || kind === "all") return base.trim() ? {kind, base: base.trim()} : {kind};
-  if (kind === "commit") return /^[0-9a-f]{7,64}$/i.test(sha.trim()) ? {kind, sha: sha.trim()} : "Enter a commit hash of 7 to 64 hex characters.";
-  if (kind === "range") return parseRange(range) ?? "Enter a range as a..b or a...b.";
+  if (kind === "commit") return /^[0-9a-f]{7,64}$/i.test(sha.trim()) ? {kind, sha: sha.trim()} : t("cr.need-sha");
+  if (kind === "range") return parseRange(range) ?? t("cr.need-range");
   return {kind};
 }
 
@@ -40,6 +47,8 @@ function request(kind: Kind, base: string, sha: string, range: string): TargetRe
 export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile}: {api: CodeReviewApi; copyId: string; currentThreadId?: string; revision: number;
   /** A file to go to once the view shows (`bb git-dashboard review open`). */
   initialFile?: string}) {
+  const t = useT();
+  const kinds = kindKeys.map(item => ({kind: item.kind, label: t(item.key)}));
   const scope = viewScope(copyId, currentThreadId);
   // What this tab or copy kept from the last visit; read once, as the starting state.
   const [kept] = useState(() => readView(browserStorage(), scope));
@@ -160,28 +169,34 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
   }, [api, sessionId, revision, reload]);
   const choose = (next: Kind) => {
     setKind(next);
-    const asked = request(next, base, sha, range);
+    const asked = request(next, base, sha, range, t);
     if (typeof asked !== "string") { setAuto(false); setApplied(asked); }
   };
   const show = () => {
-    const asked = request(kind, base, sha, range);
+    const asked = request(kind, base, sha, range, t);
     if (typeof asked === "string") setError(asked); else { setError(""); setAuto(false); setApplied(asked); }
   };
+  // A mark on its way keeps its box still, so quick clicks do not race each other to the server.
+  const [marking, setMarking] = useState<ReadonlySet<string>>(new Set());
   const markViewed = async (path: string, revision: string, on: boolean) => {
-    if (!view) return;
+    if (!view || marking.has(path)) return;
+    setMarking(current => new Set(current).add(path));
     const mark = (viewed: boolean) => setView(current => current && {...current, files: current.files.map(file => file.path === path ? {...file, viewed} : file)});
     // The box turns at once; a mark the server refuses turns back.
     mark(on);
     try { await api.setViewed(view.sessionId, path, revision, on); }
-    catch (cause) { mark(!on); setStatus("Could not mark " + path + ": " + message(cause)); }
+    catch (cause) { mark(!on); setStatus(t("cr.not-marked", {path, error: message(cause)})); }
+    finally { setMarking(current => { const next = new Set(current); next.delete(path); return next; }); }
   };
+  const [clearingNow, setClearingNow] = useState(false);
   const clear = async () => {
-    if (!view) return;
+    if (!view || clearingNow) return;
+    setClearingNow(true);
     try {
       const {deletedThreads, closedRuns} = await api.clear(view.sessionId);
-      setStatus("Cleared " + deletedThreads + " comment thread" + (deletedThreads === 1 ? "" : "s") + (closedRuns ? " and closed " + closedRuns + " AI run" + (closedRuns === 1 ? "" : "s") : "") + ".");
-    } catch (cause) { setStatus("Could not clear the review: " + message(cause)); }
-    setClearing(false);
+      setStatus(t("cr.cleared", {n: deletedThreads}) + (closedRuns ? " " + t("cr.closed-runs", {n: closedRuns}) : ""));
+    } catch (cause) { setStatus(t("cr.not-cleared", {error: message(cause)})); }
+    setClearing(false); setClearingNow(false);
     refresh();
   };
   const create = async (thread: NewThread) => {
@@ -197,9 +212,8 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
     setStatus(""); setExplaining(true);
     try {
       const run = await api.startExplain(view.sessionId, place, viewer);
-      setStatus(run.status === "running" ? "Explanation started; it appears here as a comment."
-        : run.summary ?? "The explanation was not started.");
-    } catch (cause) { setStatus("Could not start the explanation: " + message(cause)); }
+      setStatus(run.status === "running" ? t("cr.explaining") : run.summary ?? t("cr.not-explained"));
+    } catch (cause) { setStatus(t("cr.explain-failed", {error: message(cause)})); }
     finally { setExplaining(false); }
     refresh();
   };
@@ -273,7 +287,7 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
     wentTo.current = true;
     if (view.target.kind === "files" && !view.files.some(file => file.path === initialFile)) void openFile(initialFile).catch(cause => setStatus(message(cause)));
     else if (view.files.some(file => file.path === initialFile)) reach(initialFile, `section[data-path="${CSS.escape(initialFile)}"]`);
-    else setStatus(initialFile + " is not in this view.");
+    else setStatus(t("cr.not-in-view", {path: initialFile}));
   });
   useReviewCommands(currentThreadId ?? "copy:" + copyId, (command: ReviewCommand) => {
     const actions: Record<ReviewCommand, () => void> = {
@@ -293,91 +307,127 @@ export function ReviewPanel({api, copyId, currentThreadId, revision, initialFile
     if (event.key === "f") { event.preventDefault(); setFinding(true); }
     if (event.key === "p") { event.preventDefault(); setGoingTo(true); }
   };
-  return <KeptContext.Provider value={keptState.kept}><section ref={root} onKeyDown={keys} className="git-project-code git-stack git-code-review" aria-label="Review" data-palette={view?.colorBlind ? "color-blind" : undefined}>
-    <div className="git-row git-code-review-bar">
-      <select aria-label="What to review" value={kind} onChange={event => choose(event.target.value as Kind)}>
+  const additions = view?.files.reduce((sum, file) => sum + file.additions, 0) ?? 0;
+  const deletions = view?.files.reduce((sum, file) => sum + file.deletions, 0) ?? 0;
+  const openIn = (path: string) => threads.filter(thread => thread.filePath === path && thread.status === "open").length;
+  const goToFile = (path: string) => reach(path, `section[data-path="${CSS.escape(path)}"]`);
+  return <KeptContext.Provider value={keptState.kept}><section ref={root} onKeyDown={keys} className="git-code-review" aria-label={t("pg.tab.review")} data-palette={view?.colorBlind ? "color-blind" : undefined}>
+    <div className="git-cr-bar">
+      <select className="g-inp" aria-label={t("cr.what")} value={kind} onChange={event => choose(event.target.value as Kind)}>
         {kinds.map(item => <option key={item.kind} value={item.kind}>{item.label}</option>)}</select>
-      {(kind === "branch" || kind === "all") && <input aria-label="Base branch" placeholder="default branch" value={base}
+      {(kind === "branch" || kind === "all") && <input className="g-inp" aria-label={t("cr.base")} placeholder={t("cr.base-hint")} value={base}
         onChange={event => setBase(event.target.value)} onKeyDown={event => { if (event.key === "Enter") show(); }}/>}
-      {kind === "commit" && commits.length > 0 && <select aria-label="Commit" value={commits.some(commit => commit.sha === sha) ? sha : ""}
+      {kind === "commit" && commits.length > 0 && <select className="g-inp" aria-label={t("cr.commit")} value={commits.some(commit => commit.sha === sha) ? sha : ""}
         onChange={event => { setSha(event.target.value); setError(""); setAuto(false); if (event.target.value) setApplied({kind: "commit", sha: event.target.value}); }}>
-        <option value="">Recent commits…</option>
+        <option value="">{t("cr.recent")}</option>
         {commits.map(commit => <option key={commit.sha} value={commit.sha}>{commit.sha.slice(0, 7)} {commit.subject}</option>)}</select>}
-      {kind === "commit" && <input aria-label="Commit hash" placeholder="commit hash" value={sha}
+      {kind === "commit" && <input className="g-inp" aria-label={t("cr.sha")} placeholder={t("cr.sha-hint")} value={sha}
         onChange={event => setSha(event.target.value)} onKeyDown={event => { if (event.key === "Enter") show(); }}/>}
-      {kind === "range" && <input aria-label="Range" placeholder="main...HEAD" value={range}
+      {kind === "range" && <input className="g-inp" aria-label={t("cr.range")} placeholder="main...HEAD" value={range}
         onChange={event => setRange(event.target.value)} onKeyDown={event => { if (event.key === "Enter") show(); }}/>}
-      {(kind === "branch" || kind === "all" || kind === "commit" || kind === "range") && <button type="button" onClick={show}>Show</button>}
-      <span className="git-ci-spacer"/>
-      <label><input type="checkbox" checked={ignoreWhitespace} onChange={event => setIgnoreWhitespace(event.target.checked)}/> Hide whitespace</label>
-      <label><input type="checkbox" checked={onlyCommented} onChange={event => setOnlyCommented(event.target.checked)}/> Only files with comments</label>
-      <label><input type="checkbox" checked={wrap} onChange={event => setWrap(event.target.checked)}/> Wrap lines</label>
-      <label><input type="checkbox" checked={split} onChange={event => setSplit(event.target.checked)}/> Side by side</label>
-      <button type="button" onClick={refresh} disabled={loading}>{loading ? "Loading…" : "Reload"}</button>
+      {(kind === "branch" || kind === "all" || kind === "commit" || kind === "range") && <button type="button" className="g-btn" onClick={show}>{t("cr.show")}</button>}
+      {view && <span className="g-muted git-cr-sum" title={(() => { const words = targetWords(view.target); return t(words.key, words.values); })()}>
+        {view.target.kind !== "uncommitted" && view.target.kind !== "staged" && view.target.kind !== "unstaged" && view.target.kind !== "files"
+          ? (() => { const words = targetWords(view.target); return t(words.key, words.values) + " · "; })() : ""}{t("hs.files", {n: view.files.length})} · <span className="g-good">+{additions}</span> <span className="g-bad">−{deletions}</span>
+        {view.ignored ? " · " + t("cr.ignored", {n: view.ignored}) : ""}{view.truncated ? " · " + t("cr.cut") : ""}</span>}
+      <div className="g-seg" role="group" aria-label={t("cr.style")}>
+        <button type="button" aria-pressed={!split} onClick={() => setSplit(false)}>{t("cr.unified")}</button>
+        <button type="button" aria-pressed={split} onClick={() => setSplit(true)}>{t("cr.split")}</button>
+      </div>
+      <MenuButton label={t("cr.view")} className="g-btn ghost" entries={[
+        {kind: "check", label: t("cr.whitespace"), checked: ignoreWhitespace, onChange: setIgnoreWhitespace},
+        {kind: "check", label: t("cr.only-commented"), checked: onlyCommented, onChange: setOnlyCommented},
+        {kind: "check", label: t("pr.wrap"), checked: wrap, onChange: setWrap},
+        {kind: "separator"},
+        {kind: "item", label: t("cr.prev-comment"), disabled: !order.length, onSelect: () => stepComment(-1)},
+        {kind: "item", label: t("cr.next-comment"), disabled: !order.length, onSelect: () => stepComment(1)},
+        {kind: "item", label: t("cr.go-to"), disabled: !view, onSelect: () => setGoingTo(true)},
+        {kind: "item", label: t("cr.comment-diff"), disabled: !view, onSelect: () => setGeneral(true)},
+        {kind: "separator"},
+        {kind: "item", label: loading ? t("common.loading") : t("cr.reload"), disabled: loading, onSelect: refresh},
+        {kind: "item", label: t("cr.clear"), disabled: !threads.length && !runs.length, onSelect: () => setClearing(true)},
+      ]}/>
+      <button type="button" className="g-btn ghost" aria-expanded={finding} onClick={() => setFinding(value => !value)}><Icon name="Search" small/>{t("cr.find")}</button>
+      <span className="git-cr-end">
+        <button type="button" className="g-btn" aria-haspopup="dialog" disabled={!view?.files.length} onClick={() => setReviewing(true)}><Icon name="AiBrain01" small/>{t("cr.ai")}</button>
+        <button type="button" className="g-btn pri" aria-expanded={sending} disabled={!open} aria-label={t("cr.send-n", {n: open})}
+          onClick={() => setSending(value => !value)}><Icon name="Sent" small/>{t("cr.send")} <span className="g-num">{open}</span></button>
+      </span>
     </div>
-    {view && <div className="git-row git-code-review-bar">
-      <span className="git-muted">{describeTarget(view.target)}{view.target.kind === "range" ? " (" + rangeText(view.target) + ")" : ""} · {view.files.length} file{view.files.length === 1 ? "" : "s"}
-        {" "}· +{view.files.reduce((sum, file) => sum + file.additions, 0)} −{view.files.reduce((sum, file) => sum + file.deletions, 0)}
-        {view.ignored ? " · " + view.ignored + " ignored" : ""}{view.truncated ? " · the diff was cut short" : ""}</span>
-      <span className="git-ci-spacer"/>
-      <button type="button" aria-label="Previous comment" disabled={!order.length} onClick={() => stepComment(-1)}>↑ Comment</button>
-      <button type="button" aria-label="Next comment" disabled={!order.length} onClick={() => stepComment(1)}>↓ Comment</button>
-      <button type="button" aria-expanded={finding} onClick={() => setFinding(value => !value)}>Find</button>
-      <button type="button" aria-expanded={goingTo} onClick={() => setGoingTo(value => !value)}>Go to</button>
-      <button type="button" aria-expanded={general} onClick={() => setGeneral(value => !value)}>Comment on the diff</button>
-      <button type="button" aria-expanded={reviewing} disabled={!view.files.length} onClick={() => setReviewing(value => !value)}>AI review</button>
-      <button type="button" aria-expanded={clearing} disabled={!threads.length && !runs.length} onClick={() => setClearing(value => !value)}>Clear review</button>
-      <button type="button" className="git-primary" aria-expanded={sending} disabled={!open} onClick={() => setSending(value => !value)}>Send to agent ({open})</button>
-    </div>}
     {view && finding && <FindBar query={query} matchCase={matchCase} count={matches.length} current={matchIndex}
       onQuery={value => { setQuery(value); setMatchIndex(-1); }} onMatchCase={value => { setMatchCase(value); setMatchIndex(-1); }} onStep={stepMatch}
       onClose={() => { setFinding(false); setMatchIndex(-1); }}/>}
     {view && goingTo && <GoToDialog items={goToItems(view.files, threads, kinds, goToQuery)} onQuery={setGoToQuery} onPick={goTo}
       onClose={() => setGoingTo(false)}/>}
-    {status && <p className="git-muted" role="status">{status}</p>}
-    {error && <p className="git-error" role="alert">{error}</p>}
-    {!view && !error && <p className="git-muted" role="status">Reading the diff…</p>}
-    {view && clearing && <div className="git-ci-threads git-stack" role="alertdialog" aria-label="Clear review">
-      <p>Delete all {threads.length} comment thread{threads.length === 1 ? "" : "s"} of this view{runs.length ? " and close its " + runs.length + " AI run" + (runs.length === 1 ? "" : "s") + ", archiving their threads" : ""}? This cannot be undone.</p>
-      <div className="git-row">
-        <button type="button" className="git-danger" onClick={() => void clear()}>Clear review</button>
-        <button type="button" autoFocus onClick={() => setClearing(false)}>Cancel</button>
-      </div>
-    </div>}
+    {status && <p className="git-ci-status g-muted" role="status">{status}</p>}
+    {error && <div className="g-banner bad" role="alert">{error}</div>}
+    {!view && !error && <p className="g-state-page" role="status">{t("cr.reading")}</p>}
+    {view && clearing && <Dialog title={t("cr.clear-title")} busy={clearingNow} onClose={() => setClearing(false)} actions={<>
+      <button type="button" className="g-btn" autoFocus disabled={clearingNow} onClick={() => setClearing(false)}>{t("common.cancel")}</button>
+      <button type="button" className="g-btn pri git-danger" disabled={clearingNow} onClick={() => void clear()}>{t("cr.clear-do")}</button>
+    </>}><p>{t("cr.clear-text", {n: threads.length}) + (runs.length ? " " + t("cr.clear-runs", {n: runs.length}) : "")}</p></Dialog>}
     {view && <RunList api={api} runs={runs} onClosed={refresh}/>}
     {view && reviewing && <AiReviewForm api={api} copyId={copyId} sessionId={view.sessionId} viewer={viewer} onClose={() => setReviewing(false)}
       onStarted={(_run, text) => { setReviewing(false); setStatus(text); refresh(); }}/>}
     {view && sending && <SendForm api={api} copyId={copyId} sessionId={view.sessionId} threads={threads} currentThreadId={currentThreadId}
       onClose={() => setSending(false)} onSent={text => { setSending(false); setStatus(text); refresh(); }}/>}
-    {view && (general || generalThreads.length > 0) && <section className="git-stack" aria-label="About the whole diff">
-      <h3>About the whole diff</h3>
-      {general && <Composer label="Comment on the whole diff" withSeverity submitLabel="Comment" onCancel={() => setGeneral(false)} draftKey="general"
-        onSubmit={async (body, severity) => { await create({filePath: GENERAL_PATH, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setGeneral(false); }}/>}
-      {generalThreads.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false}/>)}
-    </section>}
-    {view && outdated.length > 0 && <section className="git-stack" aria-label="Not on the current diff">
-      <h3>Not on the current diff</h3>
-      <p className="git-muted">The lines these threads were made on changed or left this view.</p>
-      {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
-    </section>}
-    {view && keptState.ready && orphans.length > 0 && <section className="git-stack" aria-label="Unsent comments on files not in this view">
-      <h3>Unsent comments on files not in this view</h3>
-      <p className="git-muted">Kept from an earlier visit; their files are not in this view now.</p>
-      <ul className="git-stack">{orphans.map(orphan => <li key={orphan.key} className="git-row">
-        <span className="git-path">{orphan.path}</span><span className="git-muted">{orphan.draft.body.split("\n")[0].slice(0, 100)}</span>
-        <span className="git-ci-spacer"/>
-        <button type="button" onClick={() => keptState.kept.setDraft(orphan.key, null)}>Discard</button>
-      </li>)}</ul>
-    </section>}
-    {view?.target.kind === "files" && <FileSearch search={search} onPick={openFile}/>}
-    {view && !files.length && <p className="git-muted">{view.target.kind === "files" ? "Find a file to show and comment on it." : view.target.kind === "uncommitted" ? "No uncommitted changes." : "Nothing changed in this view."}</p>}
-    {view && keptState.ready && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
-      patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
-      onViewed={(revision, on) => markViewed(file.path, revision, on)} hunksPickable={!ignoreWhitespace}
-      onRevert={view.target.kind === "uncommitted" && !ignoreWhitespace ? async (revision, hunks) => { await api.revert(view.sessionId, file.path, revision, hunks); refresh(); } : undefined}
-      onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
-      found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
-      threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
+    {view && <div className="git-cr-body">
+      <nav className="git-cr-files" aria-label={t("cr.files")}>
+        <div className="git-cr-files-head"><span className="g-sec">{t("cr.files")}</span><span className="g-muted">{t("cr.viewed-hint")}</span></div>
+        <ul>{files.map(file => {
+          const slash = file.path.lastIndexOf("/");
+          const count = openIn(file.path);
+          return <li key={file.path}>
+            {!file.deferred && !file.whole && <input type="checkbox" aria-label={t("cr.viewed-file", {path: file.path})} checked={file.viewed === true} disabled={marking.has(file.path)}
+              onChange={event => void markViewed(file.path, changeRevision(file), event.target.checked)}/>}
+            <button type="button" title={file.path} onClick={() => goToFile(file.path)}>
+              <span className="git-cr-path"><span className="g-muted">{file.path.slice(0, slash + 1)}</span>{file.path.slice(slash + 1)}</span>
+              {count > 0 && <span className="g-chip warn" aria-label={t("pr.open-threads", {n: count})}>{count}</span>}
+              {file.binary ? <span className="g-muted">{t("hs.binary")}</span> : <span className="g-num">
+                {file.additions > 0 && <span className="g-good">+{file.additions}</span>} {file.deletions > 0 && <span className="g-bad">−{file.deletions}</span>}</span>}
+            </button>
+          </li>;
+        })}</ul>
+        {outdated.length > 0 && <>
+          <div className="git-cr-files-head"><span className="g-sec">{t("cr.outdated")} <span className="g-num">{outdated.length}</span></span></div>
+          <ul>{outdated.map(thread => <li key={thread.id} className="git-cr-outdated">
+            <span className="git-cr-path">{thread.filePath}{thread.startLine ? ":" + thread.startLine : ""}</span>
+            <span className="g-chip warn">{t("cr.outdated-chip")}</span>
+            <button type="button" className="g-btn ghost sm" onClick={() => { setCommentAt(thread.id); reach(null, `[data-thread-id="${CSS.escape(thread.id)}"]`); }}>{t("cr.show")}</button>
+          </li>)}</ul>
+        </>}
+      </nav>
+      <div className="git-cr-main">
+        {(general || generalThreads.length > 0) && <section className="git-cr-block" aria-label={t("cr.whole")}>
+          <h3 className="g-sec">{t("cr.whole")}</h3>
+          {general && <Composer label={t("cr.comment-whole")} withSeverity submitLabel={t("cr.comment")} onCancel={() => setGeneral(false)} draftKey="general"
+            onSubmit={async (body, severity) => { await create({filePath: GENERAL_PATH, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setGeneral(false); }}/>}
+          {generalThreads.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false}/>)}
+        </section>}
+        {outdated.length > 0 && <section className="git-cr-block" aria-label={t("cr.outdated")}>
+          <h3 className="g-sec">{t("cr.outdated")}</h3>
+          <p className="g-muted">{t("cr.outdated-why")}</p>
+          {outdated.map(thread => <ThreadCard key={thread.id} thread={thread} api={liveApi} current={undefined} canApply={false} showPath outdated/>)}
+        </section>}
+        {keptState.ready && orphans.length > 0 && <section className="git-cr-block" aria-label={t("cr.orphans")}>
+          <h3 className="g-sec">{t("cr.orphans")}</h3>
+          <p className="g-muted">{t("cr.orphans-why")}</p>
+          <ul className="git-cr-orphans">{orphans.map(orphan => <li key={orphan.key}>
+            <span className="git-path">{orphan.path}</span><span className="g-muted">{orphan.draft.body.split("\n")[0]!.slice(0, 100)}</span>
+            <button type="button" className="g-btn ghost sm" onClick={() => keptState.kept.setDraft(orphan.key, null)}>{t("pr.discard")}</button>
+          </li>)}</ul>
+        </section>}
+        {view.target.kind === "files" && <FileSearch search={search} onPick={openFile}/>}
+        {!files.length && <p className="g-state-page">{t(view.target.kind === "files" ? "cr.empty-files" : view.target.kind === "uncommitted" ? "cr.empty-uncommitted" : "cr.empty")}</p>}
+        {keptState.ready && files.map(file => <FileDiff key={view.sessionId + file.path} file={file} wrap={wrap} split={split}
+          patchError={file.deferred ? patchError : ""} onRetryPatch={() => setPatchRetry(value => value + 1)}
+          hunksPickable={!ignoreWhitespace}
+          onRevert={view.target.kind === "uncommitted" && !ignoreWhitespace ? async (revision, hunks) => { await api.revert(view.sessionId, file.path, revision, hunks); refresh(); } : undefined}
+          onOpen={file.changeKind === "deleted" ? undefined : line => api.openFile(view.copy.hostId, joinPath(view.copy.root, file.path), line)} workingCopy={working} api={liveApi} onCreate={create} onExplain={explain} explaining={explaining}
+          found={foundIn.get(file.path)} current={at?.path === file.path ? at.row : null} reveal={reveal?.path === file.path ? reveal.token : undefined}
+          threads={threads.filter(thread => thread.filePath === file.path && placed(thread.id)?.state !== "outdated")} placements={view.placements}/>)}
+      </div>
+    </div>}
   </section></KeptContext.Provider>;
 }
 

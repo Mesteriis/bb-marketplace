@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { CiAction } from "../../core/ci/actions.ts";
 import { isActive, type Job, type Run } from "../../core/ci/model.ts";
 import { jobSeconds, runSeconds } from "../../core/ci/summary.ts";
 import { duration } from "../../core/i18n/time.ts";
 import { useLanguage, useT } from "../i18n/use-t.tsx";
 import { Icon } from "../system/icon.tsx";
+import { MenuButton } from "../system/menu.tsx";
 import { forgeNames, message, stateKey, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
 import { RunState, Since, runName, useNow } from "./ci-parts.tsx";
 import { ConfirmDialog } from "./confirm-dialog.tsx";
@@ -171,34 +172,7 @@ export function RunDetail({api, copyId, runId, page, notice = "", repository, on
 /** Ask agent ▾: start the investigation at once, or open the composer to choose the model. */
 function AskMenu({busy, onAsk, onCompose}: {busy: boolean; onAsk(): void; onCompose(): void}) {
   const t = useT();
-  const [open, setOpen] = useState(false);
-  const box = useRef<HTMLSpanElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (event: MouseEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false); };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.stopPropagation(); close(); return; }
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      const items = Array.from(box.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? []);
-      const at = items.indexOf(document.activeElement as HTMLElement);
-      event.preventDefault();
-      items[(at + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
-    };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", key, true);
-    box.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
-    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", key, true); };
-  }, [open]);
-  // Closing gives the focus back to the button that opened the menu.
-  function close() { setOpen(false); trigger.current?.focus(); }
-  const pick = (run: () => void) => { close(); run(); };
-  return <span className="git-ci-menu" ref={box}>
-    <button ref={trigger} type="button" className="g-btn" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(value => !value)}>
-      <Icon name="Bot" small/>{busy ? t("ci.asking") : t("ci.ask")}<Icon name="ChevronDown" small/></button>
-    {open && <span className="git-ci-menu-list" role="menu" aria-label={t("ci.ask")}>
-      <button type="button" role="menuitem" onClick={() => pick(onAsk)}>{t("ci.ask-now")}</button>
-      <button type="button" role="menuitem" onClick={() => pick(onCompose)}>{t("ci.ask-model")}</button>
-    </span>}
-  </span>;
+  return <MenuButton label={t("ci.ask")} icon="Bot" busy={busy} entries={[
+    {kind: "item", label: t("ci.ask-now"), onSelect: onAsk}, {kind: "item", label: t("ci.ask-model"), onSelect: onCompose}]}>
+    {busy ? t("ci.asking") : t("ci.ask")}</MenuButton>;
 }

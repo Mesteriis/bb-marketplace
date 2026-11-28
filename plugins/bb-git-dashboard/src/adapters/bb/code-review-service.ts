@@ -243,10 +243,10 @@ export function codeReviewService(deps: CodeReviewDeps) {
       return made;
     },
     /** An AI run's comment: placed and checked by the run service, signed with the run's provider. */
-    createAgentThread(sessionId: string, input: Omit<NewThreadInput, "anchorContent"> & {anchorContent: string | null}, authorName: string) {
+    createAgentThread(sessionId: string, input: Omit<NewThreadInput, "anchorContent"> & {anchorContent: string | null}, authorName: string, runId: string | null = null) {
       session(sessionId);
       const made = store.createThread({sessionId, filePath: input.filePath, side: input.side, startLine: input.startLine, endLine: input.endLine,
-        severity: input.severity, anchorContent: input.anchorContent, body: text(input.body)}, {type: "agent", name: authorName});
+        severity: input.severity, anchorContent: input.anchorContent, body: text(input.body)}, {type: "agent", name: authorName}, runId);
       changed(sessionId);
       return made;
     },

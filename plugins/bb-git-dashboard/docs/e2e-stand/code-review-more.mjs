@@ -17,6 +17,8 @@ const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
 const until = async (condition, timeout = 20000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 300)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
+// The review's View ▾ menu holds the switches and the rarer actions.
+const viewMenu = async (review, item) => { await review.getByRole("button", { name: "View", exact: true }).click(); await review.getByRole("menuitem", { name: item, exact: true }).click(); };
 try {
   // A feature branch with one commit and a clean tree: nothing uncommitted.
   git("switch", "-q", "-c", "feature");
@@ -47,10 +49,10 @@ try {
 
   await review.getByLabel("What to review").selectOption("uncommitted");
   check("picking Uncommitted shows the empty view", await visible(review.getByText("No uncommitted changes.")));
-  await review.getByLabel("Side by side").check();
+  await review.getByRole("group", { name: "Diff style" }).getByRole("button", { name: "Side by side" }).click();
   review = await open();
   check("the picked view and Side by side come back after a reload", await review.getByLabel("What to review").inputValue() === "uncommitted"
-    && await review.getByLabel("Side by side").isChecked());
+    && await review.getByRole("group", { name: "Diff style" }).getByRole("button", { name: "Side by side" }).getAttribute("aria-pressed") === "true");
 
   writeFileSync(join(repo, "watched.txt"), "seen without reload\n");
   check("an edit on disk shows without Reload", await visible(review.getByRole("region", { name: "watched.txt" }), 15000));
@@ -59,7 +61,7 @@ try {
   mkdirSync(join(repo, "many"), { recursive: true });
   for (let index = 0; index < 30; index++) writeFileSync(join(repo, "many", "f" + String(index).padStart(2, "0") + ".txt"), "line " + index + "\n");
   writeFileSync(join(repo, "large.txt"), Array.from({ length: 2100 }, (_, index) => "row " + index).join("\n") + "\n");
-  await review.getByRole("button", { name: "Reload" }).click();
+  await viewMenu(review, "Reload");
   check("all 32 files are listed", await until(async () => await review.locator("section.git-review-file").count() === 32));
   check("every deferred patch is read in batches", await until(async () => await review.getByText("Reading this file's diff…").count() === 0
     && await review.getByRole("region", { name: "many/f29.txt" }).locator(".git-review-code", { hasText: "line 29" }).count() > 0));
@@ -71,7 +73,7 @@ try {
   check("Find steps to a match and marks it", await until(async () => await review.getByRole("search", { name: "Find in the diff" }).getByRole("status").innerText() === "1 of 11"
     && await review.locator(".git-review-row[data-current]").count() === 1), status);
   await review.getByLabel("Find", { exact: true }).press("Escape");
-  await review.getByRole("button", { name: "Go to", exact: true }).click();
+  await viewMenu(review, "Go to");
   await review.getByLabel("Go to file, comment or view").fill("f29");
   await review.getByLabel("Go to file, comment or view").press("Enter");
   check("Go to reaches a file", await until(async () => await page.evaluate(() => document.activeElement?.getAttribute("data-path")) === "many/f29.txt"));
@@ -80,13 +82,13 @@ try {
   await page.screenshot({ path: out + "/code-review-more.png", fullPage: false });
 
   const watched = review.getByRole("region", { name: "watched.txt" });
-  await watched.getByLabel("Viewed").check();
+  await review.getByLabel("Viewed: watched.txt").check();
   check("Viewed folds the file and survives a reload", await until(async () => await watched.locator(".git-review-row").count() === 0)
-    && await (async () => { await review.getByRole("button", { name: "Reload" }).click(); await page.waitForTimeout(1500); return await watched.getByLabel("Viewed").isChecked(); })());
+    && await (async () => { await viewMenu(review, "Reload"); await page.waitForTimeout(1500); return await review.getByLabel("Viewed: watched.txt").isChecked(); })());
   writeFileSync(join(repo, "watched.txt"), "seen without reload\nand changed again\n");
-  check("a Viewed file whose change moves on is unmarked", await until(async () => !(await watched.getByLabel("Viewed").isChecked())));
+  check("a Viewed file whose change moves on is unmarked", await until(async () => !(await review.getByLabel("Viewed: watched.txt").isChecked())));
   writeFileSync(join(repo, ".diffityignore"), "large.txt\n");
-  await review.getByRole("button", { name: "Reload" }).click();
+  await viewMenu(review, "Reload");
   check("the copy's .diffityignore leaves files out and says how many", await visible(review.getByText(/· 1 ignored/))
     && await until(async () => await review.getByRole("region", { name: "large.txt" }).count() === 0));
   await watched.getByRole("button", { name: "Open", exact: true }).click();
@@ -94,7 +96,7 @@ try {
 
   await review.getByRole("region", { name: "watched.txt" }).getByRole("button", { name: "Comment on line 1" }).click();
   await review.getByLabel("Line comment").fill("Unsent for now");
-  await review.getByRole("region", { name: "many/f03.txt" }).getByRole("button", { name: "▾" }).click();
+  await review.getByRole("region", { name: "many/f03.txt" }).getByRole("button", { name: "Fold many/f03.txt" }).click();
   await page.waitForTimeout(1500);
   review = await open();
   const restored = [await visible(review.getByLabel("Line comment")), await review.getByLabel("Line comment").inputValue().catch(() => null),
@@ -104,10 +106,10 @@ try {
   await review.getByRole("button", { name: "Comment", exact: true }).click();
   const thread = review.getByRole("article", { name: /Comment thread on watched\.txt:1/ });
   check("the comment is there, its Markdown rendered", await visible(thread) && await visible(thread.locator("strong", { hasText: "cleared" })));
-  await review.getByRole("button", { name: "Next comment" }).click();
+  await viewMenu(review, "Next comment");
   check("Next comment focuses the comment", await until(async () => await page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? "") === "Comment thread on watched.txt:1 (new side)"));
-  await review.getByRole("button", { name: "Clear review" }).click();
-  await review.getByRole("alertdialog", { name: "Clear review" }).getByRole("button", { name: "Clear review" }).click();
+  await viewMenu(review, "Clear review");
+  await review.getByRole("dialog", { name: "Clear the review" }).getByRole("button", { name: "Clear review" }).click();
   check("Clear review deletes the view's threads", await visible(review.getByText(/Cleared 1 comment thread/))
     && await until(async () => await review.getByRole("article", { name: /Comment thread on watched\.txt:1/ }).count() === 0));
   writeFileSync(join(repo, "README.md"), "a\nchanged by hand\n");
@@ -122,7 +124,7 @@ try {
   await review.getByLabel("File to show").fill("READ");
   await review.getByRole("search", { name: "Find a file" }).getByRole("button", { name: "README.md" }).click();
   const whole = review.getByRole("region", { name: "README.md" });
-  check("Any file shows a file as it is", await visible(whole.getByText(/file · 1 lines/)));
+  check("Any file shows a file as it is", await visible(whole.getByText(/file · 1 line\b/)));
   await whole.getByRole("button", { name: "Comment on line 1" }).click();
   await review.getByLabel("Line comment").fill("About the whole README");
   await review.getByRole("button", { name: "Comment", exact: true }).click();
@@ -141,8 +143,8 @@ try {
   check("the Reviews section counts open comment threads", await visible(reviewsSection.getByLabel(/open comment threads?$/)));
   await reviewsSection.click();
   const reviews = page.getByRole("region", { name: "Reviews" });
-  check("the Reviews page lists the Any file review", await visible(reviews.getByRole("button", { name: /gamma.*files of the working copy/ })));
-  await reviews.getByRole("button", { name: /gamma.*files of the working copy/ }).click();
+  check("the Reviews page lists the Any file review", await visible(reviews.getByRole("button", { name: /^Open the review of gamma: Files as they are$/ })));
+  await reviews.getByRole("button", { name: /^Open the review of gamma: Files as they are$/ }).click();
   check("a review opens on its view", await until(async () => await page.getByLabel("What to review").inputValue().catch(() => "") === "files"));
 
   await page.setViewportSize({ width: 768, height: 900 });

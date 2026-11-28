@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { changeRevision } from "../../core/code-review/diff.ts";
-import type { ReviewDiffFile } from "../../core/code-review/diff.ts";
+import { changeRevision, type ReviewDiffFile } from "../../core/code-review/diff.ts";
 import type { ReviewThread, Side } from "../../core/code-review/model.ts";
 import { linesText, parsePatchLines } from "../../core/code-review/patch-lines.ts";
 import { displayRows, splitRows, type DisplayRow } from "../../core/code-review/rows.ts";
@@ -10,6 +9,9 @@ import { Composer, ThreadCard } from "./thread-card.tsx";
 import { useKept } from "./kept-state.tsx";
 import { RevertForm } from "./revert-form.tsx";
 import { CodeText, useHighlight, useNear } from "../highlight/use-highlight.tsx";
+import type { MessageKey } from "../../core/i18n/dictionary.ts";
+import { useT } from "../i18n/use-t.tsx";
+import { Icon } from "../system/icon.tsx";
 
 const sideOf = (row: DisplayRow): Side => row.kind === "deletion" ? "old" : "new";
 const lineOf = (row: DisplayRow) => row.kind === "deletion" ? row.oldLine! : row.newLine!;
@@ -30,13 +32,11 @@ function anchorsOf(item: Item): {side: Side; line: number}[] {
  * One file of the review: its patch as rows with each thread under the last line it is placed on. Click a line
  * number to comment, Shift+click another line on the same side to comment on the range.
  */
-export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onViewed, onOpen,
+export function FileDiff({file, threads, placements, wrap, split, workingCopy, api, onCreate, onExplain, explaining, patchError, onRetryPatch, onOpen,
   found, current, reveal, onRevert, hunksPickable}: {
   file: ReviewDiffFile; threads: ReviewThread[]; placements: Record<string, Placement>; wrap: boolean; split: boolean; workingCopy: boolean;
   /** Why the deferred patch could not be read; Retry reads the batches again. */
   patchError: string; onRetryPatch(): void;
-  /** Marks the file Viewed at the change shown, or clears the mark. */
-  onViewed(revision: string, viewed: boolean): Promise<void>;
   /** Opens the working copy's file at a line in BB's preview; absent for a deleted file. */
   onOpen?(line: number | null): void;
   /** Rows (indices into the file's rows) Find matched, and the one it is on. */
@@ -51,6 +51,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   /** Starts an AI run that explains the file or the selected lines. */
   onExplain(place: ExplainPlace): Promise<void>; explaining: boolean;
 }) {
+  const t = useT();
   const rows = useMemo(() => file.patch ? displayRows(file.patch) : [], [file.patch]);
   const items: Item[] = useMemo(() => split ? splitRows(rows)
     : rows.map(row => row.kind === "hunk" ? {kind: "hunk" as const, text: row.text} : {kind: "single" as const, row}), [rows, split]);
@@ -79,7 +80,6 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const section = useRef<HTMLElement>(null);
   const near = useNear(section);
   const tokensOf = useHighlight(file.path, rows, near && !closed && !file.deferred);
-  const [marking, setMarking] = useState(false);
   const [reverting, setReverting] = useState(false);
   useEffect(() => { if (reveal) setClosed(false); }, [reveal]);
   const indexOf = useMemo(() => new Map(rows.map((row, index) => [row, index])), [rows]);
@@ -105,38 +105,40 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
   const selectedCode = selection && range && lines ? linesText(lines, selection.side, range.start, range.end) : null;
   const inSide = (side: Side, line: number) => selection !== null && range !== null && side === selection.side && line >= range.start && line <= range.end;
   const inSelection = (row: DisplayRow) => row.kind !== "hunk" && inSide(sideOf(row), lineOf(row));
-  const additions = file.binary ? "binary" : "+" + file.additions + " −" + file.deletions;
+  const open = threads.filter(thread => thread.status === "open").length;
+  const what = file.whole ? t("cr.whole-file", {n: rows.filter(row => row.kind !== "hunk").length})
+    : file.untracked ? t("cr.untracked") : t(("cr.change." + file.changeKind) as MessageKey);
   return <section ref={section} className="git-review-file" aria-label={file.path} data-path={file.path} tabIndex={-1}>
-    <header className="git-row git-review-file-head">
-      <button type="button" className="git-link" aria-expanded={!closed} onClick={toggleFold}>{closed ? "▸" : "▾"}</button>
+    <header className="git-cr-file-head">
+      <button type="button" className="g-btn ghost sm" aria-expanded={!closed} aria-label={t(closed ? "cr.unfold" : "cr.fold", {path: file.path})} onClick={toggleFold}>
+        <Icon name={closed ? "ChevronRight" : "ChevronDown"} small/></button>
+      <Icon name="FileDiff" small/>
       <strong className="git-path">{file.previousPath ? file.previousPath + " → " : ""}{file.path}</strong>
-      <span className="git-muted">{file.whole ? "file · " + rows.filter(row => row.kind !== "hunk").length + " lines"
-        : (file.untracked ? "untracked" : file.changeKind.replace("_", " ")) + " · " + additions + (large ? " · large change" : "")}</span>
-      {threads.length > 0 && <span className="git-review-tag">{threads.filter(thread => thread.status === "open").length} open</span>}
-      <span className="git-ci-spacer"/>
-      {onOpen && <button type="button" title="Opens the working copy's file in BB's preview" onClick={() => onOpen(null)}>Open</button>}
-      {onRevert && !file.deferred && file.changeKind !== "renamed" && file.changeKind !== "copied" &&
-        <button type="button" aria-expanded={reverting} onClick={() => setReverting(value => !value)}>Revert…</button>}
-      {!file.deferred && !file.whole && <label className="git-review-viewed"><input type="checkbox" checked={file.viewed === true} disabled={marking}
-        onChange={event => { const on = event.target.checked; setMarking(true); onViewed(changeRevision(file), on).finally(() => setMarking(false)); }}/> Viewed</label>}
-      <button type="button" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>Explain</button>
-      <button type="button" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>Comment on file</button>
+      {open > 0 && <span className="g-chip warn">{t("rv.open-n", {n: open})}</span>}
+      <span className="g-muted">{what}{large ? " · " + t("cr.large") : ""}</span>
+      <span className="git-cr-file-actions">
+        {onOpen && <button type="button" className="g-btn ghost sm" title={t("cr.open-hint")} onClick={() => onOpen(null)}>{t("cr.open")}</button>}
+        {onRevert && !file.deferred && file.changeKind !== "renamed" && file.changeKind !== "copied" &&
+          <button type="button" className="g-btn ghost sm" aria-expanded={reverting} onClick={() => setReverting(value => !value)}>{t("cr.revert")}</button>}
+        <button type="button" className="g-btn ghost sm" disabled={explaining} onClick={() => void onExplain({filePath: file.path, side: null, startLine: 0, endLine: 0, code: null})}>{t("cr.explain")}</button>
+        <button type="button" className="g-btn ghost sm" aria-expanded={fileComment} onClick={() => setFileComment(value => !value)}>{t("cr.comment-file")}</button>
+      </span>
     </header>
     {reverting && onRevert && <RevertForm path={file.path} changeKind={file.untracked ? "added" : file.changeKind} patch={hunksPickable ? file.patch : null}
       onRevert={hunks => onRevert(changeRevision(file), hunks)} onClose={() => setReverting(false)}/>}
     {!closed && <>
-      {fileComment && <Composer label={"Comment on " + file.path} withSeverity submitLabel="Comment" onCancel={() => setFileComment(false)} draftKey={"file:" + file.path}
+      {fileComment && <Composer label={t("cr.comment-on", {path: file.path})} withSeverity submitLabel={t("cr.comment")} onCancel={() => setFileComment(false)} draftKey={"file:" + file.path}
         onSubmit={async (body, severity) => { await onCreate({filePath: file.path, side: null, startLine: 0, endLine: 0, anchorContent: null, severity, body}); setFileComment(false); }}/>}
       {wholeFile.map(thread => <ThreadCard key={thread.id} thread={thread} api={api} current={undefined} canApply={false}/>)}
       {file.deferred ? (patchError
-          ? <p className="git-error" role="alert">Could not read this diff: {patchError} <button type="button" onClick={onRetryPatch}>Retry</button></p>
-          : <p className="git-muted" role="status">Reading this file's diff…</p>)
-        : !file.patch ? <p className="git-muted">{file.binary ? "Binary file: no line diff." : "This file's diff is too large to show."}</p> :
-        <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={"Diff of " + file.path}>
+          ? <p className="git-error" role="alert">{t("cr.patch-failed", {error: patchError})} <button type="button" className="g-btn sm" onClick={onRetryPatch}>{t("cr.retry")}</button></p>
+          : <p className="g-muted git-cr-note" role="status">{t("cr.reading-file")}</p>)
+        : !file.patch ? <p className="g-muted git-cr-note">{t(file.binary ? "cr.binary" : "cr.too-large")}</p> :
+        <div className="git-review-diff" data-wrap={wrap || undefined} role="group" aria-label={t("hs.patch-of", {path: file.path})}>
           {items.map((item, index) => <div key={index}>
             {item.kind === "hunk" ? <div className="git-review-row" data-kind="hunk"><span className="git-review-hunk">{item.text}</span></div>
               : item.kind === "single" ? <div className="git-review-row" data-kind={kindOf(item.row)} data-selected={inSelection(item.row) || undefined} {...mark(item.row)}>
-                <button type="button" className="git-review-number" aria-label={item.row.kind === "deletion" ? "Comment on old line " + item.row.oldLine : "Comment on line " + item.row.newLine}
+                <button type="button" className="git-review-number" aria-label={item.row.kind === "deletion" ? t("cr.on-old-line", {n: item.row.oldLine!}) : t("cr.on-line", {n: item.row.newLine!})}
                   onClick={event => pick(item.row, event.shiftKey)}>{item.row.oldLine ?? ""}</button>
                 <button type="button" className="git-review-number" tabIndex={-1} aria-hidden="true" onClick={event => pick(item.row, event.shiftKey)}>{item.row.newLine ?? ""}</button>
                 <code className="git-review-code">{item.row.kind === "addition" ? "+" : item.row.kind === "deletion" ? "−" : " "}<CodeText text={item.row.text} tokens={tokensOf(indexOf.get(item.row) ?? -1)}/></code>
@@ -148,7 +150,7 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
                 return <div key={side} className="git-review-row" data-kind={kind} data-selected={row && line !== null && inSide(side, line) || undefined}
                   {...(side === "new" || row?.kind !== "context" ? mark(row) : {})}>
                   {row && line !== null ? <>
-                    <button type="button" className="git-review-number" aria-label={(side === "old" ? "Comment on old line " : "Comment on line ") + line} onClick={event => pickAt(side, line, event.shiftKey)}>{line}</button>
+                    <button type="button" className="git-review-number" aria-label={t(side === "old" ? "cr.on-old-line" : "cr.on-line", {n: line})} onClick={event => pickAt(side, line, event.shiftKey)}>{line}</button>
                     <code className="git-review-code">{kind === "add" ? "+" : kind === "del" ? "−" : " "}<CodeText text={row.text} tokens={tokensOf(indexOf.get(row) ?? -1, side)}/></code>
                   </> : null}
                 </div>;
@@ -156,13 +158,10 @@ export function FileDiff({file, threads, placements, wrap, split, workingCopy, a
             {anchorsOf(item).flatMap(anchor => below.get(keyOf(anchor.side, anchor.line)) ?? []).map(thread =>
               <ThreadCard key={thread.id} thread={thread} api={api} current={currentOf(thread)} canApply={workingCopy}/>)}
             {selection && range && anchorsOf(item).some(anchor => anchor.side === selection.side && anchor.line === range.end) && <div className="git-code-review-new">
-              <div className="git-row">
-                <p className="git-muted">{"Comment on " + (range.start === range.end ? "line " + range.end : "lines " + range.start + "–" + range.end) + (selection.side === "old" ? " (removed)" : "")}</p>
-                <span className="git-ci-spacer"/>
-                <button type="button" disabled={explaining} onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
-                  Explain {range.start === range.end ? "this line" : "these lines"}</button>
-              </div>
-              <Composer key={selection.side + range.start + "-" + range.end} label="Line comment" withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel="Comment"
+              <Composer key={selection.side + range.start + "-" + range.end} label={t("cr.line-comment")} withSeverity code={selection.side === "new" ? selectedCode : null} submitLabel={t("cr.comment")}
+                where={(range.start === range.end ? t("cr.line", {n: range.end}) : t("cr.lines", {from: range.start, to: range.end})) + (selection.side === "old" ? " · " + t("cr.removed") : "")}
+                extra={<button type="button" className="g-btn ghost sm" disabled={explaining} onClick={() => { void onExplain({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, code: selectedCode}); setSelection(null); }}>
+                  {t(range.start === range.end ? "cr.explain-line" : "cr.explain-lines")}</button>}
                 onCancel={() => setSelection(null)} draftKey={"line:" + file.path} draftRange={{side: selection.side, start: range.start, end: range.end}}
                 onSubmit={async (body, severity) => {
                   await onCreate({filePath: file.path, side: selection.side, startLine: range.start, endLine: range.end, anchorContent: selectedCode, severity, body});

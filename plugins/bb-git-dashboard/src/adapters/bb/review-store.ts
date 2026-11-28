@@ -108,6 +108,9 @@ export const REVIEW_MIGRATIONS: string[] = [
   `ALTER TABLE review_threads ADD COLUMN external_id TEXT`,
   `CREATE UNIQUE INDEX review_threads_external ON review_threads(session_id, external_id) WHERE external_id IS NOT NULL`,
   `ALTER TABLE review_comments ADD COLUMN draft TEXT CHECK (draft IN ('reply', 'resolve'))`,
+  // 0.14.5: an AI run's own threads (its findings on the Reviews page), and sends read by session.
+  `ALTER TABLE review_threads ADD COLUMN run_id TEXT`,
+  `CREATE INDEX review_sends_session ON review_sends(session_id)`,
 ];
 
 export type Session = {id: string; copyId: string; targetKey: string};
@@ -187,13 +190,13 @@ export class ReviewStore {
   }
 
   /** Makes a thread with its first comment, the owner's unless `author` says otherwise. */
-  createThread(input: NewThread, author: Author = {type: "user", name: "You"}): ReviewThread {
+  createThread(input: NewThread, author: Author = {type: "user", name: "You"}, runId: string | null = null): ReviewThread {
     const id = newId();
     const at = this.now();
     this.db.transaction(() => {
-      this.db.prepare(`INSERT INTO review_threads (id, session_id, file_path, side, start_line, end_line, severity, anchor_content, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, input.sessionId, input.filePath, input.side, input.startLine, input.endLine, input.severity, input.anchorContent, at, at);
+      this.db.prepare(`INSERT INTO review_threads (id, session_id, file_path, side, start_line, end_line, severity, anchor_content, created_at, updated_at, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, input.sessionId, input.filePath, input.side, input.startLine, input.endLine, input.severity, input.anchorContent, at, at, runId);
       this.insertComment(id, author, input.body, at);
     })();
     return this.thread(id)!;
@@ -320,12 +323,31 @@ export class ReviewStore {
       .run(scope, sessionId, savedAt, state).changes) > 0;
   }
 
-  /** Every session that has threads, with its open and total counts, the latest change first (the Reviews page). */
+  /**
+   * Every session that has threads, the latest change first (the Reviews page): its open and total counts, when its
+   * comments last went to an agent and how many open ones it answered (waiting for you) or not yet, and its latest AI
+   * review with its findings — the threads that run opened. Three reads in all, however many sessions.
+   */
   summaries(limit = 500) {
-    return (this.db.prepare(`SELECT s.id, s.copy_id, s.target_key, sum(t.status = 'open') AS open, count(t.id) AS total, max(t.updated_at) AS updated_at
+    const rows = this.db.prepare(`SELECT s.id, s.copy_id, s.target_key, sum(t.status = 'open') AS open, count(t.id) AS total, max(t.updated_at) AS updated_at,
+        sum(t.status = 'open' AND t.delivery = 'answered') AS answered, sum(t.status = 'open' AND t.delivery = 'sent') AS waiting
       FROM review_sessions s JOIN review_threads t ON t.session_id = s.id WHERE s.copy_id NOT LIKE 'forge:%' GROUP BY s.id ORDER BY updated_at DESC LIMIT ?`).all(limit) as
-      {id: string; copy_id: string; target_key: string; open: number | null; total: number; updated_at: number}[])
-      .map(row => ({sessionId: row.id, copyId: row.copy_id, targetKey: row.target_key, open: Number(row.open ?? 0), total: Number(row.total), updatedAt: Number(row.updated_at)}));
+      {id: string; copy_id: string; target_key: string; open: number | null; total: number; updated_at: number; answered: number | null; waiting: number | null}[];
+    if (!rows.length) return [];
+    const ids = rows.map(row => row.id);
+    const marks = ids.map(() => "?").join(", ");
+    const sent = new Map((this.db.prepare(`SELECT session_id, max(created_at) AS at FROM review_sends WHERE session_id IN (${marks}) GROUP BY session_id`)
+      .all(...ids) as {session_id: string; at: number}[]).map(row => [row.session_id, Number(row.at)]));
+    // Each session's latest review run, and the threads it opened.
+    const runs = new Map((this.db.prepare(`SELECT r.session_id, r.status, r.model, r.created_at,
+        (SELECT count(*) FROM review_threads t WHERE t.run_id = r.id) AS findings
+      FROM review_runs r WHERE r.kind = 'review' AND r.session_id IN (${marks}) AND NOT EXISTS (SELECT 1 FROM review_runs later
+        WHERE later.session_id = r.session_id AND later.kind = 'review' AND (later.created_at > r.created_at OR (later.created_at = r.created_at AND later.rowid > r.rowid)))`)
+      .all(...ids) as {session_id: string; status: string; model: string | null; created_at: number; findings: number}[])
+      .map(row => [row.session_id, {status: row.status as "running" | "done" | "failed" | "closed", model: row.model, startedAt: Number(row.created_at), findings: Number(row.findings)}]));
+    return rows.map(row => ({sessionId: row.id, copyId: row.copy_id, targetKey: row.target_key, open: Number(row.open ?? 0), total: Number(row.total),
+      updatedAt: Number(row.updated_at), agent: {sentAt: sent.get(row.id) ?? null, answered: Number(row.answered ?? 0), waiting: Number(row.waiting ?? 0)},
+      ai: runs.get(row.id) ?? null}));
   }
 
   /** Deletes a session with everything of it: threads, comments, sends, runs, marks and kept states. */

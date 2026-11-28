@@ -156,3 +156,48 @@ test("mirrors of forge threads that are gone are dropped with their drafts", () 
   assert.deepEqual([store.thread(kept) !== null, store.thread(gone)], [true, null]);
   assert.deepEqual(store.summaries().map(row => row.copyId), []);
 });
+
+test("a review's summary says what the agent was sent and answered, and how its last AI review went", async () => {
+  const {RunStore} = await import("../src/adapters/bb/review-run-store.ts");
+  let now = 1_000;
+  const db = memoryDb();
+  const store = new ReviewStore(db, () => now);
+  const runs = new RunStore(db, () => now);
+  const session = store.session("copy_1", "uncommitted");
+  const own = (body: string) => store.createThread({sessionId: session.id, filePath: "a.ts", side: "new", startLine: 1, endLine: 1, severity: null, anchorContent: null, body});
+  const asked = own("Why?");
+  const waiting = own("And this?");
+  own("Not sent");
+  now = 2_000;
+  store.recordSend(session.id, "thr_a", [asked.id, waiting.id], "");
+  now = 3_000;
+  store.answerAsAgent({threadId: asked.id, callerThreadId: "thr_a", ackBefore: null, authorName: "Codex", body: "Done.", status: null});
+  // Nothing of an AI review yet.
+  assert.deepEqual(store.summaries()[0].agent, {sentAt: 2_000, answered: 1, waiting: 1});
+  assert.equal(store.summaries()[0].ai, null);
+  now = 4_000;
+  const run = runs.create({sessionId: session.id, kind: "review", focus: null, providerId: "claude", model: "opus", parentThreadId: null, baseline: null});
+  now = 4_500;
+  // Two findings of this run; the owner's comment meanwhile and another run's thread (an explanation) are not its findings.
+  const explain = runs.create({sessionId: session.id, kind: "explain", focus: null, providerId: "claude", model: "opus", parentThreadId: null, baseline: null});
+  store.createThread({sessionId: session.id, filePath: "a.ts", side: "new", startLine: 2, endLine: 2, severity: "nit", anchorContent: null, body: "Rename."}, {type: "agent", name: "Reviewer"}, run.id);
+  store.createThread({sessionId: session.id, filePath: "b.ts", side: "new", startLine: 2, endLine: 2, severity: "must-fix", anchorContent: null, body: "Bug."}, {type: "agent", name: "Reviewer"}, run.id);
+  store.createThread({sessionId: session.id, filePath: "a.ts", side: "new", startLine: 1, endLine: 1, severity: null, anchorContent: null, body: "It reads…"}, {type: "agent", name: "Explainer"}, explain.id);
+  own("Mine meanwhile");
+  assert.deepEqual(store.summaries()[0].ai, {status: "running", model: "opus", startedAt: 4_000, findings: 2});
+  now = 5_000;
+  runs.finish(run.id, "done", null, null);
+  now = 6_000;
+  store.createThread({sessionId: session.id, filePath: "c.ts", side: "new", startLine: 1, endLine: 1, severity: null, anchorContent: null, body: "Later."}, {type: "agent", name: "Other"});
+  assert.deepEqual(store.summaries()[0].ai, {status: "done", model: "opus", startedAt: 4_000, findings: 2});
+  // A run closed without finishing keeps its own findings only, however long after.
+  const second = runs.create({sessionId: session.id, kind: "review", focus: null, providerId: "claude", model: null, parentThreadId: null, baseline: null});
+  runs.close(second.id);
+  now = 9_000;
+  store.createThread({sessionId: session.id, filePath: "d.ts", side: "new", startLine: 1, endLine: 1, severity: null, anchorContent: null, body: "Much later."}, {type: "agent", name: "Other"});
+  assert.deepEqual(store.summaries()[0].ai, {status: "closed", model: null, startedAt: 6_000, findings: 0});
+  // A session without sends says so.
+  const other = store.session("copy_2", "staged");
+  store.createThread({sessionId: other.id, filePath: "b.ts", side: null, startLine: 0, endLine: 0, severity: null, anchorContent: null, body: "x"});
+  assert.deepEqual(store.summaries().find(row => row.copyId === "copy_2")?.agent, {sentAt: null, answered: 0, waiting: 0});
+});

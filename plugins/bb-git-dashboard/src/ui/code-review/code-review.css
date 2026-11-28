@@ -38,3 +38,99 @@
 .git-ws .git-code-review-goto li[aria-selected="true"] { background: color-mix(in srgb, var(--git-focus) 18%, transparent); }
 .git-ws .git-review-row[data-found] { box-shadow: inset 3px 0 0 #d4a017; }
 .git-ws .git-review-row[data-current] { box-shadow: inset 3px 0 0 var(--git-focus); outline: 1px solid var(--git-focus); outline-offset: -1px; }
+
+/* The Reviews page: one table of the reviews, the ones of copies that are gone below it. */
+.git-ws .git-reviews-table { border-top: 1px solid var(--border); }
+.git-ws .git-reviews-row { cursor: pointer; }
+.git-ws .git-reviews-row:hover :is(td, th) { background: var(--git-subtle); }
+.git-ws .git-reviews-row th[scope="row"] { text-align: left; font-weight: inherit; font-size: 14px; letter-spacing: normal; text-transform: none;
+  color: var(--foreground); padding: 0 10px 0 24px; height: 58px; border-bottom: 1px solid var(--git-hairline); }
+.git-ws .git-reviews-row td { white-space: nowrap; }
+.git-ws .git-reviews-yours { color: var(--foreground); font-weight: 500; }
+.git-ws .git-reviews-gone { padding: 24px 0 0; }
+.git-ws .git-reviews-gone h2 { margin: 0 24px 4px; }
+.git-ws .git-reviews-gone > p { margin: 0 24px 8px; }
+.git-ws .git-reviews-gone ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--git-hairline); }
+.git-ws .git-reviews-gone li { display: flex; align-items: center; gap: 16px; min-height: 46px; padding: 0 24px; border-bottom: 1px solid var(--git-hairline); }
+.git-ws .git-reviews-gone li > .g-btn { margin-left: auto; }
+.git-ws .git-reviews-gone-name { font-weight: 500; }
+
+/* A copy's Review in the new interface: the bar, the files on the left, the diffs on the right. */
+.git-ws .git-project-main > .git-code-review { margin: 0 -24px -24px; }
+.git-ws .git-code-review { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; gap: 0; }
+.git-ws .git-cr-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.git-ws .git-cr-bar > input.g-inp { width: 14em; }
+.git-ws .git-cr-sum { white-space: nowrap; }
+.git-ws .git-cr-end { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-code-review > .git-ci-status { padding-top: 10px; }
+.git-ws .git-code-review > .g-banner { margin: 10px 24px 0; }
+.git-ws .git-code-review > .git-code-review-find, .git-ws .git-code-review > .git-code-review-goto, .git-ws .git-code-review > .git-code-review-runs,
+.git-ws .git-code-review > .git-cr-send { margin: 10px 24px 0; }
+.git-ws .git-code-review-find { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.git-ws .git-code-review-find > .g-inp { flex: 0 1 320px; }
+.git-ws .git-code-review-runs ul { display: grid; gap: 6px; }
+.git-ws .git-cr-run-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-cr-body { display: grid; grid-template-columns: minmax(220px, 26%) minmax(0, 1fr); flex: 1 1 auto; min-height: 0; }
+.git-ws .git-cr-files { border-right: 1px solid var(--border); padding: 12px 0; min-width: 0; }
+.git-ws .git-cr-files-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 4px 16px 8px; }
+.git-ws .git-cr-files-head .g-muted { font-size: 12px; }
+.git-ws .git-cr-files ul { list-style: none; margin: 0 0 12px; padding: 0; display: grid; }
+.git-ws .git-cr-files li { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 16px; min-height: 34px; }
+.git-ws .git-cr-files li:hover { background: var(--git-subtle); }
+.git-ws .git-cr-files li > button { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 6px 0; text-align: left; }
+.git-ws .git-cr-files li > button:hover { background: none; }
+.git-ws .git-cr-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ws .git-cr-outdated { font-size: 13px; }
+.git-ws .git-cr-main { min-width: 0; display: grid; gap: 0; align-content: start; }
+.git-ws .git-cr-block { display: grid; gap: 8px; padding: 14px 24px; border-bottom: 1px solid var(--border); }
+.git-ws .git-cr-block h3 { margin: 0; }
+.git-ws .git-cr-block .git-review-composer, .git-ws .git-cr-block .git-review-thread { margin: 0; }
+.git-ws .git-cr-orphans { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.git-ws .git-cr-orphans li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-cr-main > .g-state-page, .git-ws .git-cr-main > .git-code-review-file-search { margin: 0 24px; }
+.git-ws .git-cr-main > .git-code-review-file-search { padding-top: 14px; display: grid; gap: 8px; }
+.git-ws .git-cr-main > .git-code-review-file-search ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.git-ws .git-cr-main .git-review-file { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.git-ws .git-cr-file-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px 8px 16px; border-bottom: 1px solid var(--border);
+  background: var(--git-subtle); position: sticky; top: 0; z-index: 1; }
+.git-ws .git-cr-file-head .git-path { min-width: 0; overflow-wrap: anywhere; }
+.git-ws .git-cr-file-actions { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.git-ws .git-cr-note { margin: 8px 16px; }
+.git-ws .git-review-diff .git-review-row { font-size: 13px; line-height: 1.65; }
+
+/* Threads and the comment box under a line. */
+.git-ws .git-cr-thread { margin: 8px 16px 8px 56px; border: 1px solid var(--border); border-inline-start: 3px solid var(--git-warning); border-radius: 8px;
+  padding: 12px 16px; display: grid; gap: 10px; background: var(--background); }
+.git-ws .git-cr-thread[data-resolved] { border-inline-start-color: var(--border); }
+.git-ws .git-cr-thread-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-cr-comment { padding: 0 0 10px; border: 0; border-bottom: 1px solid var(--git-hairline); border-radius: 0; background: none; display: grid; gap: 6px; }
+.git-ws .git-cr-comment:last-of-type { border-bottom: 0; padding-bottom: 0; }
+.git-ws .git-cr-comment-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-cr-comment-actions, .git-ws .git-cr-thread-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.git-ws .git-cr-composer { margin: 8px 16px 12px 56px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 10px; }
+.git-ws .git-cr-thread .git-cr-composer, .git-ws .git-cr-block .git-cr-composer { margin: 0; }
+.git-ws .git-cr-composer-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.git-ws .git-cr-composer textarea.g-inp { height: auto; min-height: 4.5em; padding: 8px 10px; resize: vertical; }
+.git-ws .git-cr-composer-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-cr-send { display: grid; gap: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.git-ws .git-cr-send-where, .git-ws .git-cr-send-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+.git-ws .git-cr-revert { display: grid; gap: 8px; margin: 8px 16px; border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+.git-ws .git-cr-revert-pick { display: grid; gap: 4px; }
+
+/* The AI review dialog. */
+.git-ws .g-dialog:has(.git-ai-form) { width: min(640px, calc(100vw - 32px)); }
+.git-ws .git-ai-form { display: grid; gap: 10px; }
+.git-ws .git-ai-form > p { margin: 0; }
+.git-ws .git-ai-label { display: grid; gap: 6px; font-size: 13px; font-weight: 500; color: var(--foreground); }
+.git-ws .git-ai-form textarea.g-inp { height: auto; min-height: 5em; padding: 8px 10px; resize: vertical; font-weight: 400; }
+.git-ws .git-ai-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.git-ws button.git-ai-chip { cursor: pointer; font: inherit; font-size: 13px; padding: 3px 10px; }
+.git-ws button.git-ai-chip[aria-pressed="true"] { background: var(--git-violet-bg); color: var(--git-violet); border-color: transparent; }
+.git-ws .git-code-review-execution { display: grid; gap: 6px; }
+@container (max-width: 760px) {
+  .git-ws .git-cr-body { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-cr-files { border-right: 0; border-bottom: 1px solid var(--border); }
+  .git-ws .git-cr-thread, .git-ws .git-cr-composer { margin-left: 16px; }
+}
+.git-ws .git-code-review-new { margin: 0; }
+.git-ws .git-ai-form > .g-seg { justify-self: start; }

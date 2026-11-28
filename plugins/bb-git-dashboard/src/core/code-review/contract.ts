@@ -24,7 +24,9 @@ export const codeReviewContract = {
       copy: z.object({hostId: id, root: z.string().max(4096)}), colorBlind: z.boolean().optional()})},
   /** The Reviews page: every review with threads; an orphan's copy is gone. */
   reviewSummaries: {input: z.object({}), output: answer({reviews: z.array(z.object({sessionId: reviewId, copyId: id, copyName: z.string().nullable(),
-    orphan: z.boolean(), targetKey: z.string(), view: z.string(), open: z.number().int(), total: z.number().int(), updatedAt: z.number()}))})},
+    orphan: z.boolean(), targetKey: z.string(), view: z.string(), open: z.number().int(), total: z.number().int(), updatedAt: z.number(),
+    agent: z.object({sentAt: z.number().nullable(), answered: z.number().int(), waiting: z.number().int()}),
+    ai: z.object({status: z.enum(["running", "done", "failed", "closed"]), model: z.string().nullable(), startedAt: z.number(), findings: z.number().int()}).nullable()}))})},
   reviewDeleteOrphans: {input: z.object({sessionIds: z.array(reviewId).min(1).max(200)}), output: answer({deleted: z.number().int(), deletedThreads: z.number().int()})},
   /** A thread's Info row: its copy's open and total comment threads; null when it works on no copy. */
   reviewThreadCounts: {input: z.object({threadId: id}), output: answer({counts: z.object({copyId: id, open: z.number().int(), total: z.number().int()}).nullable()})},

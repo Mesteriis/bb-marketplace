@@ -393,7 +393,7 @@ export function codeReviewRuns(deps: RunDeps) {
       const authorName = await deps.bb.providerName(callerThreadId).catch(() => "Agent");
       // The reads above awaited BB: the run may have been closed meanwhile.
       if (!runs.ofThread(callerThreadId).some(row => row.id === run.id)) fail("NOT_A_REVIEW_RUN");
-      return deps.review.createAgentThread(run.sessionId, {...place, anchorContent}, authorName);
+      return deps.review.createAgentThread(run.sessionId, {...place, anchorContent}, authorName, run.id);
     },
 
     /**

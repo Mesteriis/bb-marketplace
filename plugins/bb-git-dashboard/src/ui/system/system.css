@@ -148,3 +148,17 @@
 .git-ws .g-dialog-body { display: grid; gap: 10px; }
 .git-ws .g-dialog-body label { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 12px; }
 .git-ws .g-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* A menu under a button (MenuButton): actions and switches. */
+.git-ws .g-menu { position: relative; display: inline-flex; }
+.git-ws .g-menu-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 6; display: grid; min-width: 220px; padding: 4px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card); box-shadow: var(--git-shadow); }
+.git-ws .g-menu-list > button { display: flex; align-items: center; gap: 8px; border: 0; background: none; text-align: left; padding: 6px 10px 6px 6px;
+  border-radius: 5px; white-space: nowrap; color: var(--foreground); font: inherit; cursor: pointer; }
+.git-ws .g-menu-list > button:hover:not([aria-disabled="true"]), .git-ws .g-menu-list > button:focus-visible { background: var(--accent); outline: none; }
+.git-ws .g-menu-list > button[aria-disabled="true"] { opacity: .5; cursor: default; }
+.git-ws .g-menu-mark { width: 16px; display: inline-flex; justify-content: center; }
+.git-ws .g-menu-sep { height: 1px; margin: 4px 2px; background: var(--border); }
+/* A dialog kept out of the top layer (Dialog modal={false}): its own backdrop, and room above it for BB's popovers. */
+.git-ws .g-dialog-scrim { position: fixed; inset: 0; z-index: 40; background: oklch(from var(--background) 0.1 0 0 / 0.45); }
+.git-ws .g-dialog[data-modal="own"] { z-index: 41; }

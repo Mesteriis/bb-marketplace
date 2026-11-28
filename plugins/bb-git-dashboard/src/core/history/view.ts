@@ -64,3 +64,22 @@ export function patchStats(text: string) {
   }
   return {added, removed};
 }
+
+/**
+ * Only current: the loaded commits reachable from HEAD (the commit whose refs hold the checked-out branch), in their
+ * order. Without HEAD among them nothing is hidden.
+ */
+export function reachableFromHead(commits: readonly CommitSummary[]): CommitSummary[] {
+  const head = commits.find(commit => commit.refs.some(ref => ref.isHead));
+  if (!head) return [...commits];
+  const byHash = new Map(commits.map(commit => [commit.hash, commit]));
+  const seen = new Set<string>();
+  const stack = [head.hash];
+  while (stack.length) {
+    const hash = stack.pop()!;
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    for (const parent of byHash.get(hash)?.parents ?? []) if (byHash.has(parent)) stack.push(parent);
+  }
+  return commits.filter(commit => seen.has(commit.hash));
+}

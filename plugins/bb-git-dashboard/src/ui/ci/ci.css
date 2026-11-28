@@ -57,11 +57,6 @@
 .git-ws .git-ci-run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
 .git-ws .git-ci-run .g-banner { margin: 12px 24px 0; }
 .git-ws .git-ci-run .git-ci-status { padding-top: 10px; }
-.git-ws .git-ci-menu { position: relative; display: inline-flex; }
-.git-ws .git-ci-menu-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 5; display: grid; min-width: 220px; padding: 4px;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--popover, var(--background)); box-shadow: var(--git-shadow); }
-.git-ws .git-ci-menu-list button { border: 0; background: none; text-align: left; padding: 6px 10px; border-radius: 5px; }
-.git-ws .git-ci-menu-list button:hover, .git-ws .git-ci-menu-list button:focus-visible { background: var(--accent); }
 .git-ws .git-ci-run-body { display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); flex: 1 1 auto; min-height: 0; }
 .git-ws .git-ci-jobs-pane { border-right: 1px solid var(--border); padding: 14px 0; min-width: 0; }
 .git-ws .git-ci-jobs-pane h2 { margin: 0 0 8px; padding: 0 16px; }

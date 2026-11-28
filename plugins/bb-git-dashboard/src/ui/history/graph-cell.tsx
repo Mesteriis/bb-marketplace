@@ -25,10 +25,11 @@ export function GraphCell({row, width, head}: {row: GraphRow; width: number; hea
   </svg>;
 }
 
-/** The lanes that run on through a day heading placed above `row`, so the graph stays unbroken. */
-export function LanesThrough({row, width, height}: {row: GraphRow; width: number; height: number}) {
-  const lanes = row.startsHere ? row.topLanes : [...new Set([...row.topLanes, row.commitLane])];
-  return <svg className="git-history-graph" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-    {lanes.map(lane => <line key={lane} x1={x(lane)} y1={0} x2={x(lane)} y2={height} stroke={color(lane)}/>)}
+/** The working tree's row on top of the graph: a hollow node over HEAD's lane, joined to it below. */
+export function WorkingCell({lane, width}: {lane: number; width: number}) {
+  const middle = rowHeight / 2;
+  return <svg className="git-history-graph" width={width} height={rowHeight} viewBox={`0 0 ${width} ${rowHeight}`} aria-hidden="true">
+    <line x1={x(lane)} y1={middle} x2={x(lane)} y2={rowHeight} stroke={color(lane)} strokeDasharray="2 2"/>
+    <circle cx={x(lane)} cy={middle} r={4.5} fill="var(--background)" stroke={color(lane)} strokeWidth={2}/>
   </svg>;
 }

@@ -42,8 +42,11 @@ test("line numbers read as ranges", () => {
 
 test("a run's title says what it does", async () => {
   const {runTitle} = await import("../src/ui/code-review/run-labels.ts");
+  const {format} = await import("../src/core/i18n/language.ts");
   const run = {id: "r", sessionId: "s", threadId: null, providerId: "codex", model: null, status: "done" as const, summary: null, changedFiles: null, createdAt: 1, finishedAt: 1};
-  assert.deepEqual([runTitle({...run, kind: "review", focus: null}), runTitle({...run, kind: "review", focus: "Security, Tests"}),
-    runTitle({...run, kind: "fix", focus: null}), runTitle({...run, kind: "summary", focus: null}), runTitle({...run, kind: "explain", focus: "src/a.ts:3-4"})],
-  ["AI review", "AI review · Security, Tests", "Fixes in a new thread", "Summary", "Explain · src/a.ts:3-4"]);
+  const titles = (language: "en" | "ru") => [runTitle({...run, kind: "review", focus: null}), runTitle({...run, kind: "review", focus: "Security, Tests"}),
+    runTitle({...run, kind: "fix", focus: null}), runTitle({...run, kind: "summary", focus: null}), runTitle({...run, kind: "explain", focus: "src/a.ts:3-4"})]
+    .map(title => format(language, title.key, title.values));
+  assert.deepEqual(titles("en"), ["AI review", "AI review · Security, Tests", "Fixes in a new thread", "Summary", "Explain · src/a.ts:3-4"]);
+  assert.deepEqual(titles("ru"), ["ИИ-ревью", "ИИ-ревью · Security, Tests", "Правки в новом треде", "Сводка", "Объяснение · src/a.ts:3-4"]);
 });

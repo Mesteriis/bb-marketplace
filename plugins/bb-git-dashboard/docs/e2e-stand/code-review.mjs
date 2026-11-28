@@ -19,6 +19,8 @@ const failures = [];
 const check = (name, ok, detail) => { console.log((ok ? "ok   " : "FAIL ") + name + (detail === undefined ? "" : " — " + JSON.stringify(detail))); if (!ok) failures.push(name); };
 const until = async (condition, timeout = 15000) => { const end = Date.now() + timeout; while (Date.now() < end) { if (await condition()) return true; await new Promise(resolve => setTimeout(resolve, 250)); } return false; };
 const visible = async (locator, timeout = 20000) => { await locator.first().waitFor({ timeout }).catch(() => {}); return await locator.count() > 0; };
+// The review's View ▾ menu holds the switches and the rarer actions.
+const viewMenu = async (review, item) => { await review.getByRole("button", { name: "View", exact: true }).click(); await review.getByRole("menuitem", { name: item, exact: true }).click(); };
 try {
   writeFileSync(join(stand, "home/projects/beta/README.md"), "a\nreviewed line\n");
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -32,13 +34,13 @@ try {
     await visible(review.locator(".git-review-row[data-kind=add]", { hasText: "reviewed line" })));
   await review.getByRole("button", { name: "Comment on line 2" }).click();
   await review.getByLabel("Line comment").fill("Capitalise this line.");
-  await review.getByLabel("Severity").selectOption("must-fix");
+  await review.getByRole("group", { name: "Severity" }).getByRole("button", { name: "Must fix" }).click();
   await review.getByRole("button", { name: "Comment", exact: true }).click();
   const thread = review.getByRole("article", { name: /Comment thread on README\.md:2/ });
   check("a line comment with its severity appears under its line", await visible(thread) && await visible(thread.getByText("Must fix")));
   await page.screenshot({ path: out + "/code-review-comment.png", fullPage: true });
 
-  await review.getByRole("button", { name: "Send to agent (1)" }).click();
+  await review.getByRole("button", { name: "Send to agent 1" }).click();
   const form = review.getByRole("group", { name: "Send to agent" });
   const target = form.getByRole("combobox");
   check("the thread working in this copy is offered", await until(async () => (await target.locator("option").count()) > 0));
@@ -56,7 +58,7 @@ try {
   check("an answer from outside the thread is refused", /inside the BB thread|THREAD_REQUIRED|thread_required/i.test(refused), refused.slice(0, 120));
   check("the owner sees the agent's answer and the thread resolved", await until(async () =>
     await thread.getByText("Done: capitalised it.").count() > 0 || await review.getByText("Resolved").count() > 0));
-  await review.getByRole("button", { name: "Reload" }).click();
+  await viewMenu(review, "Reload");
   const resolved = review.getByRole("article", { name: /Comment thread on README\.md:2/ });
   await resolved.getByRole("button", { name: "Show" }).click().catch(() => {});
   check("the answer is signed by the agent and marked answered", await visible(resolved.getByText("Done: capitalised it.")) && await visible(resolved.getByText("Answered")));

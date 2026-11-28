@@ -27,3 +27,15 @@ test("the side column lists each section once, with its path", () => {
     ["overview", ""], ["inbox", "inbox"], ["ci", "ci"], ["reviews", "reviews"], ["projects", "projects"], ["catalog", "catalog"],
   ]);
 });
+
+test("a review's view in words: each kind has its key, with its base, commit or range", async () => {
+  const { targetWords } = await import("../src/core/code-review/target-words.ts");
+  const { format } = await import("../src/core/i18n/language.ts");
+  const { targetFromKey } = await import("../src/core/code-review/model.ts");
+  const words = (key: string, language: "en" | "ru") => { const {key: k, values} = targetWords(targetFromKey(key)); return format(language, k, values); };
+  assert.equal(words("uncommitted", "ru"), "Незакоммиченные изменения");
+  assert.equal(words("uncommitted", "en"), "Uncommitted changes");
+  assert.equal(words("branch:main", "ru"), "Коммиты ветки после main");
+  assert.equal(words("commit:abcdef1234", "en"), "Commit abcdef1");
+  assert.equal(words("range:v1..v2", "en"), "Range v1..v2");
+});

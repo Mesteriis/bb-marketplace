@@ -54,6 +54,7 @@ export function historyApi(client: Client): HistoryApi {
     revision: async copyId => okValue(await client.call("historyRevision", {copyId})).revision,
     commit: async (copyId, hash) => okValue(await client.call("historyCommit", {copyId, hash})).value,
     patch: async (copyId, hash, path) => okValue(await client.call("historyPatch", {copyId, hash, path})),
+    copy: text => experimental_copyToClipboard({text}),
   };
 }
 

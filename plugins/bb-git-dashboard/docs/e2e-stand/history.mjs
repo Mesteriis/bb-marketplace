@@ -25,29 +25,38 @@ try {
   check("copy listed", await visible(entry));
   await entry.click();
   await page.getByRole("tablist", { name: "Project sections" }).getByRole("tab", { name: "History" }).click();
-  check("history counts commits on all branches", await visible(page.getByText("5 commits on all branches · on main")));
-  const gap = await page.locator(".git-history-list").evaluate(list => list.getBoundingClientRect().left - (list.closest("main") ?? list.parentElement).getBoundingClientRect().left).catch(() => 0);
-  check("history keeps the panel's inner spacing", gap >= 8, gap);
+  check("the bar counts the commits and names the branch", await visible(page.locator(".git-history-bar").getByText("5 commits · on main")));
+  const edge = await page.locator(".git-history-bar").evaluate(bar => bar.getBoundingClientRect().left - bar.closest(".g-page").getBoundingClientRect().left).catch(() => -1);
+  check("the history runs edge to edge under the tabs, as on the reference", edge === 0, edge);
   const merge = page.locator(".git-history-row", { hasText: "merge feature" });
   check("merge commit carries the current branch and the tag", await visible(merge) &&
     await merge.locator(".git-history-ref[data-head]", { hasText: "main" }).count() === 1 && await merge.locator(".git-history-ref[data-kind=tag]", { hasText: "v1.0" }).count() === 1);
   const width = Number(await page.locator(".git-history-graph").first().getAttribute("width"));
   check("graph draws more than one lane", width >= 30, width);
   check("side branch is part of the graph", await page.locator(".git-history-row", { hasText: "side tip" }).count() === 1);
-  check("uncommitted change opens first with its patch", await visible(page.getByRole("region", { name: "Uncommitted changes" })) &&
-    await visible(page.locator(".git-history-patch .git-added", { hasText: "+b" })));
-  await page.screenshot({ path: out + "/history-1440.png", fullPage: true });
+  check("each commit says who and how long ago", /^stand · (just now|\d+ (min|h)|\d+ days?)$/.test((await merge.locator(".git-history-meta").innerText()).trim()),
+    await merge.locator(".git-history-meta").innerText());
+  const change = page.locator(".git-history-change");
+  check("uncommitted change opens first with its numbered diff", await visible(page.getByRole("region", { name: "Uncommitted changes" })) &&
+    await visible(change.locator(".git-review-row[data-kind=add]", { hasText: "b" })) && await visible(change.locator(".git-review-row[data-kind=add] .git-review-number").nth(1)));
+  await page.screenshot({ path: out + "/project-history-light.png" });
   await page.locator(".git-history-row", { hasText: "feature work" }).click();
-  check("a commit shows its files and patch", await visible(page.getByRole("region", { name: "Commit" }).getByText("feature.txt")) &&
-    await visible(page.locator(".git-history-patch .git-added", { hasText: "+2" })));
-  const patch = page.getByRole("region", { name: "Commit" });
-  check("a patch counts its changed lines", await visible(patch.getByText(/^\d+ changed lines?$/)) && await visible(patch.locator(".git-history-patch-head .git-added")));
-  await patch.getByLabel("Wrap long lines").check();
-  check("Wrap long lines wraps the patch", await patch.locator(".git-history-patch[data-wrap]").count() === 1);
-  check("commits are grouped by day", await page.locator(".git-history-day").count() >= 1);
+  const commit = page.getByRole("region", { name: "Commit" });
+  check("a commit shows its facts: hash, author, parent and changes", await visible(commit.getByRole("heading", { name: "feature work" })) &&
+    await visible(commit.getByRole("term").filter({ hasText: "Commit" })) && await visible(commit.getByRole("term").filter({ hasText: "Parent" })) &&
+    /^1 file · \+1 −0$/.test((await commit.locator("dd").nth(3).textContent()).replace(/\s+/g, " ").trim()), await commit.locator("dd").allTextContents().catch(() => []));
+  check("a commit shows its files and the chosen file's diff", await visible(commit.getByRole("list", { name: "Changed files" }).getByText("feature.txt")) &&
+    await visible(commit.locator(".git-review-row[data-kind=add]", { hasText: "2" })));
+  const wrap = commit.getByRole("button", { name: "Wrap lines" });
+  await wrap.click();
+  check("Wrap lines wraps the diff", await wrap.getAttribute("aria-pressed") === "true" && await commit.locator(".git-history-diff[data-wrap]").count() === 1);
+  await page.getByRole("group", { name: "Which commits" }).getByRole("button", { name: "Current only" }).click();
+  check("Current only leaves HEAD's history: the side branch goes", await page.locator(".git-history-row", { hasText: "side tip" }).count() === 0
+    && await page.locator(".git-history-row", { hasText: "feature work" }).count() === 1);
+  await page.getByRole("group", { name: "Which commits" }).getByRole("button", { name: "All branches" }).click();
   const search = page.getByRole("searchbox", { name: "Find in loaded commits" });
   await search.fill("feature");
-  check("search counts its matches", await visible(page.getByText(/^\d+ match(es)? *$/)), await page.locator(".git-history-search [role=status]").textContent().catch(() => null));
+  check("search counts its matches", await visible(page.locator(".git-history-bar").getByText(/^\d+ match(es)?$/)), await page.locator(".git-history-bar [role=status]").textContent().catch(() => null));
   check("search marks matching rows and dims the rest", await page.locator(".git-history-rows li[data-match]").count() >= 1 &&
     await page.locator(".git-history-rows li[data-index]:not([data-match])").count() >= 1);
   await search.press("Enter");
@@ -55,7 +64,7 @@ try {
   await search.fill("");
   await page.getByRole("button", { name: "Refresh" }).first().click();
   check("Refresh reloads the history", await visible(page.getByRole("button", { name: "Refresh" }).first()) &&
-    await visible(page.getByText("5 commits on all branches · on main")));
+    await visible(page.locator(".git-history-bar").getByText("5 commits · on main")));
   await page.setViewportSize({ width: 768, height: 900 });
   await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
