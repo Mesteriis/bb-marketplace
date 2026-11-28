@@ -1,4 +1,4 @@
-import { ResourcePath } from "../path.ts";
+import { NameSegment, ResourcePath } from "../path.ts";
 import { z } from "zod";
 import { EditId, EditRevision, WriteBackRequest, WriteBackResult } from "../edit-session.ts";
 import { EDIT_CHUNK, EDIT_LIMIT } from "../edit-source.ts";
@@ -22,7 +22,11 @@ const route = z.strictObject({ path: z.string().min(1) });
 export const editHostSchemas = {
   editSourceIdentity: {
     input: z.strictObject({ path: ResourcePath }),
-    output: z.strictObject({ dev: z.string().regex(/^[0-9]+$/), ino: z.string().regex(/^[0-9]+$/) }).nullable(),
+    output: z.strictObject({
+      dev: z.string().regex(/^[0-9]+$/), ino: z.string().regex(/^[0-9]+$/),
+      parentDev: z.string().regex(/^[0-9]+$/), parentIno: z.string().regex(/^[0-9]+$/),
+      name: NameSegment,
+    }).nullable(),
   },
   editCreate: { input: id.extend({ size: offset }), output: route },
   editRoute: { input: id.extend({ revision: EditRevision, name: z.string().min(1).max(1024) }), output: route },

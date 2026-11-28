@@ -1,9 +1,12 @@
+import { opendir } from "node:fs/promises";
 import type { ExperimentalHostRpcHandlers } from "@get-bb/plugin-sdk";
+import { segmentKey } from "../../core/guards.ts";
+import type { NameSegment } from "../../core/path.ts";
 import { CommanderError } from "../../core/errors.ts";
 import type { editHostSchemas } from "../../core/wire/edit.ts";
 import { createEditPathPolicy } from "./edit-path-policy.ts";
 import { hasErrno } from "./host-fs/errors.ts";
-import { resolvePath } from "./host-fs/paths.ts";
+import { childPath, decodeName, lstatOrNull, recheckParent, resolvePath, sameNode } from "./host-fs/paths.ts";
 import { createEditFiles } from "./edit-files.ts";
 
 export function createEditHostHandlers(files = createEditFiles()): ExperimentalHostRpcHandlers<typeof editHostSchemas> {
@@ -16,11 +19,45 @@ export function createEditHostHandlers(files = createEditFiles()): ExperimentalH
         if (hasErrno(error, "ENOENT")) return null;
         throw error;
       });
-      if (!resolved?.stats?.isFile()) return null;
+      const requested = path.segments.at(-1);
+      if (!resolved?.stats?.isFile() || !resolved.parent || !resolved.parentStats || !requested) return null;
       if (await policy.hidden(resolved.full, resolved.stats)) {
         throw new CommanderError("permission_denied", "Path is outside the agent's grant");
       }
-      return { dev: resolved.stats.dev.toString(), ino: resolved.stats.ino.toString() };
+      const exactKey = segmentKey(requested, true);
+      const foldedKey = segmentKey(requested, false);
+      const directory = await opendir(resolved.parent, platform === "win32" ? {} : { encoding: "buffer" as BufferEncoding });
+      let exact: NameSegment | undefined;
+      let folded: NameSegment | undefined;
+      let ambiguous = false;
+      try {
+        for (;;) {
+          ctx.signal.throwIfAborted();
+          const item = await directory.read();
+          if (!item) break;
+          const name: NameSegment = platform === "win32" ? { t: item.name } : decodeName(Buffer.from(item.name));
+          if (segmentKey(name, false) !== foldedKey) continue;
+          const candidate = await lstatOrNull(childPath(resolved.parent, name));
+          if (!candidate || !sameNode(candidate, resolved.stats)) continue;
+          if (segmentKey(name, true) === exactKey) {
+            exact = name;
+            break;
+          }
+          ambiguous ||= folded !== undefined;
+          folded = name;
+        }
+      } finally { await directory.close(); }
+      const name = exact ?? (ambiguous ? undefined : folded);
+      if (!name) return null;
+      await recheckParent(resolved);
+      const latest = await lstatOrNull(resolved.full);
+      const listed = await lstatOrNull(childPath(resolved.parent, name));
+      if (!latest?.isFile() || !listed?.isFile()
+          || !sameNode(latest, resolved.stats) || !sameNode(listed, resolved.stats)) return null;
+      return {
+        dev: latest.dev.toString(), ino: latest.ino.toString(), name,
+        parentDev: resolved.parentStats.dev.toString(), parentIno: resolved.parentStats.ino.toString(),
+      };
     },
     async editCreate(input, ctx) {
       return { path: await files.create(ctx.experimental_paths.dataDir, input.sessionId, input.size) };

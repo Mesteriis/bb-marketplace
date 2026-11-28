@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import activate from "../../../server.ts";
 import worker from "../../../host.ts";
 import { EDIT_SNAPSHOT_ENDPOINT, type WriteBackRequest } from "../../core/edit-session.ts";
-import { parsePosix } from "../../core/path.ts";
+import { parsePosix, type NameSegment } from "../../core/path.ts";
 import { OperationJob } from "../../core/model.ts";
 import { editRpcSchemas } from "../../core/wire/edit.ts";
 import { EDIT_DIRECTORY } from "./edit-files.ts";
@@ -38,7 +38,7 @@ function ref(path = source) {
   return { endpoint: "host:test", path: parsePosix(path) };
 }
 
-async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false, options: { loseChunkReply?: boolean; caseSensitive?: boolean; identity?: (path: ReturnType<typeof parsePosix>) => { dev: string; ino: string } } = {}) {
+async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false, options: { loseChunkReply?: boolean; caseSensitive?: boolean; identity?: (path: ReturnType<typeof parsePosix>) => { dev: string; ino: string; parentDev: string; parentIno: string; name: NameSegment } } = {}) {
   const db = new Database(join(folder, "jobs.db"));
   const signal = new AbortController();
   const callbacks: (() => Promise<void>)[] = [];
@@ -375,7 +375,8 @@ it.each([[false, true], [true, false]])("uses endpoint case sensitivity %s for r
     caseSensitive,
     identity(path) {
       const upper = path.segments.at(-1);
-      return { dev: "5", ino: caseSensitive && upper && "t" in upper && upper.t === "A.txt" ? "13" : "12" };
+      const distinct = caseSensitive && upper && "t" in upper && upper.t === "A.txt";
+      return { dev: "5", ino: distinct ? "13" : "12", parentDev: "5", parentIno: "8", name: { t: distinct ? "A.txt" : "a.txt" } };
     },
   });
   const upper = join(folder, "A.txt");
@@ -427,7 +428,7 @@ it("keeps distinct inodes in separate sessions even when host home folds case", 
       const leaf = path.segments.at(-1);
       if (!leaf || !("t" in leaf)) throw new Error("Expected a textual fixture path");
       probes.push(leaf.t);
-      return { dev: "5", ino: leaf.t === "A.txt" ? "13" : "12" };
+      return { dev: "5", ino: leaf.t === "A.txt" ? "13" : "12", parentDev: "5", parentIno: "8", name: leaf };
     },
   });
   const first = await bb.open();
@@ -465,8 +466,38 @@ it("reports equal device and inode for hard links and distinguishes separate fil
   await writeFile(distinct, "abc");
   const original = await handler({ path: parsePosix(source) }, context);
   expect(original).toMatchObject({ dev: expect.stringMatching(/^[0-9]+$/), ino: expect.stringMatching(/^[1-9][0-9]*$/) });
-  await expect(handler({ path: parsePosix(alias) }, context)).resolves.toEqual(original);
+  await expect(handler({ path: parsePosix(alias) }, context)).resolves.toEqual({
+    ...original, name: { t: "same-inode.txt" },
+  });
   await expect(handler({ path: parsePosix(distinct) }, context)).resolves.not.toEqual(original);
   await expect(handler({ path: parsePosix(join(folder, "missing")) }, context)).resolves.toBeNull();
   await bb.close();
+});
+
+it("writes through the selected directory entry when case variants have the same inode", async () => {
+  const bb = await start(undefined, "test", false, {
+    caseSensitive: false,
+    identity(path) {
+      const name = path.segments.at(-1)!;
+      return { dev: "5", ino: "12", parentDev: "5", parentIno: "8", name };
+    },
+  });
+  const upper = join(folder, "A.txt");
+  // On a case-sensitive test volume this creates the actual pair. On a folded
+  // test volume the worker response supplies the two distinct spellings.
+  await link(source, upper).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  const lower = await bb.open();
+  const opened = editRpcSchemas.edit_open.output.parse(await bb.rpc("edit_open", { ref: ref(upper) }));
+  expect(opened.sessionId).not.toBe(lower.sessionId);
+  const info = editRpcSchemas.edit_get.output.parse(await bb.rpc("edit_get", { sessionId: opened.sessionId }));
+  expect(info.ref.path.segments.at(-1)).toEqual({ t: "A.txt" });
+  await bb.save(opened.sessionId, 0);
+  const result = editRpcSchemas.edit_writeback.output.parse(await bb.rpc("edit_writeback", {
+    sessionId: opened.sessionId, revision: 1, clientRequestId: randomUUID(),
+  }));
+  if (result.kind !== "written") throw new Error("Expected queued write");
+  const job = await bb.completed(result.jobId);
+  expect(job.plan.items[0]?.target?.path.segments.at(-1)).toEqual({ t: "A.txt" });
 });

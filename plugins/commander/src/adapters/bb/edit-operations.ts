@@ -119,10 +119,12 @@ export function createEditOperations(deps: {
     if (aliases.length === 0) return null;
     const sourceIdentity = (candidate: ResourceRef) => host.call("editSourceIdentity", { path: candidate.path }, hostId, signal);
     const identity = await sourceIdentity(ref);
-    if (identity === null || identity.ino === "0") return null;
+    if (identity === null || identity.ino === "0" || identity.parentIno === "0") return null;
     for (const candidate of aliases) {
       const other = await sourceIdentity(candidate.ref);
-      if (other?.dev === identity.dev && other.ino === identity.ino) return candidate;
+      if (other?.dev === identity.dev && other.ino === identity.ino
+          && other.parentDev === identity.parentDev && other.parentIno === identity.parentIno
+          && segmentKey(other.name, true) === segmentKey(identity.name, true)) return candidate;
     }
     return null;
   }
