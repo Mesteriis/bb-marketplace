@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.0 — 2026-11-28
+
+Scaffolds from a templates repository, first of two slices: the format, its loader, a local folder as a source and a CLI.
+
+- **Scaffolds: local templates folder** reads a folder in the layout of the templates repository: `common/template.json` and `common/files/` for the files every project gets, `templates/<id>/template.json` and `templates/<id>/files/` for each template. The manifest (format 1) names the template and labels its parameters in English and Russian, and lists by glob the files written under a condition, renamed, or copied verbatim, with the `.gitignore` lines, `.editorconfig` sections and CI values the template adds. A manifest of a newer format, an unknown field, an id unlike its folder or a template that does not render is refused with the file and the reason; the others are still offered. A broken common layer refuses every template.
+- The folder is read on its host without following links, `.git` and anything outside `common/` and `templates/` left out, within 256 KB a file, 2000 files, 20 MB and a depth of 12.
+- Any `{{` in a template that is not a value or a section refuses it, naming it: a file that writes `{{ }}` itself (a Vue template) is listed under `verbatim` and copied byte for byte. `${{` stays as it is.
+- Binary files (icons) are kept as bytes; a binary file that is executable or sits in `scripts/` is refused.
+- New project shows a template's title, description and labels in the interface language.
+- `scripts/scaffold.ts list|variants|render` lists a templates folder, enumerates each template's variants and renders one into a new folder with its CI, on the plugin's own engine and loader, for the templates repository's CI.
+- The CI templates find an application in `src/<role>/` when the root has no stack: they install and test there and run `make check` at the root. A project made from a scaffold gets that CI too, and a web UI in `src/frontend/` beside a Go service is checked by `make web-check` rather than taken for the stack.
+
 ## 0.15.1 — 2026-11-28
 
 Fixes to the scaffolds on a machine with an older uv, and to the CI a new project gets.
