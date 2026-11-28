@@ -31,11 +31,11 @@ try {
     await page.locator(".git-inbox-item", { hasText: "Add greeting check" }).locator("a").first().click();
     const pr = page.getByRole("region", { name: "Pull request stand/beta #3" });
     await visible(pr.getByRole("heading", { name: /Add greeting check/ }));
-    await pr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Comments/ }).click();
+    await pr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Comments/ }).click();
     return pr;
   };
   let pr = await openPull();
-  const thread = pr.locator("article.git-review-thread", { hasText: "wrold?" });
+  const thread = pr.locator(".git-pr-thread", { hasText: "wrold?" });
   await thread.getByRole("button", { name: "Fix with agent" }).click();
   const reached = await until(async () => /thr_[A-Za-z0-9_-]+/.test(page.url()));
   check("Fix with agent opens the agent's thread", reached, reached ? undefined : (await pr.locator(".git-muted[role=status], [role=alert], .git-review-notice").allInnerTexts()).join(" | ").slice(0, 400));
@@ -54,8 +54,10 @@ try {
   await draft.getByLabel("Edit the draft reply").fill("Fixed the typo in line 2.");
   await draft.getByRole("button", { name: "Save" }).click();
   check("the draft can be edited", await visible(draft.getByText("Fixed the typo in line 2.")));
+  await draft.getByLabel("Edit the draft reply").waitFor({ state: "detached", timeout: 10000 }).catch(() => {});
+  await page.screenshot({ path: out + "/pr-comments-draft.png", fullPage: false });
   const before = log().length;
-  await draft.getByRole("button", { name: "Post", exact: true }).click();
+  await draft.getByRole("button", { name: "Send", exact: true }).click();
   const dialog = page.getByRole("dialog");
   check("posting is previewed", await visible(dialog.getByText(/Fixed the typo in line 2\./)));
   await dialog.getByRole("button", { name: "Confirm" }).click();

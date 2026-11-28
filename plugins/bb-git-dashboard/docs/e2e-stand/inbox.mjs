@@ -16,16 +16,22 @@ try {
   page.on("pageerror", error => errors.push(String(error).slice(0, 200)));
   await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
-  const tabs = page.getByRole("navigation", { name: "Pull request tabs" });
+  const tabs = page.getByRole("tablist", { name: "Pull request tabs" });
   const row = title => page.locator(".git-inbox-item", { hasText: title });
-  check("both accounts are listed", await visible(page.getByRole("heading", { name: "stand Gitea" })) && await visible(page.getByRole("heading", { name: "stand GitLab" })));
-  check("Open counts both accounts", (await tabs.getByRole("button", { name: /^Open/ }).innerText()).replace(/\s+/g, "") === "Open3");
-  check("Review requested counts both accounts", (await tabs.getByRole("button", { name: /^Review requested/ }).innerText()).replace(/\s+/g, "") === "Reviewrequested2");
+  check("the page has the one head of every section", await visible(page.getByRole("heading", { name: "My PRs", level: 1 })));
+  check("both accounts' repositories are listed, each with its forge", await visible(page.getByRole("region", { name: "stand/beta · Gitea" }))
+    && await visible(page.getByRole("region", { name: "stand/gamma · GitLab" })));
+  check("Open counts both accounts", (await tabs.getByRole("tab", { name: /^Open/ }).innerText()).replace(/\s+/g, "") === "Open3");
+  check("Review requested counts both accounts", (await tabs.getByRole("tab", { name: /^Review requested/ }).innerText()).replace(/\s+/g, "") === "Reviewrequested2");
   const greeting = row("Add greeting check");
   check("a conflicting PR with failing CI is red and says why", await visible(greeting) && await greeting.getAttribute("data-severity") === "red" &&
-    /Merge conflicts/.test(await greeting.innerText()) && /CI failing \(1 check\)/.test(await greeting.innerText()) && /\+12\s*−3/.test(await greeting.innerText()));
+    /Conflict/.test(await greeting.innerText()) && /CI failed/.test(await greeting.innerText()) && /\+12\s*−3/.test(await greeting.innerText()));
   check("a running pipeline is amber", await row("Retry flaky test").getAttribute("data-severity") === "amber" && /CI running/.test(await row("Retry flaky test").innerText()));
-  check("a merge request on another one's branch is stacked on it", /Draft/.test(await row("Follow-up on retries").innerText()) && /Stacked on #5/.test(await row("Follow-up on retries").innerText()));
+  check("a merge request on another one's branch is stacked on it", /Draft/.test(await row("Follow-up on retries").innerText()) && /On #5/.test(await row("Follow-up on retries").innerText()));
+  const chips = page.getByRole("group", { name: "Blockers" });
+  await chips.getByRole("button", { name: /^CI failed/ }).click();
+  check("a blocker chip keeps only the rows it counts", await page.locator(".git-inbox-item").count() === 1 && await greeting.count() === 1);
+  await chips.getByRole("button", { name: /^CI failed/ }).click();
   check("a row opens the forge page", /\/stand\/beta\/pulls\/3$/.test(await greeting.locator("a").first().getAttribute("href") ?? ""));
   await page.screenshot({ path: out + "/inbox-open.png", fullPage: true });
 
@@ -39,11 +45,11 @@ try {
   await page.getByRole("button", { name: "Show all" }).click();
   check("Show all brings it back", await visible(greeting));
 
-  await tabs.getByRole("button", { name: /^Review requested/ }).click();
+  await tabs.getByRole("tab", { name: /^Review requested/ }).click();
   check("Review requested lists both forges", await visible(row("Tidy README")) && await visible(row("Rename variables")) && /Changes requested/.test(await row("Rename variables").innerText()));
-  await tabs.getByRole("button", { name: /^Merged/ }).click();
+  await tabs.getByRole("tab", { name: /^Merged/ }).click();
   check("Merged lists the merged PR without blockers", await visible(row("Initial import")) && await row("Initial import").locator(".git-inbox-blocker").count() === 0);
-  await tabs.getByRole("button", { name: /^Open/ }).click();
+  await tabs.getByRole("tab", { name: /^Open/ }).click();
 
   const alert = page.getByText("CI failing · stand/gamma#5");
   check("the watcher alerts when the pipeline starts failing", await visible(alert, 240000));

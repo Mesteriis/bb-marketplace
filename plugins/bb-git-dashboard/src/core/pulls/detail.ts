@@ -148,11 +148,18 @@ export type FixSubject = { kind: "thread"; thread: Thread } | { kind: "check"; c
  * pull request the threads waiting on your reply, on someone else's the ones its author answered. Ported from
  * bb-github-pr-dashboard's ThreadsTab.
  */
-export function threadFilter(threads: readonly Thread[], viewer: string, author: string): {unresolved: string[]; resolved: string[]; waiting: string | null} {
+export function threadFilter(threads: readonly Thread[], viewer: string, author: string): {unresolved: string[]; resolved: string[]; waiting: string | null; waitingCount: number} {
   const published = threads.filter(thread => !thread.isPending);
   const open = published.filter(thread => !thread.isResolved);
   const yours = viewer === author;
   const count = open.filter(thread => threadStatus(thread, viewer, author) === (yours ? "waiting-on-you" : "author-replied")).length;
   return {unresolved: open.map(thread => thread.id), resolved: published.filter(thread => thread.isResolved).map(thread => thread.id),
-    waiting: count === 0 ? null : yours ? count + " waiting on your reply" : count + " answered by " + author};
+    waiting: count === 0 ? null : yours ? count + " waiting on your reply" : count + " answered by " + author, waitingCount: count};
+}
+
+/** The description (the timeline's first entry, when it is the body) apart from the discussion that follows it. */
+export function splitTimeline<T extends Pick<TimelineEntry, "id" | "body" | "reviewState">>(detail: {body: string; timeline: T[]}): {description: T | null; discussion: T[]} {
+  const [first, ...rest] = detail.timeline;
+  const isBody = !!first && first.id === "" && first.reviewState === null && !!detail.body.trim() && first.body.trim() === detail.body.trim();
+  return isBody ? {description: first!, discussion: rest} : {description: null, discussion: detail.timeline};
 }

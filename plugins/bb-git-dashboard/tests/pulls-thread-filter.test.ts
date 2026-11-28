@@ -7,7 +7,7 @@ const thread = (id: string, over: Partial<Thread>) => ({id, isResolved: false, i
 const threads = [thread("open-asks", {awaitingReply: true}), thread("open-answered", {}), thread("done", {isResolved: true}), thread("draft", {isPending: true, awaitingReply: true})];
 
 test("on your pull request the open threads waiting on you are counted; drafts of your review are left out", () => {
-  assert.deepEqual(threadFilter(threads, "me", "me"), {unresolved: ["open-asks", "open-answered"], resolved: ["done"], waiting: "1 waiting on your reply"});
+  assert.deepEqual(threadFilter(threads, "me", "me"), {unresolved: ["open-asks", "open-answered"], resolved: ["done"], waiting: "1 waiting on your reply", waitingCount: 1});
 });
 
 test("on someone else's, the threads the author answered are counted", () => {

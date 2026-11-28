@@ -35,11 +35,12 @@ try {
   const opened = await visible(pr.getByRole("heading", { name: /Add greeting check/ }));
   if (!opened) { await page.screenshot({ path: out + "/review-not-opened.png", fullPage: true }); console.log((await page.locator("body").innerText()).slice(0, 1200)); }
   check("a pull request opens inside Makosh Git", opened);
-  check("its blockers and review are shown", await visible(pr.getByText("Merge conflicts")) && await visible(pr.getByText(/alice: changes requested/)));
+  check("what keeps it from merging and its reviewers are shown", await visible(pr.getByText(/Conflicts with main/))
+    && await visible(pr.locator(".git-pr-people li", { hasText: "alice" }).getByText("changes")));
   check("the discussion is listed as text", await visible(pr.getByText("Looks close.")) && await visible(pr.getByText("Typo on line 2.")));
-  await pr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Checks/ }).click();
-  check("the failing check offers Fix with agent", await visible(pr.locator("li", { hasText: "ci/test" }).getByRole("button", { name: "Fix with agent" })));
-  await pr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Files/ }).click();
+  await pr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Checks/ }).click();
+  check("the failing check is open on its errors and offers Fix with agent", await visible(pr.getByRole("region", { name: /^Errors of .*ci\/test/ }).getByRole("button", { name: "Fix with agent" })));
+  await pr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Files/ }).click();
   check("the review thread sits under its line", await visible(pr.locator(".git-review-diff .git-review-thread", { hasText: "wrold?" })));
   await pr.getByRole("region", { name: "src/greeting.txt", exact: true }).getByRole("button", { name: "Comment on line 2", exact: true }).click();
   await pr.getByRole("textbox", { name: "Line comment" }).fill("Should read world.");
@@ -48,7 +49,7 @@ try {
   const lineWrite = gitea().find(write => write.path.endsWith("/pulls/3/reviews"));
   check("and reaches Gitea as a review comment on the new line", lineWrite?.body?.comments?.[0]?.new_position === 2 && lineWrite?.body?.commit_id === "e".repeat(40), lineWrite);
   await page.screenshot({ path: out + "/review-files.png", fullPage: true });
-  await pr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: "Overview" }).click();
+  await pr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: "Overview" }).click();
   await pr.getByRole("textbox", { name: "Comment" }).fill("Thanks!");
   await pr.getByRole("button", { name: "Comment", exact: true }).click();
   check("a comment is previewed", await confirm(page, "Comment on stand/beta #3"));
@@ -64,19 +65,19 @@ try {
   await page.locator(".git-inbox-item", { hasText: "Retry flaky test" }).locator("a").first().click();
   const mr = page.getByRole("region", { name: "Pull request stand/gamma #5" });
   check("a GitLab merge request opens", await visible(mr.getByRole("heading", { name: /Retry flaky test/ })));
-  await mr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Comments/ }).click();
+  await mr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Comments/ }).click();
   await mr.getByRole("button", { name: "Resolve", exact: true }).click();
   check("resolving a thread is previewed", await confirm(page, "Resolve a review thread on stand/gamma #5"));
   check("and resolves the GitLab discussion", JSON.stringify(gitlab().at(-1)) === JSON.stringify({method: "PUT", path: "/api/v4/projects/7/merge_requests/5/discussions/disc-1", body: {resolved: true}}), gitlab().at(-1));
   // Approving needs a merge request by someone else: !8 asks for my review.
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
-  await page.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Review requested/ }).click();
+  await page.getByRole("tablist", { name: "Pull request tabs" }).getByRole("tab", { name: /^Review requested/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Rename variables" }).locator("a").first().click();
   const other = page.getByRole("region", { name: "Pull request stand/gamma #8" });
-  await other.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Files/ }).click({ timeout: 20000 });
-  const outcome = other.getByRole("combobox", { name: "Review outcome" });
-  check("GitLab offers no request-changes review", await visible(outcome) && !(await outcome.locator("option").allInnerTexts()).includes("Request changes"));
-  await outcome.selectOption("APPROVE");
+  await other.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Comments/ }).click({ timeout: 20000 });
+  const outcome = other.getByRole("group", { name: "Review outcome" });
+  check("GitLab offers no request-changes review", await visible(outcome) && await outcome.getByRole("button", { name: "Request changes" }).isDisabled());
+  await outcome.getByRole("button", { name: "Approve" }).click();
   await other.getByRole("button", { name: "Submit review" }).click();
   check("an approval is previewed", await confirm(page, "Approve on stand/gamma #8"));
   const approve = gitlab().find(write => write.path.endsWith("/merge_requests/8/approve"));
@@ -84,7 +85,7 @@ try {
 
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click();
   // My PRs comes back on the tab it was left on (Review requested): the draft is on Open.
-  await page.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Open/ }).click();
+  await page.getByRole("tablist", { name: "Pull request tabs" }).getByRole("tab", { name: /^Open/ }).click();
   await page.locator(".git-inbox-item", { hasText: "Follow-up on retries" }).locator("a").first().click();
   const draft = page.getByRole("region", { name: "Pull request stand/gamma #6" });
   await draft.getByRole("button", { name: "Ready for review" }).click({ timeout: 20000 });

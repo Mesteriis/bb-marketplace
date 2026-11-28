@@ -51,11 +51,11 @@ try {
   const inbox = page.getByRole("region", { name: "My pull requests" });
   const row = inbox.locator(".git-inbox-item", { hasText: "Add greeting check" });
   check("My PRs lists the open pull request", await visible(row));
-  check("it says when the list was read", await visible(inbox.getByText(/^Updated (just now|\d+ min ago)$/)));
-  const tiles = inbox.getByRole("list", { name: "Open pull requests at a glance" });
-  const tile = label => tiles.getByRole("listitem").filter({ hasText: label }).locator("strong").innerText().catch(() => "");
-  check("the Open tiles count CI failing and nothing ready", await tile("CI failing") === "1" && await tile("Ready to merge") === "0",
-    [await tile("CI failing"), await tile("Unresolved comments"), await tile("Changes requested"), await tile("Ready to merge")]);
+  check("it says when the list was read", await visible(inbox.getByText(/updated (just now|\d+ min)$/)));
+  const chips = inbox.getByRole("group", { name: "Blockers" });
+  const chip = label => chips.getByRole("button", { name: new RegExp("^" + label) }).locator(".g-num").innerText().catch(() => "");
+  check("the blocker chips count CI failed and nothing ready", await chip("CI failed") === "1" && await chip("Ready to merge") === "0",
+    [await chip("CI failed"), await chip("Unanswered"), await chip("Changes requested"), await chip("Ready to merge")]);
   await inbox.getByRole("button", { name: "Collapse all" }).click();
   check("Collapse all folds every repository", await until(async () => await inbox.locator(".git-inbox-item").count() === 0));
   await inbox.getByRole("button", { name: "Expand all" }).click();
@@ -87,22 +87,25 @@ try {
   await row.locator("a").first().click();
   await visible(pr.getByRole("heading", { name: /Add greeting check/ }));
 
-  const sections = pr.getByRole("navigation", { name: "Pull request sections" });
-  await sections.getByRole("button", { name: /^Files/ }).click();
+  const sections = pr.getByRole("tablist", { name: "Pull request sections" });
+  await sections.getByRole("tab", { name: /^Files/ }).click();
   const list = pr.getByRole("navigation", { name: "Changed files" });
   check("Files lists the changed files, with the open comment count", await visible(list.getByRole("button", { name: /src\/greeting\.ts/ }))
-    && await list.getByRole("button", { name: /src\/greeting\.txt/ }).getByLabel("1 open comment threads").count() === 1);
+    && await list.getByRole("button", { name: /src\/greeting\.txt/ }).getByLabel("1 open comment thread", { exact: true }).count() === 1);
   const ts = pr.getByRole("region", { name: "src/greeting.ts", exact: true });
   check("the TypeScript diff is highlighted", await until(async () => await ts.locator(".git-review-code span[style*='color']").count() > 0, 20000));
   check("its grammar alone was fetched, once", grammars.length === 1 && grammars[0] === "typescript", grammars);
   check("a text file stays plain", await pr.getByRole("region", { name: "src/greeting.txt", exact: true }).locator(".git-review-code span[style]").count() === 0);
-  await pr.getByLabel("Side by side").check();
+  await pr.getByRole("group", { name: "Diff view" }).getByRole("button", { name: "Split" }).click();
   check("Side by side shows the two sides", await visible(pr.locator(".git-review-split")));
   await page.screenshot({ path: out + "/pr-parity-files.png", fullPage: false });
   await page.reload({ waitUntil: "load" });
   await visible(pr.getByRole("heading", { name: /Add greeting check/ }), 30000);
-  await sections.getByRole("button", { name: /^Files/ }).click();
-  check("Side by side is kept over a reload", await visible(pr.locator(".git-review-split")) && await pr.getByLabel("Side by side").isChecked());
+  await sections.getByRole("tab", { name: /^Files/ }).click();
+  await pr.locator(".git-review-file").first().waitFor({ timeout: 20000 }).catch(() => {});
+  await page.screenshot({ path: out + "/pr-parity-reload.png", fullPage: false });
+  check("Side by side is kept over a reload", await visible(pr.locator(".git-review-split"))
+    && await pr.getByRole("group", { name: "Diff view" }).getByRole("button", { name: "Split" }).getAttribute("aria-pressed") === "true");
 
   await pr.getByRole("heading", { name: /Add greeting check/ }).click();
   await page.keyboard.press("j");
@@ -115,11 +118,11 @@ try {
   await page.keyboard.press("n");
   check("n goes to the open comment thread", (await active(page)).thread === "42", await active(page));
 
-  await sections.getByRole("button", { name: /^Comments/ }).click();
-  const thread = pr.locator(".git-review-thread", { hasText: "wrold?" });
+  await sections.getByRole("tab", { name: /^Comments/ }).click();
+  const thread = pr.locator(".git-pr-thread", { hasText: "wrold?" });
   check("a thread read away from the diff shows its diff fragment", await visible(thread.locator(".git-review-snippet .git-review-code", { hasText: "wrold" })));
-  await thread.getByRole("button", { name: "Show in diff" }).click();
-  check("Show in diff opens Files on the thread", await until(async () => await sections.getByRole("button", { name: /^Files/ }).getAttribute("aria-current") === "page"
+  await thread.getByRole("button", { name: /^To line/ }).click();
+  check("To line opens Files on the thread", await until(async () => await sections.getByRole("tab", { name: /^Files/ }).getAttribute("aria-selected") === "true"
     && (await active(page)).thread === "42"));
 
 

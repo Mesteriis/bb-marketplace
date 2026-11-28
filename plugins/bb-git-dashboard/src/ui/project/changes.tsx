@@ -99,7 +99,7 @@ export function Changes({state, sequence, run, pending, revision, act, actAll, o
       <div className="git-changes-lists">
         {files.length === 0 && <p className="g-muted git-changes-clean">{t("pg.clean")}</p>}
         {files.length > 0 && group(t("pg.staged"), staged, true)}
-        {files.length > 0 && group(t("pg.unstaged"), unstaged, false)}
+        {unstaged.length > 0 && group(t("pg.unstaged"), unstaged, false)}
         {state.upstream && <details className="git-changes-outgoing" open={outgoingOpen} onToggle={event => setOutgoingOpen((event.currentTarget as HTMLDetailsElement).open)}>
           <summary className="g-sec">{t("pg.outgoing")} <span className="g-num">{state.ahead ?? 0}</span></summary>
           {outgoing ? <ul className="git-changes-commits">{(outgoing.text ?? "").split("\n").filter(Boolean).map(line => {

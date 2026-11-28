@@ -18,7 +18,7 @@ try {
   await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My PRs\b/ }).click({ timeout: 30000 });
   const inbox = page.getByRole("region", { name: "My pull requests" });
-  await inbox.getByRole("navigation", { name: "Pull request tabs" }).getByRole("button", { name: /^Open/ }).click();
+  await inbox.getByRole("tablist", { name: "Pull request tabs" }).getByRole("tab", { name: /^Open/ }).click();
   await inbox.getByLabel("Search pull requests").fill("");
   const rows = inbox.locator(".git-inbox-item");
   await until(async () => await rows.count() >= 3);
@@ -43,14 +43,14 @@ try {
   const first = await page.getByRole("group", { name: "Pull requests of the list" }).getByRole("button", { name: "Prev" }).isDisabled();
   check("Prev is off on the first row only", first === (at === 0), {at, first});
 
-  await mr.getByRole("navigation", { name: "Pull request sections" }).getByRole("button", { name: /^Comments/ }).click();
+  await mr.getByRole("tablist", { name: "Pull request sections" }).getByRole("tab", { name: /^Comments/ }).click();
   const filter = mr.getByRole("group", { name: "Thread status" });
-  check("Comments shows the unresolved threads first, with their count", await visible(filter.getByRole("button", { name: /Unresolved\s*1/ }))
-    && await filter.getByRole("button", { name: /Unresolved/ }).getAttribute("aria-pressed") === "true"
-    && await visible(mr.locator(".git-review-thread", { hasText: "Why retry three times?" })));
+  check("Comments shows the open threads first, with their count", await visible(filter.getByRole("button", { name: /^Open\s*1/ }))
+    && await filter.getByRole("button", { name: /^Open/ }).getAttribute("aria-pressed") === "true"
+    && await visible(mr.locator(".git-pr-thread", { hasText: "Why retry three times?" })));
   check("on your own merge request it counts what waits on your reply", await visible(mr.getByText("1 waiting on your reply")));
-  await filter.getByRole("button", { name: /Resolved/ }).filter({ hasNotText: "Unresolved" }).click();
-  check("Resolved lists none here", await visible(mr.getByText("No resolved threads yet.")) && await mr.locator(".git-review-thread").count() === 0);
+  await filter.getByRole("button", { name: /^Resolved/ }).click();
+  check("Resolved lists none here", await visible(mr.getByText("No resolved threads yet.")) && await mr.locator(".git-pr-thread").count() === 0);
   await page.screenshot({ path: out + "/pr-094-comments.png", fullPage: false });
 
   await page.goto(url + "settings/plugins/bb-git-dashboard", { waitUntil: "load" });
