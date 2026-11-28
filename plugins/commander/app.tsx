@@ -177,7 +177,7 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
         pending = 0;
         if (!active) return;
         const partial = entries.slice();
-        setView((previous) => previous?.key === key && !previous.directory.partial && !previous.directory.loading && !previous.directory.error
+        setView((previous) => previous?.key === key && (previous.directory.error || (!previous.directory.partial && !previous.directory.loading))
           ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
       };
       let shown = false;
@@ -200,6 +200,8 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
       if (active) setView({ key, directory: { entries, loading: false, error: null } });
     };
     void read().catch((error) => {
+      // A batch may be queued for display; it must not replace the error.
+      clearTimeout(timer);
       if (active) setView({ key, directory: { entries: [], loading: false, error: problemOf(error) } });
     });
     return () => { active = false; clearTimeout(timer); };

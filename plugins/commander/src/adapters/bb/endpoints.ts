@@ -42,6 +42,10 @@ export function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
 }
 
+const SIGN_IN_REFUSALS: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
+  "agent_unavailable", "keychain_locked", "keychain_unavailable", "keychain_needs_approval", "credential_missing", "auth_failed",
+]);
+
 export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager | null = () => null) {
   const hostFs = bb.hosts.experimental_client({ contract: HostFsContract });
   const remote: RemoteHubPort = {
@@ -169,6 +173,10 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
         }
         if (error.code === "permission_denied" || error.code === "consent_revoked" || error.code === "consent_required") {
           throw new CommanderError("consent_required", "Remote Hub did not grant access");
+        }
+        // The same refusals the provider reports as a failed sign-in; the server or the Keychain said no, retrying will not help.
+        if (SIGN_IN_REFUSALS.has(error.code)) {
+          throw new CommanderError("auth_failed", "Sign-in to the SFTP server failed");
         }
       }
       throw new CommanderError("connection_failed", "SFTP home directory is unavailable", true);

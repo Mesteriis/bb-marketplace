@@ -224,6 +224,33 @@ test("hands 100 arriving pages to the sorted rows in at most 12 batches, with th
   expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
 });
 
+test("a failing page shows the error even when an earlier batch is still waiting for its display timer", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+    let fail!: () => void;
+    const third = new Promise<void>((_, reject) => { fail = () => reject(new CommanderError("permission_denied", "private")); });
+    third.catch(() => {});
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные") {
+        if (input.cursor === "2000") await third;
+        const start = Number(input.cursor ?? 0);
+        return { entries: files.slice(start, start + 1000), cursor: String(start + 1000) };
+      }
+      return call(method, input);
+    });
+    mount();
+    // Page 1 is shown at once, page 2 waits in the 100 ms batch timer, page 3 is still on its way.
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    fail();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.waitFor(() => expect(within(grid()).queryAllByText("Доступ запрещён").length).toBeGreaterThan(0));
+    expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
+    expect(grid().getAttribute("aria-busy")).toBe("false");
+  } finally { vi.useRealTimers(); }
+});
+
 test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
   const readOnly = { ...endpoint, id: "host:archive", hostId: "archive", label: "Архив", readOnly: true };
   saved!.right.tabs[0]!.endpoint = "host:archive";

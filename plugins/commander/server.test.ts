@@ -1,3 +1,4 @@
+import { problemOf } from "./src/ui/model.ts";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { MIGRATIONS } from "./src/adapters/bb/migrations.ts";
@@ -465,6 +466,29 @@ for (const [label, message] of [
         code: "invalid",
         message: '{"code":"connection_failed","message":"SFTP home directory is unavailable","retryable":true}',
       });
+    } finally { await bb.dispose(); }
+  });
+}
+
+for (const refusalAs of ["sdk", "http"] as const) {
+  test(`reports an unreachable Keychain at the first open as a final sign-in failure, without Keychain text (refusal as ${refusalAs})`, async () => {
+    const fixture = remoteFixture({ refusalAs });
+    const bb = await backend(undefined, async (args) => {
+      if (args.method === "hub_sftp_open") {
+        const message = "keychain_unavailable: Keychain item commander-secret could not be read";
+        if (refusalAs === "http") throw new BbHttpErrorLike(409, "conflict", message);
+        throw new experimental_PluginRpcCallError({ code: "conflict", message });
+      }
+      return fixture.callRpc(args);
+    });
+    try {
+      const failure = await bb.rpc("endpoint_home", { endpoint: fixture.endpoint }).then(() => null, (error: unknown) => error);
+      expect(failure).toMatchObject({
+        message: '{"code":"auth_failed","message":"Sign-in to the SFTP server failed","retryable":false}',
+      });
+      expect(String((failure as Error).message)).not.toMatch(/keychain|commander-secret/i);
+      // What the panel shows for exactly this error.
+      expect(problemOf(failure)).toEqual({ code: "auth_failed", message: "Вход отклонён" });
     } finally { await bb.dispose(); }
   });
 }
