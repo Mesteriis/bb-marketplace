@@ -15,6 +15,9 @@ const heavy = [
   "src/core/preview.test.ts",
   "tests/file-read.test.ts",
   "app.test.tsx",
+  // The archive flow renders the whole App in jsdom as well: about 0.2 s alone, but under the same
+  // load its findBy waits (1 s each) ran out. Running it one file at a time removes that contention.
+  "app-archive.test.tsx",
 ];
 
 // research/upstream holds donor sources (git-ignored); their tests are not ours.
