@@ -2,7 +2,9 @@
 // the real components, the host's theme tokens, canned states.
 //
 //   ?theme=dark|light|mock   the host's themes, or the palette the mockup was drawn in
-//   ?view=mock|states        the mockup's three sections, or every state
+//   ?view=mock|states|popover   the mockup's three sections, every state, or the composer with its popover
+//
+// The popover here is the npm copy of the popover library; in BB the host provides its own instance.
 import { ArrowUp } from "lucide-react";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -10,6 +12,7 @@ import type { GuardView } from "../src/core/service.ts";
 import type { Minutes, Scope } from "../src/core/state.ts";
 import { GuardButton } from "../src/ui/guard-button.tsx";
 import { GuardPopup } from "../src/ui/guard-popup.tsx";
+import { GuardToggle } from "../src/ui/guard-toggle.tsx";
 
 const NOW = 1000;
 const params = new URLSearchParams(location.search);
@@ -111,23 +114,30 @@ function Composer({ view }: { view: GuardView | null }) {
       <span>Напишите сообщение…</span>
       <span style={{ flex: 1 }} />
       <GuardButton view={view} now={NOW} onOpen={() => {}} />
-      {/* The host's own send button, for context only. */}
-      <span
-        aria-hidden="true"
-        style={{
-          display: "inline-flex",
-          width: 32,
-          height: 32,
-          alignItems: "center",
-          justifyContent: "center",
-          borderRadius: "50%",
-          background: "var(--primary)",
-          color: "var(--canvas)",
-        }}
-      >
-        <ArrowUp size={16} />
-      </span>
+      <SendButton />
     </div>
+  );
+}
+
+/** The host's own send button, for context only. */
+function SendButton() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        display: "inline-flex",
+        width: 32,
+        height: 32,
+        flex: "none",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: "50%",
+        background: "var(--primary)",
+        color: "var(--canvas)",
+      }}
+    >
+      <ArrowUp size={16} />
+    </span>
   );
 }
 
@@ -137,6 +147,7 @@ function Live({ initial, fit }: { initial: GuardView; fit?: boolean }) {
   return (
     <HostPopup fit={fit}>
       <GuardPopup
+        layout={fit ? "fit" : "fill"}
         view={view}
         now={NOW}
         busy={false}
@@ -152,6 +163,7 @@ function Still(props: { view: GuardView | null; busy?: boolean; error?: string |
   return (
     <HostPopup>
       <GuardPopup
+        layout="fill"
         view={props.view}
         now={NOW}
         busy={props.busy ?? false}
@@ -160,6 +172,51 @@ function Still(props: { view: GuardView | null; busy?: boolean; error?: string |
         onClose={() => {}}
       />
     </HostPopup>
+  );
+}
+
+const SCOPE_PROPS = { "data-bb-plugin": "makosh-secrets-guard", "data-bb-plugin-root": "", "data-bb-portaled-overlay": "" } as const;
+
+/** The composer across the whole width, the lock at its right edge, with the plugin's own popover. */
+function ComposerWithPopover({ initial, id }: { initial: GuardView; id: string }) {
+  const [view, setView] = useState(initial);
+  return (
+    <div
+      data-stand={id}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        background: "var(--popover)",
+        border: "1px solid var(--border)",
+        borderRadius: 14,
+        padding: "8px 8px 8px 16px",
+        color: "var(--muted-foreground)",
+      }}
+    >
+      <span>Напишите сообщение…</span>
+      <span style={{ flex: 1 }} />
+      <GuardToggle
+        view={view}
+        now={NOW}
+        busy={false}
+        error={null}
+        onOpen={(scope: Scope, minutes: Minutes) => setView(open(scope, minutes))}
+        onClose={() => setView(closed)}
+        scopeProps={SCOPE_PROPS}
+      />
+      <SendButton />
+    </div>
+  );
+}
+
+function WithPopover() {
+  const start = params.get("guard") === "open" ? open("tree", 24) : closed;
+  return (
+    <div style={{ minHeight: "calc(100vh - 64px)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+      <h2 style={heading}>Поле ввода: свой поповер у кнопки</h2>
+      <ComposerWithPopover initial={start} id="popover" />
+    </div>
   );
 }
 
@@ -188,10 +245,10 @@ function States() {
       <Section title="Кнопка: охрана не найдена" id="button-disabled">
         <Composer view={{ configured: false, local: true, effective: null }} />
       </Section>
-      <Section title="Хост растянул окно: закрыто" id="stretched-closed">
+      <Section title="Окно хоста на всю ширину: закрыто" id="stretched-closed">
         <Live initial={closed} />
       </Section>
-      <Section title="Хост растянул окно: открыто с субтредами" id="stretched-open">
+      <Section title="Окно хоста на всю ширину: открыто с субтредами" id="stretched-open">
         <Live initial={open("tree", 60)} />
       </Section>
       <Section title="Занято" id="busy">
@@ -220,7 +277,7 @@ const root = document.getElementById("root");
 if (root !== null) {
   createRoot(root).render(
     <div data-bb-plugin="makosh-secrets-guard" data-bb-plugin-root="" style={page}>
-      {which === "states" ? <States /> : <Mock />}
+      {which === "states" ? <States /> : which === "popover" ? <WithPopover /> : <Mock />}
     </div>,
   );
 }

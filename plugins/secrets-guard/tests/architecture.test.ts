@@ -65,7 +65,7 @@ const core: Layer = {
 
 const ui: Layer = {
   directory: "src/ui",
-  packages: ["react", "lucide-react"],
+  packages: ["react", "lucide-react", "@radix-ui/react-popover"],
   reachable: ["src/ui", "src/core"],
 };
 
@@ -100,7 +100,7 @@ describe("host-agnostic layers", () => {
     expect(violations(core)).toEqual([]);
   });
 
-  it("src/ui imports only React, the icon library and the core", () => {
+  it("src/ui imports only React, the icon and popover libraries and the core", () => {
     expect(violations(ui)).toEqual([]);
   });
 });

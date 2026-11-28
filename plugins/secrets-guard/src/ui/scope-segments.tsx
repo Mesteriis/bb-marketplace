@@ -15,9 +15,28 @@ const SCOPE_ICONS: Record<Scope, LucideIcon> = {
 export interface ScopeSegmentsProps {
   value: Scope;
   onChange(scope: Scope): void;
+  /**
+   * "fit": as wide as the labels. "fill": the group takes the whole row and
+   * never wraps; where the row is narrow only the selected segment keeps its
+   * label and the others shrink to their icons.
+   */
+  layout?: "fit" | "fill";
 }
 
-export function ScopeSegments({ value, onChange }: ScopeSegmentsProps) {
+const GROUP = {
+  fit: "inline-flex max-w-full flex-wrap gap-0.5 rounded-md border border-border p-0.5",
+  fill: "flex w-full flex-nowrap gap-0.5 rounded-md border border-border p-0.5",
+} as const;
+
+/** Extra classes of a segment and of its label, by layout and selection. */
+function shape(layout: "fit" | "fill", selected: boolean): { segment: string; label: string } {
+  if (layout === "fit") return { segment: "", label: "truncate" };
+  return selected
+    ? { segment: "min-w-0 flex-1 justify-center", label: "truncate" }
+    : { segment: "flex-none justify-center @md:min-w-0 @md:flex-1", label: "hidden truncate @md:inline" };
+}
+
+export function ScopeSegments({ value, onChange, layout = "fit" }: ScopeSegmentsProps) {
   const group = useRef<HTMLDivElement>(null);
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -29,29 +48,28 @@ export function ScopeSegments({ value, onChange }: ScopeSegmentsProps) {
   };
 
   return (
-    <div
-      ref={group}
-      role="radiogroup"
-      aria-label="Охват"
-      className="inline-flex max-w-full flex-wrap gap-0.5 rounded-md border border-border p-0.5"
-    >
+    <div ref={group} role="radiogroup" aria-label="Охват" className={GROUP[layout]}>
       {SCOPES.map((scope) => {
         const Icon = SCOPE_ICONS[scope];
         const selected = scope === value;
+        const label = scopeShortLabel(scope);
+        const classes = shape(layout, selected);
         return (
           <button
             key={scope}
             type="button"
             role="radio"
             aria-checked={selected}
+            aria-label={label}
+            title={label}
             data-scope={scope}
             tabIndex={selected ? 0 : -1}
             onClick={() => onChange(scope)}
             onKeyDown={onKeyDown}
-            className={`${SEGMENT} ${selected ? SEGMENT_ON : SEGMENT_OFF}`}
+            className={`${SEGMENT} ${selected ? SEGMENT_ON : SEGMENT_OFF} ${classes.segment}`}
           >
             <Icon aria-hidden="true" className={ICON} />
-            {scopeShortLabel(scope)}
+            <span className={classes.label}>{label}</span>
           </button>
         );
       })}
