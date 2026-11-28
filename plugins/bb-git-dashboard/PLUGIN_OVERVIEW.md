@@ -12,7 +12,7 @@ The **Projects folder** setting (default `~/projects`) and its exclusion list de
 
 ## History
 
-The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph over all branches, tags and remotes grouped by day, lists uncommitted changes on top, and opens a commit's files and patches.
+The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph of all refs or of HEAD only, lists uncommitted changes on top, and opens a commit's facts, files and numbered diff.
 
 ## Line review
 

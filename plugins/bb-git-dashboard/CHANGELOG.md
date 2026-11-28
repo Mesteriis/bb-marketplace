@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.5 — 2026-11-28
+
+The new interface, sixth slice: Reviews and History.
+
+- **Reviews** has the head of every section with Refresh and one table: working copy, what is reviewed, comments (open of all), the agent (answers waiting for you, or when the comments were sent and how many wait for an answer), the last AI review (running with its model, done with its findings, failed, or not run) and when it was updated; a row opens that review. Reviews of working copies that are gone stand below with Delete, which asks in a dialog. The review's view is named in the interface language.
+- **History** has one bar: Find in loaded commits, **All branches / Current only** (only the loaded commits reachable from HEAD), the count and the branch, Refresh. Rows carry the graph, branch and tag chips, the subject and who and how long ago; the day headings are gone. The chosen commit shows its subject, the hash to copy, author and when, parents, the files changed with + and −, and the chosen file's diff numbered like the review's, painted by language, with Wrap lines.
+- **A copy's Review**: one bar with the view, files and lines, Unified / Side by side, **View ▾** for the switches and the rarer actions, Find, **AI review** and **Send to agent N** as the main button. The files stand on the left with a box to mark each Viewed (the mark moved from the file's head) and their open comments, the threads no longer on the diff under them with Show. A file's head has its open comments, Open, Revert…, Explain and Comment on file. A comment's box chooses its severity as a segment, says where it goes, and has Comment, Suggest a change and Cancel; threads show the author with the severity and the delivery as chips.
+- **AI review** is a dialog: review or summary, focuses as chips, what else to look at, the model, and the note that the agent may still edit files.
+- Every word of these screens follows the interface language; a small shared menu (▾) serves View and CI's Ask agent.
+- The AI review dialog is not a modal one, under a backdrop of its own: BB's model picker opens its list over it (a modal dialog would hide the list behind it).
+- An AI run's threads are marked with the run (a new column), so a review's findings are its own and not an explanation's or a later agent's; sends are indexed by review, and the Reviews page reads in three queries however many reviews there are.
+
 ## 0.14.4 — 2026-11-28
 
 The new interface, fifth slice: CI/CD.
