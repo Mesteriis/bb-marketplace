@@ -19,6 +19,9 @@ const writeCleanup = publication.pick({ orphanedTempPath: true });
 const expectTarget = Fingerprint.or(z.literal("absent")).optional();
 const transfer = z.object({ from: ResourcePath, to: ResourcePath, replace: z.boolean() }).strict();
 
+// The worker can send this in an error reply even while it is being disposed.
+export const CopyCancellationProof = z.strictObject({ copyCancelled: z.uuid() });
+
 export const HostFsContract = {
   list: {
     input: path.extend({ cursor: z.string().max(160).nullable(), limit: z.int().min(1).max(LIST_PAGE_MAX) }),
@@ -48,7 +51,7 @@ export const HostFsContract = {
   },
   copyCancelled: {
     input: z.object({ operationId: z.uuid() }).strict(),
-    output: z.object({ confirmed: z.boolean() }).strict(),
+    output: z.strictObject({ status: z.enum(["pending", "confirmed", "missing"]) }),
   },
   sha256: { input: path, output: z.object({ hex: z.string().regex(/^[0-9a-f]{64}$/) }).strict() },
   home: { input: empty, output: z.object({ path: ResourcePath, caseSensitive: z.boolean() }).strict() },

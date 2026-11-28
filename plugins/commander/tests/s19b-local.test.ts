@@ -112,3 +112,68 @@ test("disposal interrupts a staged copy and the next activation recovers the sam
     await stand.close();
   }
 });
+
+test("a cancellation before staging cannot certify an existing target", async () => {
+  const start = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const stand = await localStand({ openStage: async () => { throw new Error("Unexpected staging"); } }, {
+    beforeCopy: () => { start.resolve(); return release.promise; },
+  });
+  try {
+    await writeFile(join(stand.out, "a.txt"), "original");
+    const jobId = await startCopy(stand, "overwrite");
+    await start.promise;
+    const cancellation = stand.rpc("job_cancel", { jobId });
+    try { await waitForJob(stand.rpc, jobId, { state: "cancel_requested" }); }
+    finally { release.resolve(); await cancellation; }
+    await waitForJob(stand.rpc, jobId, { state: "unknown", error: { code: "outcome_unknown" } });
+    expect(await readdir(stand.out)).toEqual(["a.txt"]);
+    expect(await readFile(join(stand.out, "a.txt"), "utf8")).toBe("original");
+  } finally {
+    release.resolve();
+    await stand.close();
+  }
+});
+
+test("an early transport abort waits for the worker to confirm staging cleanup", async () => {
+  const { openStage, release } = pauseAfterWrite();
+  const receipt = Promise.withResolvers<void>();
+  const stand = await localStand({ openStage }, { earlyAbort: true, onReceipt: receipt.resolve });
+  try {
+    const jobId = await startCopy(stand);
+    await waitForPart(stand.out, 3);
+    const cancellation = stand.rpc("job_cancel", { jobId });
+    try { await receipt.promise; }
+    finally { release(); await cancellation; }
+    await waitForJob(stand.rpc, jobId, { state: "cancelled" });
+    expect(await readdir(stand.out)).toEqual([]);
+  } finally {
+    release();
+    await stand.close();
+  }
+});
+
+test.each([
+  { appeared: false, state: "completed", contents: "abc" },
+  { appeared: true, state: "unknown", contents: "external" },
+])("checks the checkpoint when preparing a replacement worker and the target appeared=$appeared", async ({ appeared, state, contents }) => {
+  const { openStage, release } = pauseAfterWrite();
+  const stand = await localStand({ openStage });
+  try {
+    const jobId = await startCopy(stand);
+    await waitForPart(stand.out, 3);
+    const stopped = stand.stopWorker();
+    try { expect(stand.workerSignal.aborted).toBe(true); }
+    finally { release(); await stopped; }
+    await waitForJob(stand.rpc, jobId, { state: "interrupted" });
+    stand.replaceWorker();
+    if (appeared) await writeFile(join(stand.out, "a.txt"), "external");
+    await stand.rpc("endpoint_home", { endpoint: "host:test" });
+    await waitForJob(stand.rpc, jobId, { id: jobId, state });
+    expect(await readdir(stand.out)).toEqual(["a.txt"]);
+    expect(await readFile(join(stand.out, "a.txt"), "utf8")).toBe(contents);
+  } finally {
+    release();
+    await stand.close();
+  }
+});

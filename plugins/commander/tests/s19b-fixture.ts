@@ -11,7 +11,11 @@ import { HostFsContract } from "../src/core/wire/host-fs.ts";
 import { rpcSchemas } from "../src/core/wire/rpc.ts";
 import { fixturePath } from "./host-fs/fixtures.ts";
 
-export async function localStand(options?: Parameters<typeof createHostFs>[0]) {
+export async function localStand(options?: Parameters<typeof createHostFs>[0], transport?: {
+  beforeCopy?: () => Promise<void>;
+  earlyAbort?: boolean;
+  onReceipt?: () => void;
+}) {
   const root = await mkdtemp(join(await realpath(tmpdir()), "commander-s19b-"));
   const out = join(root, "out");
   const database = join(root, "jobs.sqlite");
@@ -21,17 +25,35 @@ export async function localStand(options?: Parameters<typeof createHostFs>[0]) {
   const kv = new Map<string, unknown>();
   function start(options?: Parameters<typeof createHostFs>[0]) {
     const db = new Database(database);
-    const worker = createHostFs(options);
-    const host = experimental_createHostEntryHarness(experimental_defineHostEntry({
-      contract: HostFsContract, handlers: worker.rpcHandlers, dispose: worker.dispose,
-    }));
+    function openWorker(options?: Parameters<typeof createHostFs>[0]) {
+      const worker = createHostFs(options);
+      return experimental_createHostEntryHarness(experimental_defineHostEntry({
+        contract: HostFsContract, handlers: worker.rpcHandlers, dispose: worker.dispose,
+      }));
+    }
+    let host = openWorker(options);
     const controller = new AbortController();
     const hooks: Array<() => Promise<void>> = [];
     let handlers: Record<string, (input: unknown, context: unknown) => Promise<unknown>> = {};
     let service: Promise<void>;
     const call: ExperimentalHostClient<typeof HostFsContract>["call"] = async (method, input, { signal }) => {
+      // Allow a cancelled request to reach the worker and return its structured error.
+      if (method === "copyWithin" && transport?.beforeCopy) {
+        await transport.beforeCopy();
+        return host.experimental_call(method, input, { signal });
+      }
       try {
-        return await host.experimental_call(method, input, { signal });
+        const reply = host.experimental_call(method, input, { signal });
+        if (method === "copyWithin" && transport?.earlyAbort && signal) {
+          const abort = Promise.withResolvers<never>();
+          const reject = () => abort.reject(new DOMException("Transport aborted early", "AbortError"));
+          signal.addEventListener("abort", reject, { once: true });
+          try { return await Promise.race([reply, abort.promise]); }
+          finally { signal.removeEventListener("abort", reject); }
+        }
+        const result = await reply;
+        if (method === "copyCancelled") transport?.onReceipt?.();
+        return result;
       } finally {
         // BB 0.50.1 discards the worker's response once the caller has aborted.
         if (method === "copyWithin" && signal?.aborted) {
@@ -60,7 +82,9 @@ export async function localStand(options?: Parameters<typeof createHostFs>[0]) {
       cli: { register() {} },
     } as unknown as BbPluginApi);
     return {
-      workerSignal: host.experimental_lifecycleSignal,
+      get workerSignal() { return host.experimental_lifecycleSignal; },
+      stopWorker: () => host.experimental_dispose(),
+      replaceWorker() { host = openWorker(); },
       async rpc(method: keyof typeof rpcSchemas, input: unknown, signal = new AbortController().signal): Promise<unknown> {
         const result = await handlers[method]!(input, { experimental_signal: signal, experimental_caller: { kind: "client" } });
         return rpcSchemas[method].output.parse(result);
@@ -84,6 +108,8 @@ export async function localStand(options?: Parameters<typeof createHostFs>[0]) {
     root, out, ref, request,
     get rpc() { return server.rpc; },
     get workerSignal() { return server.workerSignal; },
+    stopWorker() { return server.stopWorker(); },
+    replaceWorker() { server.replaceWorker(); },
     savedState(jobId: string) {
       const db = new Database(database, { readonly: true });
       try {

@@ -505,8 +505,8 @@ export class JobRunner {
     }
   }
 
-  recover(): Promise<{ resumed: string[]; unknown: string[] }> {
-    return this.accept(() => this.recoverJobs());
+  recover(jobIds?: readonly string[]): Promise<{ resumed: string[]; unknown: string[] }> {
+    return this.accept(() => this.recoverJobs(jobIds));
   }
 
   /** Notify a recovery pass after its cancellation request has been persisted. */
@@ -514,13 +514,15 @@ export class JobRunner {
     this.recovering.get(id)?.abort(cancelledError);
   }
 
-  private async recoverJobs(): Promise<{ resumed: string[]; unknown: string[] }> {
+  private async recoverJobs(jobIds?: readonly string[]): Promise<{ resumed: string[]; unknown: string[] }> {
     const result: { resumed: string[]; unknown: string[] } = { resumed: [], unknown: [] };
-    const jobs = await this.store.list({
+    const ids = jobIds ?? (await this.store.list({
       states: ["running", "cancel_requested", "awaiting_decision", "interrupted", "pending"],
       limit: Number.MAX_SAFE_INTEGER,
-    });
-    for (const { id } of jobs) {
+    })).map(({ id }) => id);
+    for (const id of ids) {
+      // A live interruption is visible to clients before its old run leaves the active map.
+      if (jobIds) await this.active.get(id)?.done;
       if (this.recovering.has(id)) continue;
       const cancellation = new AbortController();
       this.recovering.set(id, cancellation);
@@ -794,7 +796,7 @@ export class JobRunner {
           const cancelled = signal.aborted || current.state === "cancel_requested";
           if (!cancelled && caught instanceof CopyInterrupted) {
             // BB stops host workers before onDispose can stop the runner.
-            await this.change(current, "process_lost", { currentItem: null });
+            await this.change(current, "process_lost");
             return;
           }
           const error = safeError(caught);

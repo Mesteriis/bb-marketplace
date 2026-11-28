@@ -59,6 +59,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
   const writes = new WriteSessions(platform, options);
   // BB can replace the copy reply with AbortError. Keep recent proofs in this worker.
   const cancelledCopies = new Set<string>();
+  const runningCopies = new Set<string>();
   const shutdown = new AbortController();
   const pending = new Set<Promise<unknown>>();
   let lifecycle: AbortSignal | undefined;
@@ -329,7 +330,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       });
     }),
     copyCancelled: handle<"copyCancelled">(async ({ operationId }) => ({
-      confirmed: cancelledCopies.delete(operationId),
+      status: cancelledCopies.delete(operationId) ? "confirmed" : runningCopies.has(operationId) ? "pending" : "missing",
     }), false, false),
     sha256: handle<"sha256">(async ({ path }, { signal, editPaths }) => {
       await editPaths?.check(path);
@@ -368,6 +369,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     };
   }
 
+  const copyWithinRpc = rpcHandler(handlers.copyWithin);
   const rpcHandlers: ExperimentalHostRpcHandlers<typeof HostFsContract> = {
     list: rpcHandler(handlers.list),
     stat: rpcHandler(handlers.stat),
@@ -379,7 +381,20 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     mkdir: rpcHandler(handlers.mkdir),
     rename: rpcHandler(handlers.rename),
     remove: rpcHandler(handlers.remove),
-    copyWithin: rpcHandler(handlers.copyWithin),
+    async copyWithin(input, context) {
+      const { operationId } = input;
+      if (!operationId) return copyWithinRpc(input, context);
+      cancelledCopies.delete(operationId);
+      runningCopies.add(operationId);
+      try {
+        return await copyWithinRpc(input, context);
+      } catch (error) {
+        if (cancelledCopies.has(operationId)) throw new Error(JSON.stringify({ copyCancelled: operationId }));
+        throw error;
+      } finally {
+        runningCopies.delete(operationId);
+      }
+    },
     copyCancelled: rpcHandler(handlers.copyCancelled),
     sha256: rpcHandler(handlers.sha256),
     home: rpcHandler(handlers.home),
