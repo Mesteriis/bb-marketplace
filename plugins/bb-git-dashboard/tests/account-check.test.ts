@@ -53,3 +53,31 @@ test("a rejected token is a failed check with its code", async () => {
   const found = await accountCheck(github, "fixture-secret", denied, () => "2026-11-28T12:00:00.000Z");
   assert.deepEqual(found, {ok: false, code: "PROVIDER_DENIED"});
 });
+
+test("a server that echoes the token — in an error body, a field or a header — gets it into neither the result nor the code", async () => {
+  const secret = "fixture-secret";
+  const echo: typeof fetch = async input => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/user")) return Response.json({login: "me", token: secret}, {headers: {"x-echo": secret}});
+    if (url.endsWith("/api/v1/version")) return Response.json({version: "1.25 " + secret});
+    return new Response(JSON.stringify({message: "bad token " + secret}), {status: 500, headers: {"content-type": "application/json", "x-echo": secret}});
+  };
+  const failed = await accountCheck(gitea, secret, echo, () => "2026-11-28T12:00:00.000Z");
+  assert.equal(failed.ok, false);
+  assert.ok(!JSON.stringify(failed).includes(secret), JSON.stringify(failed));
+  const fields: typeof fetch = async input => {
+    const url = String(input);
+    if (url.endsWith("/api/v1/user")) return Response.json({login: "me"}, {headers: {"x-echo": secret}});
+    if (url.endsWith("/api/v1/version")) return Response.json({version: "1.25 " + secret});
+    return Response.json([]);
+  };
+  const found = await accountCheck(gitea, secret, fields, () => "2026-11-28T12:00:00.000Z");
+  assert.ok(found.ok);
+  assert.ok(!JSON.stringify(found).includes(secret), JSON.stringify(found));
+  // GitHub's scopes header echoing it, and a login that is the token, are not taken either.
+  const hub: typeof fetch = async input => String(input).endsWith("/user")
+    ? Response.json({login: secret}, {headers: {"x-oauth-scopes": "repo, " + secret}}) : Response.json([]);
+  const login = await accountCheck(github, secret, hub, () => "2026-11-28T12:00:00.000Z");
+  assert.ok(!JSON.stringify(login).includes(secret), JSON.stringify(login));
+  assert.deepEqual(login, {ok: false, code: "PROVIDER_REJECTED"});
+});

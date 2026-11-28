@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { categoryOf, localState } from "../../core/catalog/rows.ts";
+import { homeRelative } from "../../core/short-path.ts";
 import { PageHead } from "../shell/page-head.tsx";
 import { Icon } from "../system/icon.tsx";
 import { useT } from "../i18n/use-t.tsx";
@@ -130,7 +131,7 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   if (creating && view) return <NewProject api={api} hostId={hostId} root={view.root} categories={view.categories} onClose={() => setCreating(false)}
     onCreated={made => { setCreating(false); setCreated(made); void load(false); }}/>;
   return <div className="g-page git-catalog" aria-label={t("section.catalog")} role="region">
-    <PageHead title={t("section.catalog")} sub={view ? <><span title={view.root}>{t("ct.root")} <span className="g-mono">{view.root}</span></span> · {t("ct.accounts", {n: view.sources.length})}</> : undefined}
+    <PageHead title={t("section.catalog")} sub={view ? <><span title={view.root}>{t("ct.root")} <span className="g-mono">{homeRelative(view.root)}</span></span> · {t("ct.accounts", {n: view.sources.length})}</> : undefined}
       actions={<>
         {hosts.length > 1 && <select className="g-inp" aria-label={t("ct.machine")} value={hostId} onChange={event => setHostId(event.target.value)}>
           {hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select>}
@@ -138,7 +139,7 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
         <button type="button" className="g-btn" disabled={!view} onClick={() => { setCreated(null); setCreating(true); }}><Icon name="Plus" small/>{t("ct.new")}</button>
         <button type="button" className="g-btn" disabled={pending} onClick={() => void load(true)}><Icon name="RotateCcw" small/>{t("ov.refresh")}</button>
       </>}/>
-    {created && <div className="g-banner" role="status"><span>{t("ct.created", {root: created.root})}
+    {created && <div className="g-banner" role="status"><span>{t("ct.created", {root: homeRelative(created.root)})}
       {created.repository && <> {t(created.repository.pushed ? "ct.created-pushed" : "ct.created-repo", {path: created.repository.path})}</>}</span>
       <button type="button" className="g-btn sm" onClick={() => open(created.root)}>{t("ct.open")}</button></div>}
     {created?.notes.map(note => <div key={note} className="g-banner warn" role="status">{note}</div>)}

@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { accountCheck, checkConnection } from "./connection.ts";
 import type { AccountCheck } from "../../core/connections/health.ts";
@@ -40,6 +40,15 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
   let generation = 0;
   let connectionWrites = Promise.resolve();
   settings.onChange(() => { generation++; previews.clear(); });
+  // A kept account check stands for the token it was made with. Nothing derived from the token is kept beside it, so
+  // a token changed in these settings forgets the check of that account; one changed in Vault outside the plugin
+  // keeps the old check, which shows when it was made.
+  const checkKey = (id: string) => "account-check/" + id;
+  settings.onChange((next, prev) => {
+    const before = tokenMap.safeParse(safeJson(prev.tokens)), after = tokenMap.safeParse(safeJson(next.tokens));
+    const old = before.success ? before.data : {}, now = after.success ? after.data : {};
+    for (const id of new Set([...Object.keys(old), ...Object.keys(now)])) if (old[id] !== now[id]) void kv.delete(checkKey(id)).catch(() => {});
+  });
   bb.onDispose(() => previews.clear());
 
   function accounts(value: string) {
@@ -49,6 +58,7 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
     return rows;
   }
   const tokenMap = z.record(z.string(),z.string());
+  function safeJson(raw: string | undefined) { try { return JSON.parse(raw ?? "{}"); } catch { return {}; } }
   function backupToken(raw:string|undefined,id:string) {
     try {
       const backup = tokenMap.parse(JSON.parse(raw ?? "{}"));
@@ -110,6 +120,7 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
         row.username.toLowerCase() === selected.username.toLowerCase());
       if (sameIdentity) throw new Error("ACCOUNT_EXISTS");
       if (await credentials.resolve(selected,() => input.token) !== input.token) throw new Error("CREDENTIAL_BINDING_CHANGED");
+      await kv.delete(checkKey(selected.id));
       await settings.experimental_set({
         accounts:JSON.stringify([...existing,selected]),tokens:JSON.stringify({...tokens,[selected.id]:input.token}),
       });
@@ -147,18 +158,17 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
     accountCheck: ({accountId,refresh}:{accountId:string;refresh:boolean}) => run(async () => {
       const current = accounts((await settings.get()).accounts).find(row => row.id === accountId);
       if (!current) throw new Error("ACCOUNT_UNCONFIGURED");
-      const key = "account-check/" + accountId;
-      // The check belongs to the account as declared and to its token (a digest, never the token): a rotated token
-      // makes the kept check stale.
-      let found: Awaited<ReturnType<typeof context>>;
-      try { found = await context(accountId); }
-      catch (error) { return refresh ? {ok:false as const,code:failureFor(error,"ACCOUNT_UNCONFIGURED").code} : null; }
-      const {selected,token} = found;
-      const stamp = JSON.stringify(current) + "#" + createHash("sha256").update(token).digest("hex");
+      const key = checkKey(accountId);
+      // The check belongs to the account as declared; a change of its token forgets it (see onChange above).
+      const stamp = JSON.stringify(current);
       if (!refresh) {
         const saved = await kv.get<{stamp:string;value:AccountCheck}>(key);
         return saved?.stamp === stamp ? saved.value : null;
       }
+      let found: Awaited<ReturnType<typeof context>>;
+      try { found = await context(accountId); }
+      catch (error) { return {ok:false as const,code:failureFor(error,"ACCOUNT_UNCONFIGURED").code}; }
+      const {selected,token} = found;
       const value = await accountCheck(selected,token);
       // A server that did not answer says nothing of the account: only what the server said is kept.
       if (value.ok || value.code === "PROVIDER_DENIED") await kv.set(key,{stamp,value});

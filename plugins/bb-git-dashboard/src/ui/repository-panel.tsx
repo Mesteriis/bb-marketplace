@@ -8,6 +8,7 @@ import { limitation } from "../core/forge/capabilities.ts";
 import { CiPanel, type CiView } from "./ci/ci-panel.tsx";
 import { Icon } from "./system/icon.tsx";
 import { useT } from "./i18n/use-t.tsx";
+import type { MessageKey } from "../core/i18n/dictionary.ts";
 import type { CiApi } from "./ci/ci-api.ts";
 import type { HistoryApi } from "./history/history-api.ts";
 
@@ -24,10 +25,22 @@ export type RepositoryApi = Pick<RemoteApi,"accounts"|"repositories"|"status"> &
 };
 
 const labels = {
-  actions:{title:"CI/CD", idle:"No workflow runs found.", detail:"Branch"},
-  issues:{title:"Issues", idle:"No issues found.", detail:"Labels"},
-  variables:{title:"Variables and secrets", idle:"No repository variables or secrets found.", detail:"Value"},
+  actions:{title:"section.ci", idle:"section.ci", detail:"section.ci", loading:"section.ci"},
+  issues:{title:"rp.issues-title", idle:"rp.issues-idle", detail:"rp.col.labels", loading:"rp.loading-issues"},
+  variables:{title:"rp.variables-title", idle:"rp.variables-idle", detail:"rp.col.value", loading:"rp.loading-variables"},
+} as const satisfies Record<RepositorySection, Record<string, MessageKey>>;
+/** What the server says of a row or a list, in the interface language when it is one of its known words. */
+const statusWords: Record<string, MessageKey> = {open:"rp.s.open", opened:"rp.s.open", closed:"rp.s.closed", Variable:"rp.s.variable", Secret:"rp.s.secret", File:"rp.s.file"};
+const noticeWords: Record<string, MessageKey> = {
+  "Variable names and values are unavailable from this account.":"rp.n.variables-denied", "Secret names are unavailable from this account.":"rp.n.secrets-denied",
+  "CI/CD variables need the Maintainer role in this project.":"rp.n.maintainer", "Values are not shown.":"rp.n.values",
+  "Azure Boards are scoped to the Azure DevOps project.":"rp.n.azure-issues", "Azure variable groups are scoped to the Azure DevOps project.":"rp.n.azure-variables",
 };
+/** GitLab's variable flags ("protected, masked, environment production") word by word. */
+function flagWords(detail: string, t: (key: MessageKey, values?: Record<string, string | number>) => string) {
+  return detail.split(", ").map(flag => flag === "protected" ? t("rp.f.protected") : flag === "masked" ? t("rp.f.masked")
+    : flag.startsWith("environment ") ? t("rp.f.environment", {name: flag.slice(12)}) : flag).join(", ");
+}
 const forgeNames = {github:"GitHub", gitlab:"GitLab", gitea:"Gitea", azure:"Azure DevOps"} as const;
 const message = (error:unknown) => error instanceof Error ? error.message : "Request failed.";
 
@@ -111,16 +124,16 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     </section>;
   }
   return <section className="git-project-code git-repository-panel">
-    <div className="git-project-title"><div><h2>{label.title}</h2>
+    <div className="git-project-title"><div><h2>{t(label.title)}</h2>
       <p className="git-muted">{data?.repo.path ?? name}{provider ? " · " + provider.label : ""}</p></div>
       {target && <div className="git-row">
-        {section === "issues" && <select aria-label="Issue state" value={filter} onChange={event => setFilter(event.target.value)}>
-          <option value="all">All states</option><option value="open">Open</option><option value="closed">Closed</option>
+        {section === "issues" && <select className="g-inp" aria-label={t("rp.state")} value={filter} onChange={event => setFilter(event.target.value)}>
+          <option value="all">{t("rp.all-states")}</option><option value="open">{t("rp.s.open")}</option><option value="closed">{t("rp.s.closed")}</option>
         </select>}
         {section === "issues" && data?.repo && onOpenIssue && provider && provider.kind !== "azure" &&
-          <button type="button" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,"new")}>New issue</button>}
-        <button disabled={pending} type="button" onClick={() => setRevision(value => value + 1)}>Refresh</button>
-        <button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>{t("cp.change")}</button>
+          <button type="button" className="g-btn" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,"new")}>{t("rp.new-issue")}</button>}
+        <button disabled={pending} type="button" className="g-btn" onClick={() => setRevision(value => value + 1)}>{t("ov.refresh")}</button>
+        <button type="button" className="g-btn" aria-expanded={changing} onClick={() => setChanging(value => !value)}>{t("cp.change")}</button>
       </div>}
     </div>
     {forge && <ForgeStatusLine key={copyId + ":" + forge.candidates.map(row => row.id).join(",")} status={forge} busy={pending} onChoose={choose}
@@ -128,18 +141,18 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     {target === null && <p className="git-muted">{t("cp.by-hand")}</p>}
     {picker}
     {notice && <p className="git-error" role="alert">{notice}</p>}
-    {pending && <p role="status" className="git-muted">Loading {label.title.toLowerCase()}…</p>}
+    {pending && <p role="status" className="git-muted">{t(label.loading)}</p>}
     {error && <p role="alert" className="git-error">{error}</p>}
-    {data?.features.notice && <p className="git-muted" role="status">{data.features.notice}</p>}
-    {data && !rows.length && !data.features.notice && <p className="git-muted">{filter === "all" ? label.idle : "No matching issues on this page."}</p>}
+    {data?.features.notice && <p className="git-muted" role="status">{noticeWords[data.features.notice] ? t(noticeWords[data.features.notice]!) : data.features.notice}</p>}
+    {data && !rows.length && !data.features.notice && <p className="git-muted">{t(filter === "all" ? label.idle : "rp.no-match")}</p>}
     {rows.length > 0 && <div className="git-workspace-table"><table>
-      <thead><tr><th scope="col">Name</th><th scope="col">{section === "variables" ? "Type" : "Status"}</th>
-        <th scope="col">{section === "variables" && forge?.detection?.kind === "gitlab" ? "Settings" : label.detail}</th><th scope="col">Updated</th></tr></thead>
+      <thead><tr><th scope="col">{t("rp.col.name")}</th><th scope="col">{t(section === "variables" ? "rp.col.type" : "rp.col.status")}</th>
+        <th scope="col">{t(section === "variables" && forge?.detection?.kind === "gitlab" ? "rp.col.settings" : label.detail)}</th><th scope="col">{t("rp.col.updated")}</th></tr></thead>
       <tbody>{rows.map(row => <tr key={row.id}><th scope="row">{section === "issues" && onOpenIssue && data?.repo && /^\d+$/.test(row.id)
         ? <button type="button" className="git-link" onClick={() => onOpenIssue(data.repo.accountId,data.repo.path,Number(row.id))}>{row.name}</button>
         : row.url ? <a href={row.url} target="_blank" rel="noreferrer">{row.name}</a> : row.name}</th>
-        <td><span className="git-state" data-state={row.status}>{row.status || "—"}</span></td>
-        <td>{row.detail ?? (row.status === "Secret" ? "••••••" : "—")}</td>
+        <td><span className="git-state" data-state={row.status}>{statusWords[row.status] ? t(statusWords[row.status]!) : row.status || "—"}</span></td>
+        <td>{row.detail ? (section === "variables" && forge?.detection?.kind === "gitlab" ? flagWords(row.detail, t) : row.detail) : (row.status === "Secret" ? "••••••" : "—")}</td>
         <td>{row.updated ? <time dateTime={row.updated}>{row.updated.slice(0,10)}</time> : "—"}</td>
       </tr>)}</tbody>
     </table></div>}

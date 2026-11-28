@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { clonePath } from "../../core/catalog/catalog.ts";
+import { homeRelative } from "../../core/short-path.ts";
 import { Dialog } from "../system/dialog.tsx";
 import { Icon } from "../system/icon.tsx";
 import { useT } from "../i18n/use-t.tsx";
@@ -71,7 +72,7 @@ export function CloneDialog({row, view, hosts, hostId, api, onClose, onDone}: {r
       <label className="git-field">{t("ct.folder")}
         <input className="g-inp" value={name} onChange={event => setName(event.target.value)}/></label>
       <p className="git-clone-where"><Icon name="Folder" small/>{destination
-        ? <span>{t("ct.will-create")} <span className="g-mono">{destination}</span></span>
+        ? <span title={destination}>{t("ct.will-create")} <span className="g-mono">{homeRelative(destination)}</span></span>
         : <span className="g-warn">{place ? t("ct.bad-name") : t("common.loading")}</span>}</p>
     </form>}
     {error && <div className="g-banner bad git-clone-error" role="alert">{error}</div>}

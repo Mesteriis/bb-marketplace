@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { clonePath } from "../../core/catalog/catalog.ts";
+import { homeRelative } from "../../core/short-path.ts";
 import type { CiForge } from "../../core/ci-templates/render.ts";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { scaffoldCi } from "../../core/scaffolds/ci.ts";
@@ -147,7 +148,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
         <span key={index} className="git-np-line"><span className="git-np-number" aria-hidden="true">{index + 1}</span>{line + "\n"}</span>) : t("np.empty-file")}</pre>}
       <div className="git-np-foot">
         <p className="git-np-where"><Icon name="Folder" small/>{destination
-          ? <span>{t("ct.will-create")} <span className="g-mono">{destination}</span>{t("np.where-tail")}</span>
+          ? <span title={destination}>{t("ct.will-create")} <span className="g-mono">{homeRelative(destination)}</span>{t("np.where-tail")}</span>
           : <span className="g-warn">{t("ct.bad-name")}</span>}</p>
         {error && <div className="g-banner bad git-np-note" role="alert">{error}</div>}
         <div className="git-np-submit"><span className="g-muted">{t("np.again")}</span>

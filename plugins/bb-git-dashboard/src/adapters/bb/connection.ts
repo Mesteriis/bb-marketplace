@@ -42,6 +42,10 @@ const isoDate = (value: unknown) => { const at = typeof value === "string" ? Dat
  * version. What a server does not say stays null. The token is in no answer.
  */
 export async function accountCheck(selected: Account, token: string, send: typeof fetch = fetch, now = () => new Date().toISOString()): Promise<AccountCheck> {
+  // The transport hides the token in bodies; headers are read here, so anything that carries it — or the hidden mark
+  // standing in for it — is not taken. A login that does, is not a login.
+  const carries = (value: string) => value.includes(token) || value.includes("[redacted]");
+  const clean = (value: string | null) => value !== null && carries(value) ? null : value;
   try {
     const transport = client(selected, token, send);
     const prefix = forgePrefix(selected);
@@ -53,18 +57,19 @@ export async function accountCheck(selected: Account, token: string, send: typeo
       const {payload, headers} = await transport(prefix + "/user");
       login = text(object(payload).login) || text(object(payload).username);
       if (!login) throw new Error("PROVIDER_DENIED");
+      if (carries(login)) throw new Error("PROVIDER_REJECTED");
       if (selected.kind === "github") {
         const listed = headers.get("x-oauth-scopes");
-        scopes = listed === null ? null : listed.split(",").map(scope => scope.trim()).filter(Boolean);
-        expiresAt = githubExpiry(headers.get("github-authentication-token-expiration"));
+        scopes = listed === null ? null : listed.split(",").map(scope => scope.trim()).filter(scope => scope && !carries(scope));
+        expiresAt = githubExpiry(clean(headers.get("github-authentication-token-expiration")));
       }
       // Optional facts: a server that does not answer them leaves them unknown, not the check failed.
       if (selected.kind === "gitlab") await transport(prefix + "/personal_access_tokens/self").then(({payload: self}) => {
         const own = object(self);
-        scopes = Array.isArray(own.scopes) ? own.scopes.filter((scope): scope is string => typeof scope === "string") : null;
+        scopes = Array.isArray(own.scopes) ? own.scopes.filter((scope): scope is string => typeof scope === "string" && !carries(scope)) : null;
         expiresAt = isoDate(own.expires_at);
       }, () => {});
-      if (selected.kind === "gitea") await transport(prefix + "/version").then(({payload: about}) => { version = text(object(about).version) || null; }, () => {});
+      if (selected.kind === "gitea") await transport(prefix + "/version").then(({payload: about}) => { version = clean(text(object(about).version) || null); }, () => {});
     }
     const first = await provider(selected, token, send).repositories(1);
     return {ok: true, login, repositories: first.items.length, more: first.more, scopes, expiresAt, version, checkedAt: now()};
