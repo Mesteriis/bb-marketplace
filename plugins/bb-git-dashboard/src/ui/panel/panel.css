@@ -1,0 +1,54 @@
+/* The Git panel beside a thread: a head, then a summary of folding parts, or one part's full screen with a way back.
+   It fills the panel BB gives it, 420–640 px wide. Only BB tokens and --git-*. */
+/* The panel is the container its screens' own narrow layouts ask about (the pull request page, the review, the history). */
+.git-ws .git-panel, .git-ws.git-panel { display: flex; flex-direction: column; min-width: 0; min-height: 100%; container-type: inline-size; }
+.git-ws .git-panel-head { display: grid; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+.git-ws .git-panel-note { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--muted-foreground); font-size: 12px; }
+.git-ws .git-panel-pin { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.git-ws .git-panel-note > .g-btn { margin-left: auto; }
+.git-ws .git-panel-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.git-ws .git-panel-title h2 { margin: 0; font-size: 16px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.git-ws .git-panel-actions { margin-left: auto; display: flex; gap: 6px; flex: none; }
+.git-ws .git-panel-branch { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted-foreground); }
+.git-ws .git-panel-branch .g-branch { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 45%; }
+.git-ws .git-panel-sync { margin-left: auto; flex: none; }
+.git-ws .git-panel-error { margin: 0; }
+
+.git-ws .git-panel-section { border-bottom: 1px solid var(--border); }
+.git-ws .git-panel-section-head { margin: 0; display: flex; align-items: center; gap: 8px; padding: 6px 16px 6px 8px; font-size: 14px; }
+.git-ws .git-panel-section-head > button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; color: inherit; font: inherit; font-weight: 650;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer; min-height: 28px; }
+.git-ws .git-panel-section-head > button:hover { background: var(--git-subtle); }
+.git-ws .git-panel-section-head > button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.git-ws .git-panel-aside { margin-left: auto; font-weight: 400; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.git-ws .git-panel-section-body { display: grid; gap: 10px; padding: 0 16px 14px; min-width: 0; }
+.git-ws .git-panel-empty { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.git-ws .git-panel-files { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.git-ws .git-panel-files li { display: flex; align-items: center; gap: 10px; min-height: 28px; min-width: 0; }
+.git-ws .git-panel-mark { width: 1em; font: 600 12px var(--font-mono); flex: none; }
+.git-ws .git-panel-path { flex: 1 1 auto; min-width: 0; text-align: start; border: 0; background: none; color: inherit; font: inherit; padding: 2px 0; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ws .git-panel-path:hover { text-decoration: underline; text-underline-offset: 3px; }
+.git-ws .git-panel-commit { display: flex; gap: 8px; }
+.git-ws .git-panel-commit .g-inp { flex: 1 1 auto; }
+
+.git-ws .git-panel-pr { display: grid; gap: 8px; }
+.git-ws .git-panel-pr-title { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
+.git-ws .git-panel-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.git-ws .git-panel-more { margin-left: auto; }
+.git-ws .git-panel-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.git-ws .git-panel-runstate { display: inline-flex; align-items: center; gap: 4px; }
+.git-ws .git-panel-error-lines { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--git-bad-bg); color: var(--git-bad-text);
+  font: 12px/1.6 var(--font-mono); overflow-x: auto; white-space: pre; }
+.git-ws .git-panel-line-no { display: inline-block; min-width: 3.2em; padding-right: 1em; text-align: right; color: var(--muted-foreground); user-select: none; }
+
+/* A part's full screen. */
+.git-ws .git-panel-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.git-ws .git-panel-bar h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.git-ws .git-panel-screen { flex: 1 1 auto; min-width: 0; min-height: 0; }
+.git-ws .git-panel-footer { padding: 12px 16px; display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+.git-ws .git-panel-footer select { height: 28px; }
+/* The copy's Code fills the panel's screen edge to edge: no page padding to undo there, and its bar keeps the panel's. */
+.git-ws .git-panel-screen > .git-codeview { margin: 0; }
+.git-ws .git-panel-screen .git-code-bar { padding: 8px 16px; }

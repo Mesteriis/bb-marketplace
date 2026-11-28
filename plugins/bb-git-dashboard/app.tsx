@@ -21,8 +21,9 @@ import { dispatchReviewCommand, REVIEW_COMMANDS, type ReviewCommand } from "./sr
 import { ReviewsPage, type ReviewsApi } from "./src/ui/code-review/reviews-page.tsx";
 import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-open.tsx";
 import { useReviewRevisions } from "./src/app/review-signal.ts";
-import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
-import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
+import { ciApi, codeReviewApi, failed, historyApi, okValue, pullRequestApi } from "./src/app/apis.tsx";
+import { useCatalog } from "./src/app/catalog-data.tsx";
+import { gitTab, pinnedCopyTab, pinnedPullTab, PinnedGit, PinnedPull, registerThreadSurfaces, ThreadGit } from "./src/app/thread-panel.tsx";
 import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
 import { ConnectionsPage, type ConnectionsApi } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
@@ -45,40 +46,10 @@ type Client = ReturnType<typeof useRpc<typeof rpc>>;
 type Host = {id: string; name: string};
 const signal = "git-workspace-changed";
 const inboxSignal = "inbox-alerts";
-const tab = {id:"git-pinned", availability:"action"} as const;
-const pullTab = {id:"git-pinned-pr",availability:"action",context:{kind:"nav-panel",panelId:"git"}} as const;
+const tab = pinnedCopyTab;
+const pullTab = pinnedPullTab;
 
 
-function useCatalog() {
-  const client = useRpc<typeof rpc>();
-  const [hiddenRepositories,setHiddenRepositories] = useState<string[]>([]);
-  const [copies, setCopies] = useState<Copy[]>([]);
-  const [hosts, setHosts] = useState<Host[]>([]);
-  const [projects,setProjects] = useState<Project[]>([]);
-  const [locations,setLocations] = useState<{projectId:string;hostId:string;path:string;name:string|null}[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState("");
-  const reload = useCallback(async () => {
-    try {
-      const next = await client.call("catalog");
-      setHiddenRepositories(next.hiddenRepositories);
-      setCopies(next.copies);
-      setHosts(next.hosts);
-      setProjects(next.projects);
-      setLocations(next.locations);
-      setError("");
-    } catch { setError("Cannot load repository catalog."); }
-    finally { setLoaded(true); }
-  }, [client]);
-  useEffect(() => { void reload(); }, [reload]);
-  useRealtime(signal, reload);
-  const hidden = new Set(projects.filter(project => project.hidden).map(project => project.id));
-  const projectCopies = useMemo(() => copies.filter(copy => !projects.some(p => p.hidden && p.id === copy.projectId)),[copies,projects]);
-  const visibleCopies = useMemo(() => projectCopies.filter(copy => !hiddenRepositories.includes(JSON.stringify([copy.projectId ?? "",repositoryKey(copy)]))),[projectCopies,hiddenRepositories]);
-  return {client, copies:visibleCopies,projectCopies,hiddenRepositories, hosts,
-    projects:projects.filter(project => !project.hidden), hiddenProjects:projects.filter(project => project.hidden),
-    locations:locations.filter(location => !hidden.has(location.projectId)), loaded, error, reload};
-}
 
 function BoundWorktree({copy, client, host, attach, pin, openReview}: {
   copy: Copy; client: Client; host?: string; attach?(path: string): Promise<void>; pin?(): void; openReview?(path: string): void;
@@ -222,34 +193,7 @@ function Dashboard({subPath}: {subPath: string}) {
     seen: async () => okValue(await client.call("inboxSeen",{})),
     SettingsLink: ({children}) => <UrlLink href={"/settings/plugins/"+encodeURIComponent(pluginId)} className="git-inbox-bell" title="Notification settings">{children}</UrlLink>,
   }), [client, pluginId]);
-  const review = useMemo<ReviewApi>(() => ({
-    detail: async ref => okValue(await client.call("prDetail",ref)),
-    files: async ref => okValue(await client.call("prFiles",ref)).files,
-    prepare: async (ref,action,shown) => okValue(await client.call("prPrepare",{...ref,action,shown})),
-    confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
-    ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
-    drafts: async ref => okValue(await client.call("prDrafts",ref)).drafts,
-    linkCandidates: async ref => okValue(await client.call("prLinkCandidates",ref)).threads,
-    link: async (ref,threadId) => { okValue(await client.call("prLink",{...ref,threadId})); },
-    compose: async (ref,kind) => {
-      const {prompt,projectId} = okValue(await client.call("prCompose",{...ref,kind}));
-      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
-    },
-    copy: text => { void experimental_copyToClipboard({text}); },
-    editDraft: async (commentId,body) => { okValue(await client.call("prDraftEdit",{commentId,body})); },
-    dropDraft: async commentId => { okValue(await client.call("prDraftDrop",{commentId})); },
-    jira: async () => okValue(await client.call("prJira",{})),
-    Markdown: ({content}) => <Markdown content={content}/>,
-    Link: ({href,children}) => <UrlLink href={href} className="git-jira-link">{children}</UrlLink>,
-    openThread: threadId => navigate.toThread(threadId),
-    issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
-    issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),
-    issueConfirm: async previewId => okValue(await client.call("issueConfirm",{previewId})),
-    issueAsk: async ref => {
-      const {prompt,projectId} = okValue(await client.call("issueCompose",ref));
-      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
-    },
-  }), [client,navigate]);
+  const review = useMemo(() => pullRequestApi(client, navigate), [client, navigate]);
   const [order,setOrder] = useState<InboxItem[]>([]);
   const [alerts,setAlerts] = useState<AlertSummary|null>(null);
   const readAlerts = useCallback(() => { inbox.alerts().then(setAlerts,() => {}); }, [inbox]);
@@ -315,7 +259,7 @@ function Dashboard({subPath}: {subPath: string}) {
       <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
       <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
-        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,number},title:repo.name+" #"+number})) {
+        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,repo:repo.path,number},title:repo.name+" #"+number})) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
@@ -335,80 +279,8 @@ function Dashboard({subPath}: {subPath: string}) {
   </div></div>;
 }
 
-function ThreadGit({threadId}: {threadId: string}) {
-  const client = useRpc<typeof rpc>();
-  const panel = experimental_useAppPanel();
-  const [context, setContext] = useState<Awaited<ReturnType<typeof loadContext>>>();
-  const [error, setError] = useState("");
-  function loadContext() { return client.call("context", {threadId}); }
-  const refresh = useCallback(() => {
-    client.call("context", {threadId}).then(setContext, () => setError("Cannot read thread environment."));
-  }, [client, threadId]);
-  useEffect(refresh, [refresh]);
-  useRealtime(signal, refresh);
-  async function authorize(permission: "none" | "read" | "write") {
-    if (!context?.ok) return;
-    try {
-      const result = await client.call("permission", {threadId, copyId:context.copy.id, permission});
-      if (!result.ok) return failed(result);
-      refresh();
-    } catch (error) { setError(error instanceof Error ? error.message : "Cannot change permission."); }
-  }
-  return <div className="git-ws">
-    {error && <p role="alert" className="git-section git-error">{error}</p>}
-    {!context ? <p className="git-section" role="status">Reading thread environment…</p> : !context.ok
-      ? <p className="git-section">{context.code} · Attach this thread’s working copy from Git.</p>
-      : <>
-        <div className="git-section">
-          <label>Agent access{" "}
-            <select value={context.permission} onChange={event => void authorize(event.target.value as "none" | "read" | "write")}>
-              <option value="none">Revoked</option><option value="read">Read</option><option value="write">Stage and commit</option>
-            </select>
-          </label>
-        </div>
-        <BoundWorktree key={context.copy.id} copy={context.copy} client={client}
-          pin={() => { if (!panel.openTab({tab:{...tab,context:{kind:"thread"}}, params:{copyId:context.copy.id}})) setError("The panel did not accept this tab."); }}/>
-      </>}
-  </div>;
-}
 
-function PinnedGit({params}: {params: JsonValue | null}) {
-  const {client, copies, hosts, loaded} = useCatalog();
-  const copyId = params && typeof params === "object" && !Array.isArray(params) ? params.copyId : undefined;
-  const copy = copies.find(copy => copy.id === copyId);
-  return <div className="git-ws">{copy ? <BoundWorktree key={copy.id} copy={copy} client={client} host={hosts.find(host => host.id === copy.hostId)?.name}/>
-    : <p className="git-section">{loaded ? "Pinned worktree is unavailable." : "Reading pinned worktree…"}</p>}</div>;
-}
 
-function PinnedPull({params}:{params:JsonValue|null}) {
-  const client = useRpc<typeof rpc>();
-  const [detail,setDetail] = useState<import("./src/core/providers.ts").PullDetails>();
-  const [error,setError] = useState("");
-  const [revision,setRevision] = useState(0);
-  const target = params && typeof params === "object" && !Array.isArray(params) ? params : {};
-  const {accountId,repoId,number} = target;
-  useEffect(() => {
-    let active = true;
-    if (typeof accountId !== "string" || typeof repoId !== "string" || typeof number !== "number") return;
-    client.call("pull",{accountId,repoId,number}).then(result => {
-      if (!active) return;
-      if (result.ok) {setDetail(result.value);setError("");}
-      else setError(result.code + " · " + result.next);
-    }, () => {if(active) setError("Cannot read this pull request.");});
-    return () => {active=false;};
-  },[accountId,client,number,repoId,revision]);
-  return <div className="git-ws"><div className="git-section">
-    <button onClick={() => setRevision(value => value+1)}>Refresh PR</button>
-    {error && <p className="git-error" role="alert">{error}</p>}
-    {detail && <><h2>#{detail.pull.number} {detail.pull.title}</h2>
-      <p className="git-path">{String(accountId)} · {detail.pull.state} · {detail.pull.head.repo}:{detail.pull.head.branch} → {detail.pull.base.repo}:{detail.pull.base.branch}</p>
-      <p className="git-muted git-path">{detail.pull.head.sha ?? "Head revision unavailable"}</p>
-      {detail.issues.map(issue => <p key={issue} className="git-muted">{issue}</p>)}
-      {detail.checks.map((check,index) => <p key={index}>{check.name} · {check.state}</p>)}
-      {detail.diff !== null && <pre className="git-code">{detail.diff}</pre>}
-    </>}
-  </div></div>;
-}
 
 function Approval({interaction,submit,cancel}:PluginPendingInteractionProps) {
   const [pending,setPending] = useState(false);
@@ -435,30 +307,26 @@ function Approval({interaction,submit,cancel}:PluginPendingInteractionProps) {
 }
 
 export default definePluginApp(app => {
-  app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
+  app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(withInterface(PinnedPull))});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
   app.slots.settingsSection({id:"main", component:withInterface(MainSettingsSection)});
   app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(withInterface(Dashboard)), experimental_useBadge:useInboxBadge, experimental_sidebar:withInterface(ProjectsSidebar)});
-  app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
-  app.slots.experimental_tab({...historyTab, title:"Git History", icon:"FolderGit", layout:"flush", component:ThreadHistory});
-  app.slots.experimental_tab({...ciTab, title:"CI/CD", icon:"Workflow", layout:"flush", component:ThreadCi});
-  app.slots.experimental_tab({...reviewTab, title:"Review", icon:"FileDiff", layout:"flush", component:withCodeTheme(ThreadReview)});
-  // The Review's palette commands: each opens the thread's Review tab and leaves its action there.
+  // One Git tab beside a thread: the summary and every screen that had a tab of its own (History, CI/CD, Review).
+  app.slots.experimental_tab({...gitTab, title:"Git", icon:"GitBranch", layout:"flush", component:withCodeTheme(withInterface(ThreadGit))});
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGit))});
+  // The Review's palette commands: each opens the thread's Git tab on its Review and leaves the action there.
   app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
   app.slots.experimental_appOverlay({id:"pr-links", component:PrLinkOverlay});
   app.slots.experimental_appOverlay({id:"pr-alerts", component:AlertToastsOverlay});
   app.commands.register({id:"review-open", title:"Makosh Git: review this thread's changes", isAvailable:context => context.threadId !== null,
-    run:context => { context.experimental_panel.openTab({tab:reviewTab, title:"Review"}); }});
+    run:context => { context.experimental_panel.openTab({tab:gitTab, target:{screen:"review"}}); }});
   for (const [id, title] of Object.entries(REVIEW_COMMANDS) as [ReviewCommand, string][]) {
     app.commands.register({id:"review-" + id, title:"Makosh Git Review: " + title, isAvailable:context => context.threadId !== null,
       run:context => {
         if (context.threadId === null) return;
-        context.experimental_panel.openTab({tab:reviewTab, title:"Review"});
-        dispatchReviewCommand(context.threadId, id);
+        context.experimental_panel.openTab({tab:gitTab, target:{screen:"review", command:id}});
       }});
   }
-  registerHistoryShortcut(app.slots);
-  registerReviewSurfaces(app.slots);
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});
+  registerThreadSurfaces(app.slots);
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGit))});
 });

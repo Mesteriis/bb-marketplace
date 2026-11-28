@@ -1,4 +1,5 @@
-import { experimental_copyToClipboard, experimental_ProviderModelPicker as ProviderModelPicker, Markdown, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_copyToClipboard, experimental_ProviderModelPicker as ProviderModelPicker, Markdown, UrlLink, type useBbNavigate, type useRpc } from "@get-bb/plugin-sdk/app";
+import type { ReviewApi } from "../ui/review/review-api.ts";
 import type { rpc } from "../adapters/bb/rpc.ts";
 import type { Failure } from "../core/workspace.ts";
 import type { CiApi } from "../ui/ci/ci-api.ts";
@@ -103,5 +104,37 @@ export function codeReviewApi(client: Client, navigate: Navigate): CodeReviewApi
     ExecutionPicker,
     Markdown: ({content}) => <Markdown content={content}/>,
     openThread: threadId => navigate.toThread(threadId),
+  };
+}
+
+/** The pull request and issue pages' requests, over RPC. */
+export function pullRequestApi(client: Client, navigate: Navigate): ReviewApi {
+  return {
+    detail: async ref => okValue(await client.call("prDetail",ref)),
+    files: async ref => okValue(await client.call("prFiles",ref)).files,
+    prepare: async (ref,action,shown) => okValue(await client.call("prPrepare",{...ref,action,shown})),
+    confirm: async previewId => okValue(await client.call("prConfirm",{previewId})),
+    ask: async (ref,subject) => okValue(await client.call("prAsk",{...ref,subject})),
+    drafts: async ref => okValue(await client.call("prDrafts",ref)).drafts,
+    linkCandidates: async ref => okValue(await client.call("prLinkCandidates",ref)).threads,
+    link: async (ref,threadId) => { okValue(await client.call("prLink",{...ref,threadId})); },
+    compose: async (ref,kind) => {
+      const {prompt,projectId} = okValue(await client.call("prCompose",{...ref,kind}));
+      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
+    },
+    copy: text => { void experimental_copyToClipboard({text}); },
+    editDraft: async (commentId,body) => { okValue(await client.call("prDraftEdit",{commentId,body})); },
+    dropDraft: async commentId => { okValue(await client.call("prDraftDrop",{commentId})); },
+    jira: async () => okValue(await client.call("prJira",{})),
+    Markdown: ({content}) => <Markdown content={content}/>,
+    Link: ({href,children}) => <UrlLink href={href} className="git-jira-link">{children}</UrlLink>,
+    openThread: threadId => navigate.toThread(threadId),
+    issue: async ref => okValue(await client.call("issueDetail",ref)).issue,
+    issuePrepare: async (accountId,repo,action) => okValue(await client.call("issuePrepare",{accountId,repo,action})),
+    issueConfirm: async previewId => okValue(await client.call("issueConfirm",{previewId})),
+    issueAsk: async ref => {
+      const {prompt,projectId} = okValue(await client.call("issueCompose",ref));
+      navigate.toCompose({initialPrompt:prompt,focusPrompt:true,...(projectId ? {projectId} : {})});
+    },
   };
 }
