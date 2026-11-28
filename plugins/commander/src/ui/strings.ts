@@ -14,6 +14,15 @@ export const ru = {
     revisionChanged: "Редакция изменилась — перечитайте копию", previousWrite: "Предыдущая запись ещё выполняется",
     base: "Исходная версия", recheck: "«Перезаписать» ещё раз сверит версию. Commander записывает файл через временную копию.",
   },
+  archive: {
+    kind: "Архив",
+    passwordTitle: "Зашифрованный архив", password: "Пароль архива",
+    estimateTitle: "Скопировать архив для открытия",
+    confirmCopy: "Подтвердить копию",
+    estimateText: (size: string) => "Архив сначала копируется на этот компьютер: будет прочитано " + size + ". Продолжить?",
+    copyAndOpen: "Копировать и открыть",
+    changed: "Файл изменился — оцените снова",
+  },
   // S11
   search: {
     title: "Поиск", virtual: "Результаты поиска", close: "Закрыть поиск",
@@ -115,7 +124,7 @@ export const ru = {
     shown: (shown: number, total: string) => "Показано " + shown + " из " + total + " байт",
   },
 };
-export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление" };
+export const operationText = { copy: "Копирование", move: "Перемещение", rename: "Переименование", mkdir: "Создание каталога", delete: "Удаление", pack: "Создание архива" };
 export const stateText = {
   pending: "В очереди", running: "Выполняется", awaiting_decision: "Ждёт решения",
   completed: "Готово", failed: "Ошибка", cancel_requested: "Отмена запрошена",
@@ -138,6 +147,8 @@ export const errorText: Record<string, string> = {
   host_key_rejected: "Ключ хоста отклонён", auth_failed: "Вход отклонён", consent_required: "Требуется разрешение",
   cancelled: stateText.cancelled, timeout: "Время ожидания истекло", unsupported: "Действие не поддерживается",
   limit_exceeded: "Достигнут предел операции", outcome_unknown: stateText.unknown, internal: ru.unknownError,
+  // S14
+  invalid_archive: "Архив повреждён или имеет неподдерживаемую структуру",
 };
 
 // S12: массовое переименование. Строки своего блока; общий словарь ru не меняется.

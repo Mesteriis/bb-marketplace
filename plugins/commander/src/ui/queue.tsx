@@ -5,6 +5,7 @@ import { displayPath, join, parent } from "../core/path.ts";
 import { tempNameFor } from "../core/reconcile.ts";
 import { parentSkipNote } from "../core/retry-note.ts";
 import { bytes, damaged, date, shortPath, type EndpointView, type JobView, type Problem } from "./model.ts";
+import { archiveReasonText } from "./archive-text.ts";
 import { ProblemLine } from "./pane.tsx";
 import { approvalState, batchRenameText, operationText, reasonText, ru, stateText } from "./strings.ts";
 
@@ -43,10 +44,11 @@ const stateIcons = {
   cancelled: "CircleX", interrupted: "Pause", unknown: "CircleQuestion",
 };
 
-function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, retryNotes }: {
+function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry, retryNotes, onConfirmArchive }: {
   job: JobView; endpoints: EndpointView[]; compact?: boolean;
   onInspect: (job: OperationJob) => void; onSkip: (job: OperationJob) => void; onCancel: (job: OperationJob) => void;
   onRetry?: (job: OperationJob) => void; retryNotes?: Record<string, RetryNote>;
+  onConfirmArchive?: (job: OperationJob) => void;
 }) {
   if (damaged(job)) return <article className="cm-job" aria-label={ru.damaged}>
     <strong>{ru.damaged}</strong><span className="cm-meta">{job.id}</span>
@@ -94,7 +96,7 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
     <div className="cm-meta">{progress.itemsDone} / {progress.itemsTotal}
       {total > 0n && <> · {bytes(progress.bytesDone)} / {bytes(progress.bytesTotal)}</>}</div>
     {pendingConflict && <div className="cm-meta">{reasonText[pendingConflict.reason]}</div>}
-    {job.error && <ProblemLine problem={{ code: job.error.code, message: "" }} />}
+    {job.error && <ProblemLine problem={{ code: job.error.code, message: (job.error.reason && archiveReasonText(job.error.code, job.error.reason)) || "" }} />}
     {tempNameHint(job) && <div className="cm-meta" role="note">{tempNameHint(job)}</div>}
     {returnedPendingNote(job) && <div className="cm-meta" role="note">{batchRenameText.returnedPending}</div>}
     {retryNotes?.[job.id] && <div className="cm-meta">{retryNotes[job.id].kind === "nothing"
@@ -106,6 +108,8 @@ function JobCard({ job, endpoints, compact, onInspect, onSkip, onCancel, onRetry
       {job.awaitsOwner && <Button size="sm" variant="outline" onClick={() => onInspect(job)}>{ru.inspectPlan}</Button>}
       {cancellable.has(job.state) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onCancel(job)}>{ru.cancelJob}</Button>}
+      {onConfirmArchive && job.error?.reason === "archive_copy" && (job.state === "interrupted" || job.state === "pending") && !job.awaitsOwner &&
+        <Button size="sm" onClick={() => onConfirmArchive(job)}>{ru.archive.confirmCopy}</Button>}
       {onRetry && retryable.has(job.state) && hasUnfinished(job) && !job.awaitsOwner && !conflict &&
         <Button size="sm" variant="outline" onClick={() => onRetry(job)}>{ru.retryUnfinished}</Button>}
     </div>
@@ -119,6 +123,8 @@ export type QueueProps = {
   retryNotes?: Record<string, RetryNote>;
   /** S17: optional, so a host without the retry wiring still renders the queue. */
   onRetry?: (job: OperationJob) => void;
+  /** S14a: opens the question that lets a job wait for the copy of its archive go on. */
+  onConfirmArchive?: (job: OperationJob) => void;
 };
 export function Queue({ compact, open, selection, id, collapse, ...props }: QueueProps & {
   compact?: boolean; open: boolean; id: string; collapse?: () => void; selection: { count: number; size: string; destination: string; fullDestination: string };

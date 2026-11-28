@@ -34,6 +34,7 @@ export class FakeProvider implements FileProvider {
   private readonly root: StoredEntry = { path: { segments: [] }, kind: "dir", bytes: new Uint8Array(), mtimeNs: "1" };
   copyWithin?: FileProvider["copyWithin"];
   sha256?: FileProvider["sha256"];
+  finishRead?: FileProvider["finishRead"];
 
   constructor(id: string, caseSensitive = true) {
     this.endpoint = { id, provider: "local", label: id, machine: id, hostId: id, readOnly: false, caseSensitive };

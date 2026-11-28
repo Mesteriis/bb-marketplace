@@ -89,7 +89,7 @@ test("migrates six stage-one migrations without changing the saved transfer job"
     expect(journal.all()).toEqual([0, 1, 2, 3, 4, 5]);
     await createSqliteJobStore(db).create(job);
     runPluginStorageMigrations(db, MIGRATIONS);
-    expect(journal.all()).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(journal.all()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
     await expect(createSqliteJobStore(db).get(job.id)).resolves.toStrictEqual(job);
     expect(db.prepare("SELECT count(*) FROM scan_jobs").pluck().get()).toBe(0);
   } finally { db.close(); }

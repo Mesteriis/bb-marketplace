@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CommanderError } from "./errors.ts";
+import { assertArchiveTargetNames } from "./archive-guard.ts";
 import {
   assertNoSourceOverlap,
   assertNoTargetOverlap,
@@ -282,6 +283,8 @@ export async function buildPlan(
   if (Array.isArray(rawRequest.sources) && rawRequest.sources.length > SCHEMA_MAX_ITEMS) {
     throw new CommanderError("limit_exceeded", "The selection has too many sources");
   }
+  // S14a: the pack kind is modelled and permitted, but planning and running it belong to S14b.
+  if (rawRequest.kind === "pack") throw new CommanderError("unsupported", "Creating archives is not available yet");
   const req = snapshotRequest(rawRequest);
   signal.throwIfAborted();
   const caseOf = (id: EndpointId) => deps.provider(id).endpoint.caseSensitive;
@@ -530,6 +533,7 @@ async function renameBatchItems(
  * duplicate targets are refused. Every other kind keeps the overlap guard.
  */
 function checkTargets(items: PlanItem[], caseOf: (id: EndpointId) => boolean, kind: OperationKind): void {
+  assertArchiveTargetNames(items, caseOf);
   if (kind !== "rename" || items.length < 2) {
     assertNoTargetOverlap(items, caseOf, kind);
     return;

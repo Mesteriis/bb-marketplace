@@ -504,3 +504,84 @@ SOFTWARE.
   not vendored here.
 - License: ISC, Copyright (c) 2026 Lucide Icons and Contributors (full text in
   `plugins/commander/docs/design/v2/icons/LICENSE-lucide`).
+
+## Commander archive helper (Rust crates)
+
+- Paths: `plugins/commander/helper/` (source, `Cargo.lock`) and the built
+  `plugins/commander/bin/commander-archive-helper`, which statically links the
+  crates below (macOS arm64, `cargo build --release --locked`). The helper
+  source is our own; the crates are used unmodified from crates.io.
+- Direct dependencies: `zip` 8.6.0 (MIT, features `deflate`, `aes-crypto`),
+  `tar` 0.4.46 (MIT OR Apache-2.0, no `xattr`), `base64`, `libc`, `serde`,
+  `serde_json`, `sha2`, `zeroize`; `flate2` is a dev dependency used by tests
+  and, through `zip`, a normal dependency.
+- List generated with `cargo metadata --locked --filter-platform
+  aarch64-apple-darwin` (normal dependencies reachable from the helper);
+  `scripts/check-notices.mjs` fails the build when this table and `Cargo.lock`
+  disagree.
+
+| Crate | Version | License (SPDX, as declared) |
+| --- | --- | --- |
+| adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 |
+| aes | 0.9.4 | MIT OR Apache-2.0 |
+| base64 | 0.22.1 | MIT OR Apache-2.0 |
+| block-buffer | 0.10.4 | MIT OR Apache-2.0 |
+| block-buffer | 0.12.1 | MIT OR Apache-2.0 |
+| bumpalo | 3.20.4 | MIT OR Apache-2.0 |
+| cfg-if | 1.0.5 | MIT OR Apache-2.0 |
+| cipher | 0.5.2 | MIT OR Apache-2.0 |
+| cmov | 0.5.4 | Apache-2.0 OR MIT |
+| const-oid | 0.10.3 | Apache-2.0 OR MIT |
+| constant_time_eq | 0.4.2 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
+| cpubits | 0.1.1 | MIT OR Apache-2.0 |
+| cpufeatures | 0.2.17 | MIT OR Apache-2.0 |
+| cpufeatures | 0.3.1 | MIT OR Apache-2.0 |
+| crc32fast | 1.5.6 | MIT OR Apache-2.0 |
+| crypto-common | 0.1.7 | MIT OR Apache-2.0 |
+| crypto-common | 0.2.2 | MIT OR Apache-2.0 |
+| ctutils | 0.4.8 | Apache-2.0 OR MIT |
+| digest | 0.10.7 | MIT OR Apache-2.0 |
+| digest | 0.11.3 | MIT OR Apache-2.0 |
+| equivalent | 1.0.3 | Apache-2.0 OR MIT |
+| filetime | 0.2.30 | MIT/Apache-2.0 |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 |
+| generic-array | 0.14.7 | MIT |
+| getrandom | 0.4.3 | MIT OR Apache-2.0 |
+| hashbrown | 0.17.2 | MIT OR Apache-2.0 |
+| hmac | 0.13.0 | MIT OR Apache-2.0 |
+| hybrid-array | 0.4.15 | MIT OR Apache-2.0 |
+| indexmap | 2.14.2 | Apache-2.0 OR MIT |
+| inout | 0.2.6 | MIT OR Apache-2.0 |
+| itoa | 1.0.19 | MIT OR Apache-2.0 |
+| libc | 0.2.191 | MIT OR Apache-2.0 |
+| log | 0.4.35 | MIT OR Apache-2.0 |
+| memchr | 2.8.3 | Unlicense OR MIT |
+| miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
+| pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
+| proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
+| quote | 1.0.47 | MIT OR Apache-2.0 |
+| serde | 1.0.229 | MIT OR Apache-2.0 |
+| serde_core | 1.0.229 | MIT OR Apache-2.0 |
+| serde_derive | 1.0.229 | MIT OR Apache-2.0 |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 |
+| sha1 | 0.11.0 | MIT OR Apache-2.0 |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 |
+| simd-adler32 | 0.3.10 | MIT |
+| syn | 3.0.10 | MIT OR Apache-2.0 |
+| tar | 0.4.46 | MIT OR Apache-2.0 |
+| typed-path | 0.12.4 | MIT OR Apache-2.0 |
+| typenum | 1.20.1 | MIT OR Apache-2.0 |
+| unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| zeroize | 1.9.2 | Apache-2.0 OR MIT |
+| zip | 8.6.0 | MIT |
+| zlib-rs | 0.6.9 | Zlib |
+| zmij | 1.0.23 | MIT |
+| zopfli | 0.8.4 | Apache-2.0 |
+
+Copyright remains with the respective crate authors; each license text is available in the crate source on crates.io.
+
+## Commander archive helper checksum check
+
+- Path: `plugins/commander/src/adapters/bb/archive-helper-integrity.ts` and its
+  test, ported from `plugins/remote-hub/src/adapters/bb/helper-integrity.ts`
+  in this repository (same owner, same license) with the helper name changed.

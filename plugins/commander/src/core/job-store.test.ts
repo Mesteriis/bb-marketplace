@@ -29,6 +29,7 @@ test("JobStore exposes a state CAS and the last checkpoint for one item", () => 
     sourceHash?: string;
     writing?: { offset: string; length: number };
     cleanup?: { tempPath: ResourcePath; tempFingerprint: Fingerprint };
+    commitIntent?: { size: string; sha256: string; tempFingerprint: Fingerprint };
   }>();
 });
 

@@ -25,6 +25,11 @@ export interface Checkpoint {
   writing?: { offset: Size; length: number };
   /** Saved by recovery before it removes a temp, so a repeated recovery may rely on it. */
   cleanup?: { tempPath: ResourcePath; tempFingerprint: Fingerprint };
+  /**
+   * Saved right before session.commit, only for jobs with an archive source and for pack (S14).
+   * After a lost commit answer it is the proof of what was meant to be published.
+   */
+  commitIntent?: { size: Size; sha256: string; tempFingerprint: Fingerprint };
 }
 
 export interface JobStore {

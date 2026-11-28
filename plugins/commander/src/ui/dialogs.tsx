@@ -26,13 +26,14 @@ export function Modal({ title, description, close, children, busy }: {
   </Dialog>;
 }
 
-export function TextDialog({ title, label, initial = "", submit, close, busy, error }: {
-  title: string; label: string; initial?: string; submit: (text: string) => void; close: () => void; busy: boolean; error: Problem | null;
+export function TextDialog({ title, label, initial = "", secret = false, submit, close, busy, error }: {
+  title: string; label: string; initial?: string; secret?: boolean; submit: (text: string) => void; close: () => void; busy: boolean; error: Problem | null;
 }) {
   const [text, setText] = useState(initial);
   return <Modal title={title} close={close} busy={busy}>
     <form className="cm-dialog-form" onSubmit={(event) => { event.preventDefault(); if (text) submit(text); }}>
-      <label>{label}<Input value={text} onChange={(event) => setText(event.currentTarget.value)} maxLength={1024} required autoFocus /></label>
+      <label>{label}<Input value={text} onChange={(event) => setText(event.currentTarget.value)} maxLength={1024} required autoFocus
+        {...(secret ? { type: "password", autoComplete: "off", spellCheck: false } : {})} /></label>
       {error && <ProblemLine problem={error} />}
       <div className="cm-actions"><Button type="submit" size="sm" disabled={busy}>{ru.next}</Button><Button type="button" size="sm" variant="outline" onClick={close}>{ru.cancel}</Button></div>
     </form>

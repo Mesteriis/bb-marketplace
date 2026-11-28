@@ -79,7 +79,9 @@ async function initialState(rpc: Rpc, sdk: Sdk, environment: string | undefined,
   const second = endpoints.find((endpoint) => endpoint.id !== preferred?.id) ?? preferred;
   const initialize = async (pane: Side, source: EndpointView | undefined, threadPath?: string) => {
     const existing = activeTab(state, pane);
-    if (existing && endpoints.some((item) => item.id === existing.endpoint)) return state[pane];
+    // A saved archive panel stays even when its endpoint is not listed (the copy is gone after a restart): the
+    // panel asks the owner for a new estimate instead of being replaced by a home directory.
+    if (existing && (existing.endpoint.startsWith("archive:") || endpoints.some((item) => item.id === existing.endpoint))) return state[pane];
     if (!source) return emptyState[pane];
     let path;
     if (threadPath) path = parsePosix(threadPath);
@@ -275,6 +277,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
+  const [passwordFor, setPasswordFor] = useState<string | null>(null);
   const changes = useRef(new Set<string>());
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
@@ -286,6 +289,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (typeof payload !== "object" || payload === null || !("kind" in payload)) return;
     if (payload.kind === "job") changes.current.add("job");
     if (payload.kind === "endpoints") changes.current.add("endpoints");
+    // S14: an encrypted archive asks the owner for its password; the id is all this event carries.
+    if (payload.kind === "archive-password" && "id" in payload && typeof payload.id === "string") setPasswordFor(payload.id);
     if (payload.kind === "dir" && "id" in payload) {
       if (left?.endpoint === payload.id) changes.current.add("left");
       if (right?.endpoint === payload.id) changes.current.add("right");
@@ -411,6 +416,27 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
     retryNotes={retryNotes} onEndpoint={selectEndpoint} onRefresh={refresh}
+    onOpenArchive={async (source, estimateId) => {
+      const reply = await rpc.call("archive_open", estimateId ? { source, estimateId } : { source, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
+      await refreshEndpoints();
+      return { endpoint: reply.endpoint };
+    }}
+    onResumeArchive={async (archiveId, estimateId) => {
+      const reply = await rpc.call("archive_resume", estimateId ? { archiveId, estimateId } : { archiveId, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
+      await refreshEndpoints();
+      return { endpoint: reply.endpoint };
+    }}
+    passwordFor={passwordFor}
+    onPassword={async (archiveId, password) => {
+      await rpc.call("archive_password", { archiveId, password });
+      setPasswordFor(null);
+    }}
+    onPasswordCancel={(archiveId) => {
+      setPasswordFor(null);
+      void rpc.call("archive_password_cancel", { archiveId }).catch(() => undefined);
+    }}
     onAccess={async (endpoint) => {
       await rpc.call("sftp_request_access", { profileId: endpoint.id.slice("sftp:".length), level: "write" });
       await refreshEndpoints();

@@ -1,3 +1,4 @@
+import { archiveReasonText } from "./archive-text.ts";
 import { CommanderError } from "../core/errors.ts";
 import type { Entry, Endpoint, OperationJob, ResourceRef } from "../core/model.ts";
 import { displayPath, type NameSegment, type ResourcePath } from "../core/path.ts";
@@ -52,7 +53,12 @@ export function problemOf(error: unknown): Problem {
     try {
       const detail: unknown = JSON.parse(error.message);
       if (typeof detail === "object" && detail !== null && "code" in detail && typeof detail.code === "string"
-        && Object.hasOwn(errorText, detail.code)) code = detail.code;
+        && Object.hasOwn(errorText, detail.code)) {
+        code = detail.code;
+        // S14: the line is chosen by the pair code + reason; the host's own text is not shown.
+        const reason = "reason" in detail && typeof detail.reason === "string" ? archiveReasonText(detail.code, detail.reason) : null;
+        if (reason !== null) return { code: detail.code, message: reason };
+      }
     } catch { /* Unstructured host errors may contain paths. */ }
   }
   return typeof code === "string" && Object.hasOwn(errorText, code)
