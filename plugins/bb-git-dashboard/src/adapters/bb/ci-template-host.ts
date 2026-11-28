@@ -23,8 +23,16 @@ export async function ciStack(root: string, branch?: string, signal?: AbortSigna
   if (!head) return {ref, head: null, paths: [], manifests: {}};
   const top = names((await git(["ls-tree", "-z", "--name-only", head])).text);
   const ci = names((await git(["ls-tree", "-r", "-z", "--name-only", head, "--", ...ciFiles])).text);
+  // The application folders src/<role>/ (at most 20) and their own entries, where a project without root manifests keeps them.
+  const apps: string[] = [];
+  if (top.includes("src")) {
+    const folders = (await git(["ls-tree", "-z", head, "--", "src/"])).text.split("\0").filter(Boolean)
+      .filter(line => / tree [0-9a-f]+\t/.test(line)).map(line => line.slice(line.indexOf("\t") + 1)).slice(0, 20);
+    apps.push(...folders);
+    for (const folder of folders) apps.push(...names((await git(["ls-tree", "-z", "--name-only", head, "--", folder + "/"])).text));
+  }
   const manifests: Record<string, string> = {};
-  for (const path of manifestPaths(top)) {
+  for (const path of manifestPaths([...top, ...apps])) {
     // A name that is no file at the root (a submodule, a folder) has no blob to read.
     const type = await git(["cat-file", "-t", head + ":" + path], {codes: [0, 128]});
     if (type.code !== 0 || type.text.trim() !== "blob") continue;
@@ -32,7 +40,7 @@ export async function ciStack(root: string, branch?: string, signal?: AbortSigna
     if (!Number.isFinite(size) || size > largest) continue;
     manifests[path] = (await git(["cat-file", "blob", head + ":" + path], {limit: largest})).text;
   }
-  return {ref, head, paths: [...new Set([...ci, ...top])].sort(), manifests};
+  return {ref, head, paths: [...new Set([...ci, ...top, ...apps])].sort(), manifests};
 }
 
 /** Reads a regular file without following a link, refusing one over `largest` bytes; null when it is not one. */

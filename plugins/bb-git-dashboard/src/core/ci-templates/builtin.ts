@@ -10,6 +10,12 @@ import { versions } from "../scaffolds/versions.ts";
 const branch: CiParam = {name: "branch", label: "Branch to build on push", kind: "text", default: "main"};
 const make: CiParam = {name: "make", label: "Run make check instead of the steps", kind: "flag", default: false};
 const workflow: CiParam = {name: "workflow", label: "Workflow file name", kind: "text", default: "ci"};
+// An application in src/<role>/ (the layout of the owner's templates): its install and checks run there, make check at the root.
+const app: CiParam[] = [
+  // Used only with inApp; its default is a sample, as a text value starts with a letter or digit.
+  {name: "appDir", label: "Application folder (src/<role>)", kind: "text", default: "src/app", pattern: "^src/[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$"},
+  {name: "inApp", label: "Install and check in the application folder", kind: "flag", default: false},
+];
 const params: Record<StackId, CiParam[]> = {
   node: [
     {name: "packageManager", label: "Package manager", kind: "choice", default: "npm", choices: ["npm", "pnpm", "yarn", "bun"]},
@@ -19,6 +25,7 @@ const params: Record<StackId, CiParam[]> = {
     {name: "lint", label: "Run the lint script", kind: "flag", default: false},
     {name: "build", label: "Run the build script", kind: "flag", default: true},
     {name: "test", label: "Run the test script", kind: "flag", default: true},
+    ...app,
   ],
   python: [
     {name: "pythonTool", label: "Install dependencies with", kind: "choice", default: "pip", choices: ["uv", "poetry", "pip", "pyproject"]},
@@ -26,18 +33,19 @@ const params: Record<StackId, CiParam[]> = {
     {name: "lockfile", label: "Install from the committed uv.lock (uv)", kind: "flag", default: true},
     make,
     {name: "test", label: "Run pytest", kind: "flag", default: true},
+    ...app,
   ],
   go: [{name: "goVersion", label: "Go version", kind: "text", default: "1.23"}, make,
     {name: "web", label: "Also check web/ with Node.js (make web-check)", kind: "flag", default: false},
-    {name: "webNode", label: "Node.js version for web/", kind: "text", default: "24"}],
-  rust: [make, {name: "clippy", label: "Run clippy", kind: "flag", default: true}],
+    {name: "webNode", label: "Node.js version for web/", kind: "text", default: "24"}, ...app],
+  rust: [make, {name: "clippy", label: "Run clippy", kind: "flag", default: true}, ...app],
   docker: [{name: "image", label: "Image name (local, not pushed)", kind: "text", default: "app"}],
 };
 const titles: Record<StackId, string> = {node: "Node.js", python: "Python", go: "Go", rust: "Rust", docker: "Docker image build"};
 const forges: Record<CiForge, string> = {github: "GitHub Actions", gitea: "Gitea Actions", gitlab: "GitLab CI", azure: "Azure Pipelines"};
 
-/** The commands of a stack, one per line, each wrapped by the forge's step syntax. */
-type Step = {name: string; run: string} | {section: string} | {end: string};
+/** The commands of a stack, one per line, each wrapped by the forge's step syntax; `root` ones run at the repository's root. */
+type Step = {name: string; run: string; root?: true} | {section: string} | {end: string};
 const install: Record<Exclude<StackId, "docker">, Step[]> = {
   node: [
     // Node 25 and later ship without Corepack: it is installed first, then enabled.
@@ -91,17 +99,19 @@ const checks: Record<Exclude<StackId, "docker">, Step[]> = {
  */
 const steps = (stack: Exclude<StackId, "docker">, separateWeb = false): Step[] => [...install[stack],
   {section: "^make"}, ...checks[stack], {end: "make"},
-  ...(stack === "go" && !separateWeb ? [{section: "^make"}, {section: "#web"}, {name: "Web", run: "make web-check"}, {end: "web"}, {end: "make"}] : []),
+  ...(stack === "go" && !separateWeb ? [{section: "^make"}, {section: "#web"}, {name: "Web", run: "make web-check", root: true as const}, {end: "web"}, {end: "make"}] : []),
   {section: "#make"},
-  ...(stack === "go" && separateWeb ? [{section: "#web"}, {name: "Check", run: "make check WEB=0"}, {end: "web"}, {section: "^web"}] : []),
-  {name: "Check", run: "make check"},
+  ...(stack === "go" && separateWeb ? [{section: "#web"}, {name: "Check", run: "make check WEB=0", root: true as const}, {end: "web"}, {section: "^web"}] : []),
+  {name: "Check", run: "make check", root: true},
   ...(stack === "go" && separateWeb ? [{end: "web"}] : []),
   {end: "make"}];
-const dockerSteps: Step[] = [{name: "Build image", run: "docker build -t {{image}}:ci ."}];
+const dockerSteps: Step[] = [{name: "Build image", run: "docker build -t {{image}}:ci .", root: true}];
 
 /** Writes steps with `indent`, each command through `line`; section tags go on their own lines. */
-const render = (list: Step[], indent: string, line: (step: {name: string; run: string}) => string) =>
+const render = (list: Step[], indent: string, line: (step: {name: string; run: string; root?: true}) => string) =>
   list.map(step => "section" in step ? indent + "{{" + step.section + "}}\n" : "end" in step ? indent + "{{/" + step.end + "}}\n" : line(step)).join("");
+/** A step's working folder when the application is in src/<role>/: the forge's own key, kept out for a root project. */
+const inApp = (indent: string, key: string, step: {root?: true}) => step.root ? "" : indent + "{{#inApp}}\n" + indent + key + ": {{appDir}}\n" + indent + "{{/inApp}}\n";
 
 /** Steps that set up the language before the stack's commands, per syntax. */
 function actionsSetup(stack: StackId) {
@@ -120,7 +130,7 @@ function actions(stack: StackId, forge: "github" | "gitea"): CiTemplate {
   const body = "# " + titles[stack] + " CI from a Makosh Git template. Add deployment and secrets yourself.\n" +
     "name: CI\non:\n  push:\n    branches: [{{branch}}]\n  pull_request:\n  workflow_dispatch:\n" +
     "jobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n" + actionsSetup(stack) +
-    render(list, "      ", step => "      - name: " + step.name + "\n        run: " + step.run + "\n");
+    render(list, "      ", step => "      - name: " + step.name + "\n        run: " + step.run + "\n" + inApp("        ", "working-directory", step));
   return {id: stack + "-" + forge, title: titles[stack] + " · " + forges[forge], stacks: [stack], forge,
     path: (forge === "github" ? ".github" : ".gitea") + "/workflows/{{workflow}}.yml", params: [branch, workflow, ...params[stack]], body};
 }
@@ -131,7 +141,9 @@ function gitlab(stack: StackId): CiTemplate {
     "workflow:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n    - if: $CI_COMMIT_BRANCH == \"{{branch}}\"\n" +
     "ci:\n  image: " + images[stack] + "\n" + (stack === "docker" ? "  services:\n    - docker:dind\n  variables:\n    DOCKER_TLS_CERTDIR: \"/certs\"\n" : "") +
     "  script:\n" + (stack === "node" ? "    {{#packageManager=bun}}\n    - npm install -g bun\n    {{/packageManager}}\n" : "") +
-    render(list, "    ", step => "    - " + step.run + "\n") +
+    // One shell runs a job's lines: a step in the application folder goes in a subshell, so make check stays at the root.
+    render(list, "    ", step => step.root ? "    - " + step.run + "\n"
+      : "    {{#inApp}}\n    - (cd {{appDir}} && " + step.run + ")\n    {{/inApp}}\n    {{^inApp}}\n    - " + step.run + "\n    {{/inApp}}\n") +
     (stack === "go" ? "{{#web}}\nweb:\n  image: node:{{webNode}}\n  script:\n    - make web-check\n{{/web}}\n" : "");
   return {id: stack + "-gitlab", title: titles[stack] + " · " + forges.gitlab, stacks: [stack], forge: "gitlab", path: ".gitlab-ci.yml",
     params: [branch, ...params[stack]], body};
@@ -149,7 +161,7 @@ function azure(stack: StackId): CiTemplate {
   const list = stack === "docker" ? dockerSteps : steps(stack);
   const body = "# " + titles[stack] + " CI from a Makosh Git template. Add deployment and secrets yourself.\n" +
     "trigger:\n  branches:\n    include: [{{branch}}]\npool:\n  vmImage: ubuntu-latest\nsteps:\n" + azureSetup(stack) +
-    render(list, "  ", step => "  - script: " + step.run + "\n    displayName: " + step.name + "\n");
+    render(list, "  ", step => "  - script: " + step.run + "\n    displayName: " + step.name + "\n" + inApp("    ", "workingDirectory", step));
   return {id: stack + "-azure", title: titles[stack] + " · " + forges.azure, stacks: [stack], forge: "azure", path: "azure-pipelines.yml",
     params: [branch, ...params[stack]], body};
 }

@@ -58,3 +58,20 @@ test("a root Makefile with a check target makes CI run make check", () => {
   assert.equal(makeCheck({paths: ["Makefile"], manifests: {Makefile: "build:\n\tgo build\n# check: not a target\n"}}), false);
   assert.equal(makeCheck({paths: ["src/Makefile"], manifests: {}}), false);
 });
+
+test("with nothing at the root, the application under src/<role>/ is the stack, with its folder; a root stack wins", () => {
+  const input = {paths: ["Makefile", "scripts", "src", "src/service/Makefile", "src/service/pyproject.toml"],
+    manifests: {"src/service/pyproject.toml": "[project]\nname = \"x\"\nrequires-python = \">=3.13\"\n\n[tool.uv]\npackage = false\n"}};
+  assert.deepEqual(detectStacks(input), [{id: "python", dir: "src/service", evidence: ["src/service/pyproject.toml"],
+    defaults: {pythonTool: "uv", pythonVersion: "3.13", test: false, lockfile: false}}]);
+  const front = detectStacks({paths: ["src/frontend/package.json", "src/frontend/pnpm-lock.yaml"], manifests: {"src/frontend/package.json": "{\"scripts\":{\"test\":\"vitest\"}}"}});
+  assert.deepEqual([front[0]!.id, front[0]!.dir, front[0]!.defaults.packageManager, front[0]!.defaults.lockfile], ["node", "src/frontend", "pnpm", true]);
+  const go = detectStacks({paths: ["src/service/go.mod"], manifests: {"src/service/go.mod": "module x\n\ngo 1.26.0\n"}});
+  assert.deepEqual([go[0]!.id, go[0]!.dir, go[0]!.defaults.goVersion], ["go", "src/service", "1.26"]);
+  const root = detectStacks({paths: ["pyproject.toml", "src/web/package.json"], manifests: {"pyproject.toml": "[project]\n", "src/web/package.json": "{}"}});
+  assert.deepEqual(root.map(stack => [stack.id, stack.dir]), [["python", undefined]]);
+  // A folder deeper than src/<role>/ is not an application root.
+  assert.deepEqual(detectStacks({paths: ["src/a/b/pyproject.toml"], manifests: {}}), []);
+  assert.deepEqual(manifestPaths(["Makefile", "src/service/pyproject.toml", "src/service/main.py", "src/a/b/go.mod", "src/x/package.json"]),
+    ["Makefile", "src/service/pyproject.toml", "src/x/package.json"]);
+});

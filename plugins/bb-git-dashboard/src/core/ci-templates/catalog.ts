@@ -54,7 +54,11 @@ export function offerTemplates(forge: CiForge, stacks: Stack[], own: OwnEntry[])
  */
 export function templateDefaults(template: CiTemplate, stacks: Stack[], repo: {branch: string | null; name: string; make?: boolean}): StackValues {
   const values: StackValues = {};
-  for (const stack of stacks) if (template.stacks.includes(stack.id)) for (const [key, value] of Object.entries(stack.defaults)) if (!(key in values)) values[key] = value;
+  for (const stack of stacks) if (template.stacks.includes(stack.id)) {
+    for (const [key, value] of Object.entries(stack.defaults)) if (!(key in values)) values[key] = value;
+    // An application in src/<role>/: install and check there.
+    if (stack.dir && !("appDir" in values)) { values.appDir = stack.dir; values.inApp = true; }
+  }
   const image = repo.name.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "").slice(0, 60);
   return {...values, branch: repo.branch ?? "main", image: image || "app", make: repo.make === true};
 }

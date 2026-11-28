@@ -86,3 +86,18 @@ test("a root manifest name that is not a file, such as a submodule, is skipped",
   const found = await ciStack(repo);
   assert.deepEqual([found.paths, found.manifests], [["README.md", "go.mod"], {}]);
 });
+
+test("the manifests of the applications under src/<role>/ are read too, one level deep", async () => {
+  const repo = join(base, "apps");
+  mkdirSync(join(repo, "src/service/core"), {recursive: true});
+  mkdirSync(join(repo, "src/frontend"), {recursive: true});
+  git(base, "init", "-q", "-b", "main", repo);
+  writeFileSync(join(repo, "Makefile"), "check:\n\t$(MAKE) -C src/service check\n");
+  writeFileSync(join(repo, "src/service/pyproject.toml"), "[project]\nname = \"x\"\n");
+  writeFileSync(join(repo, "src/service/core/pyproject.toml"), "[project]\nname = \"deeper\"\n");
+  writeFileSync(join(repo, "src/frontend/package.json"), "{}\n");
+  git(repo, "add", "."); git(repo, "commit", "-qm", "first");
+  const found = await ciStack(repo);
+  assert.deepEqual(found.paths, ["Makefile", "src", "src/frontend", "src/frontend/package.json", "src/service", "src/service/core", "src/service/pyproject.toml"]);
+  assert.deepEqual(Object.keys(found.manifests).sort(), ["Makefile", "src/frontend/package.json", "src/service/pyproject.toml"]);
+});

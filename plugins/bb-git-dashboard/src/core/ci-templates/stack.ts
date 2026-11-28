@@ -2,14 +2,19 @@
 export const stackIds = ["node", "python", "go", "rust", "docker"] as const;
 export type StackId = typeof stackIds[number];
 export type StackValues = Record<string, string | boolean>;
-/** A stack found at a project's root: the files that show it and the template parameters they suggest. */
-export type Stack = {id: StackId; evidence: string[]; defaults: StackValues};
+/**
+ * A stack found at a project's root, or in an application folder `src/<role>/` when the root has none: the files that
+ * show it, the folder (`dir`, absent at the root) and the template parameters they suggest.
+ */
+export type Stack = {id: StackId; dir?: string; evidence: string[]; defaults: StackValues};
 /** The project's tracked paths and the text of the root manifests among them (see `manifestPaths`). */
 export type StackInput = {paths: string[]; manifests: Record<string, string>};
 
 const manifests = new Set(["package.json", ".nvmrc", ".node-version", "pyproject.toml", "requirements.txt", ".python-version", "go.mod", "Cargo.toml", "Makefile"]);
-/** The root manifests worth reading, in the order the project lists them. */
-export const manifestPaths = (paths: string[]) => paths.filter(path => manifests.has(path));
+/** An application folder: `src/<role>`, one level under src/. */
+const appFile = /^(src\/[A-Za-z0-9_][A-Za-z0-9._-]*)\/([^/]+)$/;
+/** The manifests worth reading — at the root and in the application folders src/<role>/ — in the order the project lists them. */
+export const manifestPaths = (paths: string[]) => paths.filter(path => manifests.has(path) || manifests.has(appFile.exec(path)?.[2] ?? ""));
 
 const major = (value: string | undefined) => /(\d+)/.exec(value ?? "")?.[1];
 const minor = (value: string | undefined) => /(\d+\.\d+)/.exec(value ?? "")?.[1];
@@ -52,9 +57,23 @@ function python(root: Set<string>, files: Record<string, string>): Stack {
   }};
 }
 
-/** The stacks of a project, found by the files at its root only: a subproject's manifest is not the project's stack. */
+/**
+ * The stacks of a project, found by the files at its root; when the root has none, by those of each application folder
+ * src/<role>/ (the layout of the owner's templates), with the folder. A deeper subproject's manifest is not a stack.
+ */
 export function detectStacks({paths, manifests: files}: StackInput): Stack[] {
-  const root = new Set(paths.filter(path => !path.includes("/")));
+  const atRoot = stacksIn(new Set(paths.filter(path => !path.includes("/"))), files);
+  if (atRoot.length) return atRoot;
+  const dirs = [...new Set(paths.map(path => appFile.exec(path)?.[1]).filter((dir): dir is string => dir !== undefined))].sort();
+  return dirs.flatMap(dir => {
+    const prefix = dir + "/";
+    const local = new Set(paths.filter(path => path.startsWith(prefix) && !path.slice(prefix.length).includes("/")).map(path => path.slice(prefix.length)));
+    const own = Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith(prefix)).map(([path, text]) => [path.slice(prefix.length), text]));
+    return stacksIn(local, own).map(stack => ({...stack, dir, evidence: stack.evidence.map(path => prefix + path)}));
+  });
+}
+
+function stacksIn(root: Set<string>, files: Record<string, string>): Stack[] {
   const found: Stack[] = [];
   if (root.has("package.json")) found.push(node(root, files));
   if (root.has("pyproject.toml") || root.has("requirements.txt")) found.push(python(root, files));
