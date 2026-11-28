@@ -4,7 +4,9 @@ Plugin ID and package name are both `bb-git-dashboard`; the display name is **Ma
 
 The Git sidebar groups projects by the parent directory of their default BB source. Search by project or folder name above the independently scrolling list. Projects without a source appear under «Без папки».
 
-The sidebar is the panel's one navigation: **Overview**, **My PRs**, **CI/CD**, **Reviews**, **Projects** and **Catalog** with their counts, the projects folder tree, **Connections** (the connected accounts, a new connection and the accounts' repositories) and the interface language. Press `/` to search.
+The sidebar is the panel's one navigation: **Overview**, **My PRs**, **CI/CD**, **Reviews**, **Projects** and **Catalog** with their counts, the projects folder tree, **Connections** (the connected accounts, a new connection and the publication activity) and the interface language. Press `/` to search.
+
+**Catalog → New project** makes a project from a scaffold, previewed before anything is written: **Python service (uv)** — a plain asyncio service, a FastAPI app or an aiogram Telegram bot (tests on aiogram's in-memory fake Telegram), Docker optional; **Django site (uv or Poetry)** — Django 6.1 with Ruff, mypy and django-stubs, pytest-django and the migration check in `make check`, Celery, Docker (gunicorn) and pylint with bandit optional, on uv or on Poetry; **Go service with a web UI**; **BB plugin**. The scaffolds' own parameters are labelled in the interface language.
 
 The plugin's own section on its BB settings page sets the main settings in the interface language and in groups: the projects folder; the language and how the overview opens; the alerts on failing CI and on comments, with a test notification; whether AI runs are approved for you; the folder of own CI templates. Each change is written at once, only these settings (`settingsSet` refuses any other key), each by the part of the plugin that owns it. BB's flat list of every setting stays above it.
 

@@ -3,16 +3,17 @@ import { versions as v } from "../../core/scaffolds/versions.ts";
 
 /**
  * A Python service on uv: src layout, hatchling, Ruff, mypy strict and pytest, a Makefile whose `check` CI runs, typed
- * settings from the environment, and a plain asyncio service or a FastAPI app; Docker by a flag (uv's Docker recipe).
+ * settings from the environment, and a plain asyncio service, a FastAPI app or an aiogram Telegram bot; Docker by a flag
+ * (uv's Docker recipe).
  */
 export const pythonServiceUv: Scaffold = {
   id: "python-service-uv",
   title: "Python service (uv)",
-  description: "Python on uv with Ruff, mypy strict and pytest; a plain asyncio service or a FastAPI app; Docker optional.",
+  description: "Python on uv with Ruff, mypy strict and pytest; a plain asyncio service, a FastAPI app or an aiogram bot; Docker optional.",
   params: [
     {name: "package", label: "Python package (import name)", kind: "text", default: "app", pattern: "^[a-z_][a-z0-9_]{0,59}$"},
     {name: "python", label: "Python version", kind: "choice", default: v.python, choices: ["3.12", "3.13", "3.14"]},
-    {name: "variant", label: "Kind of service", kind: "choice", default: "plain", choices: ["plain", "fastapi"]},
+    {name: "variant", label: "Kind of service", kind: "choice", default: "plain", choices: ["plain", "fastapi", "aiogram"]},
     {name: "docker", label: "Dockerfile and compose.yaml", kind: "flag", default: false},
   ],
   ignore: ["__pycache__/", ".venv/", ".mypy_cache/", ".ruff_cache/", ".pytest_cache/", "dist/", "*.egg-info/"],
@@ -38,6 +39,9 @@ dependencies = [
     "fastapi==${v.fastapi}",
     "uvicorn==${v.uvicorn}",
 {{/variant}}
+{{#variant=aiogram}}
+    "aiogram==${v.aiogram}",
+{{/variant}}
 ]
 
 [project.scripts]
@@ -52,11 +56,17 @@ packages = ["src/{{package}}"]
 
 [dependency-groups]
 dev = [
+{{#variant=aiogram}}
+    "aiogram[test]==${v.aiogram}",
+{{/variant}}
 {{#variant=fastapi}}
     "httpx2==${v.httpx2}",
 {{/variant}}
     "mypy==${v.mypy}",
     "pytest==${v.pytest}",
+{{#variant=aiogram}}
+    "pytest-asyncio==${v.pytestAsyncio}",
+{{/variant}}
     "ruff==${v.ruff}",
 ]
 
@@ -77,6 +87,10 @@ files = ["src", "tests"]
 [tool.pytest]
 addopts = ["-ra", "--strict-markers"]
 testpaths = ["tests"]
+{{#variant=aiogram}}
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+{{/variant}}
 `},
     {path: "src/{{package}}/__init__.py", body: `"""The {{package}} package."""
 `},
@@ -113,6 +127,16 @@ class Settings:
             raise ValueError("APP_PORT must be a TCP port")
         return cls(host=os.environ.get("APP_HOST") or "127.0.0.1", port=port)
 {{/variant}}
+{{#variant=aiogram}}
+    token: str
+
+    @classmethod
+    def from_env(cls) -> Self:
+        token = os.environ.get("BOT_TOKEN", "")
+        if not token:
+            raise ValueError("BOT_TOKEN must be set: the bot's token from @BotFather")
+        return cls(token=token)
+{{/variant}}
 `},
     {path: "src/{{package}}/service.py", when: "variant=plain", body: `"""The service's work: here a heartbeat, to be replaced by the real loop."""
 
@@ -145,6 +169,28 @@ def create_app() -> FastAPI:
 
     return app
 `},
+    {path: "src/{{package}}/bot.py", when: "variant=aiogram", body: `"""The bot's handlers. A router joins one dispatcher only, so each dispatcher gets a new one from create_router()."""
+
+from aiogram import F, Router
+from aiogram.filters import CommandStart
+from aiogram.types import Message
+
+GREETING = "Hello! Send me any text and I will send it back."
+
+
+def create_router() -> Router:
+    router = Router(name="{{package}}")
+
+    @router.message(CommandStart())
+    async def start(message: Message) -> None:
+        await message.answer(GREETING)
+
+    @router.message(F.text)
+    async def echo(message: Message) -> None:
+        await message.answer(message.text or "")
+
+    return router
+`},
     {path: "src/{{package}}/__main__.py", body: `"""Entry point."""
 
 {{#variant=plain}}
@@ -174,6 +220,27 @@ from {{package}}.config import Settings
 def main() -> None:
     settings = Settings.from_env()
     uvicorn.run("{{package}}.app:create_app", factory=True, host=settings.host, port=settings.port)
+{{/variant}}
+{{#variant=aiogram}}
+import asyncio
+import logging
+
+from aiogram import Bot, Dispatcher
+
+from {{package}}.bot import create_router
+from {{package}}.config import Settings
+
+
+async def run(settings: Settings) -> None:
+    dispatcher = Dispatcher()
+    dispatcher.include_router(create_router())
+    async with Bot(token=settings.token) as bot:
+        await dispatcher.start_polling(bot)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run(Settings.from_env()))
 {{/variant}}
 
 
@@ -206,6 +273,38 @@ def test_health_answers_ok() -> None:
     response = TestClient(create_app()).get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+`},
+    {path: "tests/test_bot.py", when: "variant=aiogram", body: `"""The bot against aiogram's testing toolkit: a fake Telegram in memory, no network (aiogram[test], pytest-asyncio)."""
+
+import pytest
+from aiogram import Dispatcher
+from aiogram.test import ChatState, UserActor
+
+from {{package}}.bot import GREETING, create_router
+from {{package}}.config import Settings
+
+
+@pytest.fixture
+def bot_dispatcher() -> Dispatcher:
+    dispatcher = Dispatcher()
+    dispatcher.include_router(create_router())
+    return dispatcher
+
+
+async def test_start_greets(bot_user: UserActor, bot_chat: ChatState) -> None:
+    await bot_user.send("/start")
+    assert bot_chat.messages[-1].text == GREETING
+
+
+async def test_text_comes_back(bot_user: UserActor, bot_chat: ChatState) -> None:
+    await bot_user.send("ping")
+    assert bot_chat.messages[-1].text == "ping"
+
+
+def test_settings_need_the_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="BOT_TOKEN"):
+        Settings.from_env()
 `},
     {path: "Makefile", body: `.PHONY: bootstrap check lint test fmt build
 
@@ -252,6 +351,10 @@ APP_INTERVAL=
 APP_HOST=
 APP_PORT=
 {{/variant}}
+{{#variant=aiogram}}
+# The bot's token from @BotFather (required).
+BOT_TOKEN=
+{{/variant}}
 `},
     {path: "README.md", body: `# {{name}}
 
@@ -269,6 +372,10 @@ Needs [uv](https://docs.astral.sh/uv/).
 {{/variant}}
 {{#variant=fastapi}}
 - \`uv run {{name}}\` — serves the API; \`GET /health\` answers \`{"status": "ok"}\`.
+{{/variant}}
+{{#variant=aiogram}}
+- \`uv run {{name}}\` — runs the bot by long polling; \`BOT_TOKEN\` comes from the environment (see \`.env.example\`).
+- Tests talk to aiogram's in-memory fake Telegram (\`aiogram[test]\`, experimental in aiogram 3); nothing goes to the network.
 {{/variant}}
 {{#docker}}
 - \`docker compose up --build\` — runs it in a container (after \`make bootstrap\`: the image installs from \`uv.lock\`).

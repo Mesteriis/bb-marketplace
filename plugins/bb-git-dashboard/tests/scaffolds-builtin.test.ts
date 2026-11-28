@@ -8,8 +8,8 @@ import { builtinScaffolds } from "../src/templates/scaffolds/index.ts";
 const byId = (id: string) => builtinScaffolds.find(item => item.id === id)!;
 const file = (files: {path: string; text: string}[], path: string) => files.find(item => item.path === path)?.text;
 
-test("the first three scaffolds are offered and each passes the scaffold checks", () => {
-  assert.deepEqual(builtinScaffolds.map(item => item.id), ["python-service-uv", "go-service-with-web", "bb-plugin"]);
+test("the built-in scaffolds are offered and each passes the scaffold checks", () => {
+  assert.deepEqual(builtinScaffolds.map(item => item.id), ["python-service-uv", "django-uv", "go-service-with-web", "bb-plugin"]);
   for (const scaffold of builtinScaffolds) assert.deepEqual(scaffoldIssues(scaffold), [], scaffold.id);
 });
 
@@ -77,4 +77,74 @@ test("bb-plugin: the bb field lists the chosen entries, the license is SPDX or U
   const noApp = buildScaffold(byId("bb-plugin"), {app: false}, {}).files;
   assert.deepEqual(JSON.parse(file(noApp, "package.json")!).bb, {name: "My plugin", description: "", branding: {icon: "Puzzle"}, server: "./server.ts"});
   assert.ok(!noApp.some(item => item.path === "app.tsx" || item.path.startsWith("src/ui/")));
+});
+
+test("python-service-uv: the aiogram bot — its router, the token from the environment, the toolkit's tests with pytest-asyncio", () => {
+  const {files} = buildScaffold(byId("python-service-uv"), {name: "echo-bot", package: "echo", variant: "aiogram"}, {});
+  const pyproject = file(files, "pyproject.toml")!;
+  assert.match(pyproject, /^dependencies = \[\n {4}"aiogram==3\.34\.0",\n\]$/m);
+  assert.match(pyproject, /^ {4}"aiogram\[test\]==3\.34\.0",$/m);
+  assert.match(pyproject, /^ {4}"pytest-asyncio==1\.5\.0",$/m);
+  assert.match(pyproject, /^\[tool\.pytest\]\naddopts = \["-ra", "--strict-markers"\]\ntestpaths = \["tests"\]\nasyncio_mode = "auto"\nasyncio_default_fixture_loop_scope = "function"$/m);
+  assert.ok(file(files, "src/echo/bot.py") && file(files, "tests/test_bot.py"));
+  assert.ok(!file(files, "src/echo/service.py") && !file(files, "src/echo/app.py"));
+  assert.match(file(files, "src/echo/bot.py")!, /^def create_router\(\) -> Router:$/m);
+  assert.match(file(files, "tests/test_bot.py")!, /^def bot_dispatcher\(\) -> Dispatcher:$/m);
+  assert.equal(file(files, ".env.example"), "# Copy to .env for local runs; never commit .env.\n# The bot's token from @BotFather (required).\nBOT_TOKEN=\n");
+  // The plain service has no aiogram in it.
+  assert.doesNotMatch(file(buildScaffold(byId("python-service-uv"), {}, {}).files, "pyproject.toml")!, /aiogram|pytest-asyncio|asyncio_mode/);
+});
+
+test("django-uv: Django 6.1 on uv with Ruff, mypy and django-stubs, pytest-django, the migration check in make check", () => {
+  const {files} = buildScaffold(byId("django-uv"), {name: "shop", project: "config"}, {});
+  const pyproject = file(files, "pyproject.toml")!;
+  assert.match(pyproject, /^dependencies = \[\n {4}"django==6\.1\.3",\n\]$/m);
+  assert.match(pyproject, /^ {4}"django-stubs\[compatible-mypy\]==6\.1\.2",$/m);
+  assert.match(pyproject, /^ {4}"pytest-django==4\.14\.0",$/m);
+  assert.match(pyproject, /^\[tool\.uv\]\npackage = false\nrequired-version = ">=0\.13\.10"$/m);
+  assert.match(pyproject, /^\[tool\.mypy\]\nstrict = true\nwarn_unreachable = true\nplugins = \["mypy_django_plugin\.main"\]$/m);
+  assert.match(pyproject, /^\[tool\.django-stubs\]\ndjango_settings_module = "config\.test_settings"$/m);
+  assert.match(pyproject, /^DJANGO_SETTINGS_MODULE = "config\.test_settings"$/m);
+  assert.doesNotMatch(pyproject, /tool\.poetry|celery|gunicorn|pylint|bandit/);
+  for (const path of ["manage.py", "config/__init__.py", "config/settings.py", "config/test_settings.py", "config/urls.py", "config/asgi.py",
+    "config/wsgi.py", "core/__init__.py", "core/apps.py", "core/views.py", "tests/test_health.py"]) assert.ok(file(files, path), path);
+  assert.ok(!file(files, "config/celery.py") && !file(files, "Dockerfile"));
+  assert.match(file(files, "Makefile")!, /^RUN := uv run$/m);
+  assert.match(file(files, "Makefile")!, /^check: lint test migrations$/m);
+  assert.match(file(files, "Makefile")!, /^migrations:\n\t\$\(RUN\) python manage\.py makemigrations --check \$\(TEST_SETTINGS\)$/m);
+  assert.match(file(files, "Makefile")!, /^deploy-check:\n\t\$\(RUN\) python manage\.py check --deploy$/m);
+  assert.equal(file(files, "manage.py")!.split("\n")[0], "#!/usr/bin/env python");
+  assert.match(file(files, "config/settings.py")!, /^SECRET_KEY = os\.environ\.get\("DJANGO_SECRET_KEY", ""\)$/m);
+  assert.match(file(files, ".gitignore")!, /^db\.sqlite3$/m);
+  assert.throws(() => buildScaffold(byId("django-uv"), {project: "Config"}, {}), /TEMPLATE_INVALID/);
+});
+
+test("django-uv: Celery, Docker and pylint with bandit by their flags", () => {
+  const {files} = buildScaffold(byId("django-uv"), {name: "shop", celery: true, docker: true, strictLint: true}, {});
+  const pyproject = file(files, "pyproject.toml")!;
+  assert.match(pyproject, /^ {4}"celery\[redis\]==5\.7\.0",$/m);
+  assert.match(pyproject, /^ {4}"gunicorn==27\.0\.1",$/m);
+  assert.match(pyproject, /^ {4}"celery-types==0\.26\.0",$/m);
+  assert.match(pyproject, /^ {4}"pylint==4\.1\.4",\n {4}"pylint-django==2\.8\.0",$/m);
+  assert.match(pyproject, /^ {4}"bandit==1\.9\.4",$/m);
+  assert.match(file(files, "config/celery.py")!, /^app\.config_from_object\("django\.conf:settings", namespace="CELERY"\)$/m);
+  assert.match(file(files, "config/__init__.py")!, /^from \.celery import app as celery_app$/m);
+  assert.ok(file(files, "core/tasks.py") && file(files, "tests/test_tasks.py"));
+  assert.match(file(files, "compose.yaml")!, /^ {2}worker:$/m);
+  assert.match(file(files, "Dockerfile")!, /^USER 10001:10001$/m);
+  assert.match(file(files, "Makefile")!, /^\t\$\(RUN\) pylint config core tests$/m);
+  assert.match(pyproject, /^\[tool\.pylint\.main\]\nload-plugins = \["pylint_django"\]\ndjango-settings-module = "config\.test_settings"$/m);
+  assert.match(file(files, "compose.yaml")!, /^ {4}image: redis:8\.12-alpine$/m);
+});
+
+test("django-uv on Poetry: the same project with Poetry's package-mode, its commands in the Makefile, and Poetry's CI", () => {
+  const scaffold = byId("django-uv");
+  const {files} = buildScaffold(scaffold, {name: "legacy-shop", tool: "poetry"}, {});
+  const pyproject = file(files, "pyproject.toml")!;
+  assert.match(pyproject, /^\[tool\.poetry\]\npackage-mode = false$/m);
+  assert.match(pyproject, /^requires-python = ">=3\.13,<4"$/m);
+  assert.doesNotMatch(pyproject, /\[tool\.uv\]/);
+  assert.match(file(files, "Makefile")!, /^RUN := poetry run$/m);
+  assert.match(file(files, "Makefile")!, /^bootstrap:\n\tpoetry install$/m);
+  assert.doesNotMatch(file(files, ".pre-commit-config.yaml")!, /uv-pre-commit/);
 });

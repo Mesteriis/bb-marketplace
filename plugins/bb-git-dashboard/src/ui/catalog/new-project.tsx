@@ -5,6 +5,7 @@ import type { CiForge } from "../../core/ci-templates/render.ts";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { scaffoldCi } from "../../core/scaffolds/ci.ts";
 import type { ScaffoldsView } from "../../core/scaffolds/contract.ts";
+import { scaffoldLabelKey } from "../../core/scaffolds/labels.ts";
 import { buildScaffold } from "../../core/scaffolds/model.ts";
 import { commonParams } from "../../core/scaffolds/overlay.ts";
 import { validOwner } from "../../core/scaffolds/repository.ts";
@@ -30,8 +31,9 @@ function Field({label, children}: {label: string; children: ReactNode}) {
 }
 
 /** One scaffold parameter: a short list as a segment, a longer one as a select, a flag as a checkbox, else a field. */
-function Param({param, value, onChange, t}: {param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T}) {
-  const own = commonLabel(param.name);
+function Param({scaffold, param, value, onChange, t}: {scaffold: string; param: TemplateParam; value: string | boolean; onChange(value: string | boolean): void; t: T}) {
+  // The common values and the plugin's own scaffolds are labelled in the chosen language; an owner's scaffold as written.
+  const own = commonLabel(param.name) ?? scaffoldLabelKey(scaffold, param.name);
   const label = own ? t(own) : param.label;
   if (param.kind === "flag") return <label className="git-np-check"><input type="checkbox" checked={value === true} onChange={event => onChange(event.target.checked)}/>
     <span>{label}</span></label>;
@@ -77,7 +79,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   const file = built.ok ? built.files.find(item => item.path === shown) ?? built.files.find(item => item.path === "README.md") ?? built.files[0] : undefined;
   const lines = file ? (file.text.endsWith("\n") ? file.text.slice(0, -1) : file.text).split("\n") : [];
   const set = (name: string) => (value: string | boolean) => setValues(previous => ({...previous, [name]: value}));
-  const param = (item: TemplateParam) => <Param key={item.name} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
+  const param = (item: TemplateParam) => <Param key={item.name} scaffold={entry.scaffold.id} param={item} value={values[item.name] ?? item.default} onChange={set(item.name)} t={t}/>;
   const common = (name: string) => params.find(item => item.name === name);
   const submit = (event: FormEvent) => {
     event.preventDefault();

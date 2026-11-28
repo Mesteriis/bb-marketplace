@@ -45,6 +45,10 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   with the credential, a new preview pushes once; Fetch through the account brings origin's branches; Create pull
   request previews head, base and title and asks the stand-in once; stand-alpha, not linked, is told to link it and
   writes nothing; Connections lists the writes; the preview in dark, cancelled. It switches stand-beta back at the end.
+- `scaffolds-python.mjs` — after `scaffolds.mjs`: New project offers django-uv; on Poetry with Celery and GitLab CI its files
+  and pyproject are shown, the preview comes before anything is written, and the folder gets an executable `manage.py`,
+  Poetry's `.gitlab-ci.yml` and one commit by the author; python-service-uv's aiogram bot is made the same way; in
+  Russian the scaffolds' own parameters are labelled in Russian; shots light, dark and Russian.
 - `catalog-shots.mjs` — after `catalog.mjs` and `scaffolds.mjs`: the Catalog's two tables (the branch read on opening),
   the clone dialog (closed, nothing cloned), New project, Connections with Check of the Gitea account, the connection
   wizard's first and last step (the check only reads; nothing is saved) and the plugin's settings section, where the

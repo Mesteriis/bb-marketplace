@@ -26,6 +26,9 @@ test("a Python project: uv by its lockfile, poetry by its section, the version f
   assert.deepEqual(uv, {id: "python", evidence: ["pyproject.toml", "uv.lock"], defaults: {pythonTool: "uv", pythonVersion: "3.13", test: true, lockfile: true}});
   const [poetry] = detectStacks({paths: ["pyproject.toml"], manifests: {"pyproject.toml": "[tool.poetry]\nname = \"x\"\n"}});
   assert.deepEqual(poetry.defaults, {pythonTool: "poetry", pythonVersion: "3.12", test: false, lockfile: false});
+  // A project uv manages before its first lock: its [tool.uv] table says so.
+  const [unlocked] = detectStacks({paths: ["pyproject.toml"], manifests: {"pyproject.toml": "[project]\nname = \"x\"\n\n[tool.uv]\npackage = false\n"}});
+  assert.deepEqual(unlocked.defaults, {pythonTool: "uv", pythonVersion: "3.12", test: false, lockfile: false});
   const [pip] = detectStacks({paths: ["requirements.txt", ".python-version"], manifests: {".python-version": "3.11.9\n"}});
   assert.deepEqual(pip, {id: "python", evidence: ["requirements.txt"], defaults: {pythonTool: "pip", pythonVersion: "3.11", test: false, lockfile: false}});
   const [plain] = detectStacks({paths: ["pyproject.toml"], manifests: {"pyproject.toml": "[project]\nname = \"x\"\n[tool.pytest.ini_options]\n"}});

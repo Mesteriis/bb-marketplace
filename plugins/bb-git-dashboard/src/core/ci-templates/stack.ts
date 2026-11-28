@@ -38,7 +38,9 @@ function node(root: Set<string>, files: Record<string, string>): Stack {
 
 function python(root: Set<string>, files: Record<string, string>): Stack {
   const project = files["pyproject.toml"] ?? "";
+  // uv by its lockfile, or by its [tool.uv] table before the first lock (a project just made from a scaffold).
   const tool = root.has("uv.lock") ? "uv" : root.has("poetry.lock") || /^\[tool\.poetry\]/m.test(project) ? "poetry"
+    : /^\[tool\.uv\]/m.test(project) ? "uv"
     : root.has("requirements.txt") ? "pip" : "pyproject";
   const requires = /^requires-python\s*=\s*"([^"]*)"/m.exec(project)?.[1];
   const evidence = ["pyproject.toml", "requirements.txt", "uv.lock", "poetry.lock"].filter(file => root.has(file));

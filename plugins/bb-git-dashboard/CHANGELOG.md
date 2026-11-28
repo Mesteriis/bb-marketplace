@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.0 — 2026-11-28
+
+Scaffolds, first of five slices: Python.
+
+- **Django site (uv or Poetry)** — a new scaffold: Django 6.1 with settings from the environment (a key of the run only with `DJANGO_DEBUG=1`), one app with a health view, Ruff, mypy strict with django-stubs, pytest-django, and `make check` with the migration check (`makemigrations --check`) and the system checks; `make deploy-check` runs `check --deploy`. Celery (with the Redis broker), Docker (gunicorn as a non-root user, compose with a worker and Redis) and pylint with pylint-django and bandit by flags. On uv, or on Poetry for older projects with Poetry's CI (GitLab or another forge).
+- **Python service (uv)** has an aiogram Telegram bot: a router built per dispatcher, the token from the environment, and tests on aiogram's in-memory fake Telegram with pytest-asyncio.
+- The scaffolds' own parameters are labelled in the interface language, the three earlier scaffolds' too.
+- A project with `[tool.uv]` in its pyproject and no lock file yet is a uv project for the CI templates.
+- `package-lock.json` carries the plugin's version again; its dependencies did not change.
+- A new stand probe, `scaffolds-python.mjs`, makes a Django project on Poetry with Celery and GitLab CI, and an aiogram bot, through New project.
+
 ## 0.14.8 — 2026-11-28
 
 What R8 left: the writes through an account are checked on the stand and live; no new features.
