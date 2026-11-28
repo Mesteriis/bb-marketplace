@@ -129,27 +129,76 @@ fn an_unknown_stream_is_refused_for_every_request() {
     }
 }
 
+fn zip_one() -> Vec<u8> {
+    zip(&[ZEntry::stored(b"a.bin", &pattern(1))]).bytes
+}
+
+fn read_all(h: &mut Helper, stream: u64) -> Vec<u8> {
+    let mut got = Vec::new();
+    while got.len() < SIZE {
+        got.extend(pull(h, stream, 7_000));
+    }
+    got
+}
+
 #[test]
-fn output_of_all_streams_counts_once_against_the_total_limit() {
+fn an_entry_read_twice_in_a_row_counts_its_bytes_once_against_the_total_limit() {
     let dir = tmpdir();
     let mut h = Helper::spawn();
-    // The entries declare 400 000 bytes (allowed); three streams over them would deliver 600 000.
-    h.open_with(&write(&dir, "a.zip", &zip_two()), json!({"maxTotalBytes": 450_000})).ok();
+    // The limit is exactly the entry's size: the second pass over it must not be charged again.
+    h.open_with(&write(&dir, "a.zip", &zip_one()), json!({"maxTotalBytes": SIZE})).ok();
+    for _ in 0..2 {
+        let s = open_stream(&mut h, 0);
+        assert_eq!(read_all(&mut h, s), pattern(1));
+        h.request("read_finish", json!({"stream": s})).ok();
+        h.request("read_close", json!({"stream": s})).ok();
+    }
+}
+
+#[test]
+fn one_entry_read_by_two_streams_at_once_counts_its_bytes_once() {
+    let dir = tmpdir();
+    let mut h = Helper::spawn();
+    h.open_with(&write(&dir, "a.zip", &zip_one()), json!({"maxTotalBytes": SIZE})).ok();
+    let (x, y) = (open_stream(&mut h, 0), open_stream(&mut h, 0));
+    let (mut got_x, mut got_y) = (Vec::new(), Vec::new());
+    while got_x.len() < SIZE || got_y.len() < SIZE {
+        got_x.extend(pull(&mut h, x, 7_000));
+        got_y.extend(pull(&mut h, y, 7_000));
+    }
+    assert_eq!(got_x, pattern(1));
+    assert_eq!(got_y, pattern(1));
+    h.request("read_finish", json!({"stream": x})).ok();
+    h.request("read_finish", json!({"stream": y})).ok();
+}
+
+#[test]
+fn three_streams_over_two_entries_stay_within_the_entries_own_sizes() {
+    let dir = tmpdir();
+    let mut h = Helper::spawn();
+    // 400 000 declared bytes, limit 400 000: reading entry 0 through two of the three streams costs nothing extra.
+    h.open_with(&write(&dir, "a.zip", &zip_two()), json!({"maxTotalBytes": 2 * SIZE})).ok();
     let streams = [open_stream(&mut h, 0), open_stream(&mut h, 1), open_stream(&mut h, 0)];
-    let mut total = 0usize;
-    let mut turn = 0usize;
-    let refusal = loop {
-        let r = h.request("read", json!({"stream": streams[turn % 3], "length": 7_000}));
-        turn += 1;
-        match r {
-            Out::Ok(_, d) => total += d.concat().len(),
-            e => break e.err(),
+    let mut got = [Vec::new(), Vec::new(), Vec::new()];
+    while got.iter().any(|g| g.len() < SIZE) {
+        for (i, s) in streams.iter().enumerate() {
+            got[i].extend(pull(&mut h, *s, 7_000));
         }
-        assert!(turn < 200, "no refusal");
-    };
-    assert_eq!(refusal, ("limit_exceeded".to_string(), Some("total_bytes".to_string())));
-    // Every delivered byte is counted exactly once: the refusal comes within one portion of the limit.
-    assert!(total <= 450_000 && total > 450_000 - 7_000, "{total}");
+    }
+    assert_eq!(got[0], pattern(1));
+    assert_eq!(got[1], pattern(2));
+    assert_eq!(got[2], pattern(1));
+    for s in streams {
+        h.request("read_finish", json!({"stream": s})).ok();
+    }
+}
+
+#[test]
+fn two_entries_whose_sizes_exceed_the_total_limit_are_still_refused() {
+    let dir = tmpdir();
+    let mut h = Helper::spawn();
+    let r = h.open_with(&write(&dir, "a.zip", &zip_two()), json!({"maxTotalBytes": 2 * SIZE - 1}));
+    assert_eq!(r.err(), ("limit_exceeded".to_string(), Some("total_bytes".to_string())));
 }
 
 #[test]

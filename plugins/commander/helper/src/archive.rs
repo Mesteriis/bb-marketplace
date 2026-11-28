@@ -29,6 +29,10 @@ pub struct OpenArchive {
     next_stream: u32,
     out_total: u64,
     in_total: u64,
+    /// Per entry: the furthest output and charged input any stream of it has reached. The archive counters grow
+    /// only by what passes these marks, so reading an entry again, or with two streams, costs nothing extra.
+    out_hwm: Vec<u64>,
+    in_hwm: Vec<u64>,
     pub password: Option<Zeroizing<Vec<u8>>>,
     pub bad_passwords: u8,
 }
@@ -163,6 +167,7 @@ impl OpenArchive {
                 (index, infos, Some(ptr))
             }
         };
+        let marks = index.entries.len();
         Ok(OpenArchive {
             index,
             limits,
@@ -176,6 +181,8 @@ impl OpenArchive {
             next_stream: 1,
             out_total: 0,
             in_total: 0,
+            out_hwm: vec![0; marks],
+            in_hwm: vec![0; marks],
             password: None,
             bad_passwords: 0,
         })
@@ -268,7 +275,9 @@ impl OpenArchive {
     pub fn read(&mut self, sid: u32, length: usize, ctx: &Ctx) -> Result<Vec<u8>, HErr> {
         self.verify()?;
         let limits = self.limits;
-        let (mut out_total, mut in_total) = (self.out_total, self.in_total);
+        // The counters are updated in place, so a refusal in the middle of a portion leaves them consistent with the marks.
+        let (out_total, in_total) = (&mut self.out_total, &mut self.in_total);
+        let (out_hwm, in_hwm) = (&mut self.out_hwm, &mut self.in_hwm);
         let file = self.file.clone();
         let entries = &self.index.entries;
         let stream = match self.streams.iter_mut().find(|s| s.id == sid) {
@@ -307,20 +316,21 @@ impl OpenArchive {
                 return Err(errors::invalid("truncated"));
             }
             stream.out += n as u64;
-            out_total += n as u64;
+            let slot = stream.entry as usize;
+            *out_total += stream.out.saturating_sub(out_hwm[slot]);
+            out_hwm[slot] = out_hwm[slot].max(stream.out);
             // Compressed input charged so far: declared size, scaled by progress; never more than declared.
             let in_entry = match &stream.reading {
                 Reading::Tar { .. } => stream.out.max(1),
                 Reading::Zip(_) => stream.csize.max(1).min((stream.counter.load(Ordering::Relaxed) - stream.in_base).max(1)),
             };
             let in_entry = in_entry.max(stream.in_counted);
-            in_total += in_entry - stream.in_counted;
+            *in_total += in_entry.saturating_sub(in_hwm[slot]);
+            in_hwm[slot] = in_hwm[slot].max(in_entry);
             stream.in_counted = in_entry;
-            check_counters(&limits, out_total, in_total, stream.out, in_entry)?;
+            check_counters(&limits, *out_total, *in_total, stream.out, in_entry)?;
             data.extend_from_slice(&buf[..n]);
         }
-        self.out_total = out_total;
-        self.in_total = in_total;
         Ok(data)
     }
 
