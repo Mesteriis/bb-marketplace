@@ -175,15 +175,17 @@ export function Workspace(props: WorkspaceProps) {
   const side = state.activePane, opposite = otherSide(side);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
   const tabs = { left, right }, tab = tabs[side], destination = tabs[opposite];
-  // S14a: an archive tab whose copy is gone (the host answers consent_required) asks for a new estimate once.
-  const asked = useRef(new Set<string>());
+  // S14a: an archive tab whose copy is gone (the host answers consent_required) asks for a new estimate. An
+  // attempt is remembered with the directory it was made for: the same directory is not asked again (a cancel or a
+  // failure is not nagged about), a refreshed one is; a success forgets the archive.
+  const asked = useRef(new Map<string, unknown>());
   useEffect(() => {
     for (const pane of sides) {
       const value = tabs[pane], directory = props.directories[pane];
       if (!value || !value.endpoint.startsWith("archive:") || directory?.error?.code !== "consent_required" || !props.onResumeArchive) continue;
       const key = pane + ":" + value.endpoint;
-      if (asked.current.has(key)) continue;
-      asked.current.add(key);
+      if (asked.current.has(key) && asked.current.get(key) === directory) continue;
+      asked.current.set(key, directory);
       const resumeId = value.endpoint.slice("archive:".length);
       void props.onResumeArchive(resumeId).then((reply) => {
         if ("estimateId" in reply) setDialog({ kind: "archive-estimate", pane, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });

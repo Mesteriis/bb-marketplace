@@ -38,8 +38,8 @@ function mount(over: Partial<WorkspaceProps> = {}) {
     onOpenArchive: vi.fn(async () => ({ endpoint: ARCHIVE_ENDPOINT })),
     ...over,
   } as unknown as WorkspaceProps;
-  render(<Workspace {...props} />);
-  return props;
+  const view = render(<Workspace {...props} />);
+  return Object.assign(props, { rerender: (next: WorkspaceProps) => view.rerender(<Workspace {...next} />), props });
 }
 const grid = () => screen.getByRole("grid", { name: "Левая панель" });
 const enterOn = (name: RegExp) => {
@@ -137,6 +137,32 @@ describe("a cold archive tab (after a restart)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     await new Promise((r) => setTimeout(r, 30));
     expect(onResumeArchive).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again after a cancel when the pane is refreshed, and after a failed attempt too", async () => {
+    const answers: Array<() => Promise<unknown>> = [
+      async () => { throw new Error("offline"); },
+      async () => ({ estimateId: ESTIMATE, bytesPlanned: "2147483648" }),
+    ];
+    const onResumeArchive = vi.fn(async () => answers.shift()!());
+    const props = {
+      state: cold, directories: coldDirs, onResumeArchive,
+    } as unknown as Partial<WorkspaceProps>;
+    const view = mount(props as never);
+    await waitFor(() => expect(onResumeArchive).toHaveBeenCalledTimes(1));
+    // The failed attempt is released: the same directory is not asked about again by itself, a refreshed one is.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onResumeArchive).toHaveBeenCalledTimes(1);
+    view.rerender({ ...view.props, directories: { ...coldDirs, left: { ...coldDirs.left } } });
+    expect(await screen.findByText(/2 ГБ/)).toBeTruthy();
+    expect(onResumeArchive).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onResumeArchive).toHaveBeenCalledTimes(2);
+    answers.push(async () => ({ estimateId: ESTIMATE, bytesPlanned: "2147483648" }));
+    view.rerender({ ...view.props, directories: { ...coldDirs, left: { ...coldDirs.left } } });
+    expect(await screen.findByText(/2 ГБ/)).toBeTruthy();
+    expect(onResumeArchive).toHaveBeenCalledTimes(3);
   });
 
   it("does nothing for an ordinary endpoint with the same error", async () => {
