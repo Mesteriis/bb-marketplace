@@ -3,10 +3,10 @@
 import { useState } from "react";
 import type { GuardView } from "../core/service.ts";
 import type { Minutes, Scope } from "../core/state.ts";
-import { isAvailable, openNow, scopeLabel, statusLine } from "./format.ts";
+import { isAvailable, openNow, pickScope, scopeLabel, statusLine } from "./format.ts";
 
 export interface GuardPopupProps {
-  /** null until the first answer arrives. */
+  /** null until the first answer arrives, and whenever the state is unknown. */
   view: GuardView | null;
   /** Unix seconds. */
   now: number;
@@ -26,10 +26,18 @@ const BUTTON =
 
 export function GuardPopup({ view, now, busy, error, onOpen, onClose }: GuardPopupProps) {
   const open = openNow(view, now);
-  const [scope, setScope] = useState<Scope>(open?.scope ?? "thread");
+  // Derived on every render: the state may arrive after the window is shown.
+  const [chosen, setScope] = useState<Scope | null>(null);
+  const scope = pickScope(chosen, open);
 
   if (view === null) {
-    return <div className="p-3 text-sm text-muted-foreground">Загрузка…</div>;
+    return error === null ? (
+      <div className="p-3 text-sm text-muted-foreground">Загрузка…</div>
+    ) : (
+      <p className="p-3 text-sm text-destructive" role="alert">
+        {error}
+      </p>
+    );
   }
   if (!isAvailable(view)) {
     return <div className="p-3 text-sm text-muted-foreground">{statusLine(view, now)}</div>;

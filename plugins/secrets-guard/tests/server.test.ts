@@ -73,6 +73,19 @@ describe("without a marker location", () => {
   });
 });
 
+describe("changing the marker location", () => {
+  it("closes what is open in the old file before leaving it", async () => {
+    await writeFile(file, '{"until":4600,"note":"keep"}');
+    const harness = await load(file);
+    await harness.behavior.callRpc("open", { threadId: "thr_a", scope: "thread", minutes: 10 });
+    await harness.behavior.setSettings({ stateFile: join(dir, "other.json") });
+    await vi.waitFor(async () => {
+      expect(await marker()).toEqual({ note: "keep", threads: {} });
+    });
+    await harness.lifecycle.dispose();
+  });
+});
+
 describe("what the plugin exposes", () => {
   it("registers three rpc methods and nothing an agent could open the guard with", async () => {
     const harness = await load(file);
@@ -122,6 +135,11 @@ describe("rpc", () => {
   });
   it("reports a path that cannot be written as a conflict and stays closed", async () => {
     const harness = await load(join(dir, "missing", "marker.json"));
+    expect(await harness.behavior.callRpc("state", { threadId: "thr_a" })).toEqual({
+      configured: false,
+      local: true,
+      effective: null,
+    });
     await expect(
       harness.behavior.callRpc("open", { threadId: "thr_a", scope: "thread", minutes: 10 }),
     ).rejects.toMatchObject({ code: "conflict", message: "Файл отметки недоступен для записи" });
@@ -167,19 +185,45 @@ describe("thread events", () => {
     });
     await harness.lifecycle.dispose();
   });
-  it("survives a thread listing that fails", async () => {
+  it("closes the subthreads when the tree cannot be listed, and keeps running", async () => {
     const harness = await load(file);
     await harness.behavior.callRpc("open", { threadId: "thr_a", scope: "tree", minutes: 10 });
     harness.sdk.stub("threads.list", async () => {
       throw new Error("server is busy");
     });
-    await harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr_b" }) });
-    await vi.waitFor(() => {
-      expect(harness.logEntries.some((entry) => entry.level === "warn")).toBe(true);
+    await harness.behavior.emitThreadEvent("experimental_thread.parentChanged", {
+      thread: makeThreadResponse({ id: "thr_b" }),
+      previousParentThreadId: "thr_a",
     });
-    expect(await harness.behavior.callRpc("state", { threadId: "thr_b" })).toMatchObject({
-      effective: { scope: "tree", until: 1600, rootThreadId: "thr_a" },
+    await vi.waitFor(async () => {
+      expect(await marker()).toEqual({ threads: { thr_a: { until: 1600, root: "thr_a", tree: true } } });
     });
+    expect(harness.logEntries.some((entry) => entry.level === "warn")).toBe(true);
+    expect(await harness.behavior.callRpc("state", { threadId: "thr_b" })).toMatchObject({ effective: null });
     await harness.lifecycle.dispose();
+  });
+  it("writes nothing after the plugin is unloaded in the middle of a resync", async () => {
+    const harness = await load(file);
+    await harness.behavior.callRpc("open", { threadId: "thr_a", scope: "tree", minutes: 10 });
+    let release = (_ids: string[]) => {};
+    let started = false;
+    harness.sdk.stub("threads.list", async () => {
+      started = true;
+      const ids = await new Promise<string[]>((resolve) => {
+        release = resolve;
+      });
+      return ids.map((id) => makeThreadResponse({ id }));
+    });
+    await harness.behavior.emitThreadEvent("thread.created", { thread: makeThreadResponse({ id: "thr_c" }) });
+    await vi.waitFor(() => expect(started).toBe(true));
+    await harness.lifecycle.dispose();
+    release(["thr_b", "thr_c"]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await marker()).toEqual({
+      threads: {
+        thr_a: { until: 1600, root: "thr_a", tree: true },
+        thr_b: { until: 1600, root: "thr_a", tree: true },
+      },
+    });
   });
 });

@@ -46,3 +46,8 @@ export function statusLine(view: GuardView, now: number): string {
   const scope = scopeLabel(open.scope);
   return `Открыто: ${scope.charAt(0).toLowerCase()}${scope.slice(1)}, осталось ${minutesLeft(open.until, now)} мин`;
 }
+
+/** The scope selected in the window: the owner's choice, else what is open, else this chat. */
+export function pickScope(chosen: Scope | null, open: GuardView["effective"]): Scope {
+  return chosen ?? open?.scope ?? "thread";
+}

@@ -33,6 +33,8 @@ export class NotLocal extends Error {
 export interface StateStore {
   /** Whether a marker location is set at all. */
   readonly configured: boolean;
+  /** Whether the marker's directory exists and can be written right now. */
+  writable(): Promise<boolean>;
   /** Never throws: an unreadable marker reads as closed. */
   read(): Promise<GuardState>;
   /**

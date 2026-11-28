@@ -16,6 +16,8 @@ const POPUP_ID = "secrets-guard";
 /** The phrase hook writes the marker too, so the state is also polled. */
 const POLL_MS = 30_000;
 
+const UNKNOWN_STATE = "Состояние охраны неизвестно: сервер не ответил";
+
 const seconds = () => Math.floor(Date.now() / 1000);
 
 /** The current time, ticking once a second while something counts down. */
@@ -31,7 +33,13 @@ function useNow(ticking: boolean): number {
 }
 
 /** The guard's state for the composer's thread, refreshed on writes and by polling. */
-function useGuardView(): { threadId: string | null; view: GuardView | null; now: number; refresh(): void } {
+function useGuardView(): {
+  threadId: string | null;
+  view: GuardView | null;
+  problem: string | null;
+  now: number;
+  refresh(): void;
+} {
   const composer = useComposer();
   const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : null;
   const query = useRpcQuery({
@@ -47,22 +55,24 @@ function useGuardView(): { threadId: string | null; view: GuardView | null; now:
     const timer = setInterval(() => void refetch.current(), POLL_MS);
     return () => clearInterval(timer);
   }, [threadId]);
-  const view = threadId === null ? null : (query.data ?? null);
+  // A failed read means the state is unknown: data kept from before the failure is not shown as current.
+  const failed = threadId !== null && query.error !== null;
+  const view = threadId === null || failed ? null : (query.data ?? null);
   const now = useNow(view?.effective != null);
-  return { threadId, view, now, refresh: () => void refetch.current() };
+  return { threadId, view, problem: failed ? UNKNOWN_STATE : null, now, refresh: () => void refetch.current() };
 }
 
 function ComposerLock() {
   const composer = useComposer();
-  const { view, now } = useGuardView();
-  return <GuardButton view={view} now={now} onOpen={() => composer.experimental_openPopup(POPUP_ID)} />;
+  const { view, problem, now } = useGuardView();
+  return <GuardButton view={view} now={now} problem={problem} onOpen={() => composer.experimental_openPopup(POPUP_ID)} />;
 }
 
 function ComposerGuardPopup() {
-  const { threadId, view, now, refresh } = useGuardView();
+  const { threadId, view, problem, now, refresh } = useGuardView();
   const open = useRpcMutation({ contract: rpcContract, method: "open" });
   const close = useRpcMutation({ contract: rpcContract, method: "close" });
-  const error = open.error?.message ?? close.error?.message ?? null;
+  const error = open.error?.message ?? close.error?.message ?? problem;
 
   // A refusal lands in the mutation's `error`; the rejection itself needs no second report.
   const settle = (request: Promise<unknown>) => void request.then(refresh, refresh);

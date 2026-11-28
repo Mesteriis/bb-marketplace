@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -194,6 +195,56 @@ describe("the lock", () => {
     const recent = new Date(Date.now() - 29_000);
     await utimes(lock, recent, recent);
     expect(await reasonOf(store().update(openA, OPEN_A))).toBe("locked");
+  });
+});
+
+describe("a lock taken over by another writer", () => {
+  it("does not write and leaves the other writer's lock in place", async () => {
+    await writeFile(file, '{"threads":{}}');
+    const stolen = store().update((state) => {
+      unlinkSync(lock);
+      writeFileSync(lock, "another writer");
+      return openA(state);
+    }, OPEN_A);
+    expect(await reasonOf(stolen)).toBe("locked");
+    expect(await readFile(file, "utf8")).toBe('{"threads":{}}');
+    expect(await readFile(lock, "utf8")).toBe("another writer");
+    expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
+describe("a marker that cannot be read", () => {
+  it("refuses to write instead of treating it as empty", async () => {
+    await mkdir(file);
+    expect(await reasonOf(store().update((state) => state, OPEN_A))).toBe("not_writable");
+    expect(await store().read()).toEqual({ threads: {} });
+  });
+});
+
+describe("a journal that cannot be written", () => {
+  const CLOSE: LogEvent = { event: "close", scope: "global", root: null, until: null };
+  it("refuses to open", async () => {
+    await mkdir(journal);
+    expect(await reasonOf(store().update(openA, OPEN_A))).toBe("not_writable");
+    await expect(stat(file)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("still closes: revoking does not depend on the journal", async () => {
+    await writeFile(file, '{"until":5000,"threads":{}}');
+    await mkdir(journal);
+    expect(await store().update(() => ({ threads: {} }), CLOSE)).toEqual({ threads: {} });
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({ threads: {} });
+  });
+});
+
+describe("writable", () => {
+  it("is true for a directory that exists and can be written", async () => {
+    expect(await store().writable()).toBe(true);
+  });
+  it("is false without a location, for a missing directory and for a read-only one", async () => {
+    expect(await store(null).writable()).toBe(false);
+    expect(await store(join(dir, "missing", "marker.json")).writable()).toBe(false);
+    await chmod(dir, 0o555);
+    expect(await store().writable()).toBe(false);
   });
 });
 

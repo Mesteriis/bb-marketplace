@@ -7,6 +7,8 @@ export interface GuardButtonProps {
   view: GuardView | null;
   /** Unix seconds. */
   now: number;
+  /** Why the state is unknown, when it is. */
+  problem?: string | null;
   onOpen(): void;
 }
 
@@ -28,9 +30,9 @@ function LockIcon({ open }: { open: boolean }) {
   );
 }
 
-export function GuardButton({ view, now, onOpen }: GuardButtonProps) {
+export function GuardButton({ view, now, problem, onOpen }: GuardButtonProps) {
   const open = openNow(view, now);
-  const hint = view === null ? "Секреты" : statusLine(view, now);
+  const hint = view === null ? (problem ?? "Секреты") : statusLine(view, now);
   const tone = open === null ? "text-muted-foreground" : "text-foreground";
   return (
     <button

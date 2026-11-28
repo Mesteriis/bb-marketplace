@@ -40,13 +40,37 @@ export function createService(deps: {
 
   async function state(input: { threadId: string }): Promise<GuardView> {
     const local = await threads.isLocal(input.threadId);
-    const configured = store.configured;
+    const configured = store.configured && (await store.writable());
     if (!local || !configured) return { configured, local, effective: null };
     return { configured, local, effective: effective(await store.read(), now(), input.threadId) };
   }
 
   async function requireLocal(threadId: string): Promise<void> {
     if (!(await threads.isLocal(threadId))) throw new NotLocal();
+  }
+
+  /**
+   * Brings one live tree in step with its threads. When the threads cannot be
+   * listed, the subthreads are closed (the root stays): a thread that may have
+   * left the tree must not keep its access. Returns whether the tree is known.
+   */
+  async function resyncRoot(root: string): Promise<boolean> {
+    let descendants: readonly string[] | null;
+    try {
+      descendants = await collectDescendants(root, (id) => threads.children(id));
+    } catch {
+      descendants = null;
+    }
+    await store.update(
+      (current) => resyncTree(current, now(), root, descendants ?? []),
+      (before) => ({
+        event: "resync",
+        scope: "tree",
+        root,
+        until: Object.hasOwn(before.threads, root) ? (before.threads[root]?.until ?? null) : null,
+      }),
+    );
+    return descendants !== null;
   }
 
   return {
@@ -71,6 +95,8 @@ export function createService(deps: {
           root: threadId,
           until,
         });
+        // The tree may have changed between listing it and writing it.
+        if (scope === "tree") await resyncRoot(threadId);
       }
       return state({ threadId });
     },
@@ -93,18 +119,11 @@ export function createService(deps: {
     },
     async resync() {
       if (!store.configured) return;
+      let unknown = 0;
       for (const root of treeRoots(await store.read(), now())) {
-        const descendants = await collectDescendants(root, (id) => threads.children(id));
-        await store.update(
-          (current) => resyncTree(current, now(), root, descendants),
-          (before) => ({
-            event: "resync",
-            scope: "tree",
-            root,
-            until: Object.hasOwn(before.threads, root) ? (before.threads[root]?.until ?? null) : null,
-          }),
-        );
+        if (!(await resyncRoot(root))) unknown += 1;
       }
+      if (unknown > 0) throw new Error(`could not list the threads of ${unknown} opened tree(s)`);
     },
   };
 }

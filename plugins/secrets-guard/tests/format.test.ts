@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { remainingLabel, scopeLabel, statusLine } from "../src/ui/format.ts";
+import { pickScope, remainingLabel, scopeLabel, statusLine } from "../src/ui/format.ts";
 
 describe("remainingLabel", () => {
   it.each([
@@ -67,5 +67,17 @@ describe("statusLine", () => {
         1600,
       ),
     ).toBe("Закрыто");
+  });
+});
+
+describe("pickScope", () => {
+  it("is this chat while nothing is open and nothing was chosen", () => {
+    expect(pickScope(null, null)).toBe("thread");
+  });
+  it("follows the opening that arrives after the window was shown", () => {
+    expect(pickScope(null, { scope: "global", until: 1600, rootThreadId: null })).toBe("global");
+  });
+  it("keeps the owner's own choice over what is open", () => {
+    expect(pickScope("tree", { scope: "global", until: 1600, rootThreadId: null })).toBe("tree");
   });
 });

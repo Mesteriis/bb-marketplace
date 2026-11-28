@@ -201,7 +201,7 @@ describe("resyncTree", () => {
 });
 
 describe("parseState", () => {
-  it.each([[null], ["x"], [5], [[]], [{ threads: [] }], [{ threads: { a: 5 } }], [{ threads: { a: { until: "soon" } } }]])(
+  it.each([[null], ["x"], [5], [[]], [{ threads: [] }], [{ threads: { a: 5 } }], [{ threads: { a: { until: "soon" } } }], [{ threads: { a: { until: "9999999999", root: "a", tree: false } } }]])(
     "reads %j as closed",
     (raw) => {
       expect(parseState(raw)).toEqual({ threads: {} });

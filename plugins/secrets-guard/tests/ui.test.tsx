@@ -12,8 +12,8 @@ const openTree: GuardView = {
 };
 const noop = () => {};
 
-function button(view: GuardView | null, now = 1000) {
-  return renderToStaticMarkup(<GuardButton view={view} now={now} onOpen={noop} />);
+function button(view: GuardView | null, now = 1000, problem: string | null = null) {
+  return renderToStaticMarkup(<GuardButton view={view} now={now} problem={problem} onOpen={noop} />);
 }
 
 function popup(view: GuardView | null, extra: { error?: string | null; busy?: boolean } = {}) {
@@ -60,6 +60,20 @@ describe("GuardButton", () => {
     const html = button(null);
     expect(html).toContain('disabled=""');
     expect(html).toContain('data-state="closed"');
+  });
+});
+
+describe("when the state could not be read", () => {
+  it("the button is inactive and says so", () => {
+    const html = button(null, 1000, "Состояние охраны неизвестно: сервер не ответил");
+    expect(html).toContain('disabled=""');
+    expect(html).toContain('title="Состояние охраны неизвестно: сервер не ответил"');
+  });
+  it("the window shows the problem instead of loading forever", () => {
+    const html = popup(null, { error: "Состояние охраны неизвестно: сервер не ответил" });
+    expect(html).toContain('role="alert">Состояние охраны неизвестно: сервер не ответил');
+    expect(html).not.toContain("Загрузка");
+    expect(html).not.toContain("10 мин");
   });
 });
 

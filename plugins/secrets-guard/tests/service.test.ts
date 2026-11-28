@@ -4,10 +4,13 @@ import { createService } from "../src/core/service.ts";
 import type { GuardState } from "../src/core/state.ts";
 
 /** A store in memory with the file store's contract: an unchanged state writes and logs nothing. */
-function memoryStore(initial: GuardState = { threads: {} }, configured = true) {
+function memoryStore(initial: GuardState = { threads: {} }, configured = true, writable = true) {
   const memory = { state: initial, logs: [] as LogEvent[], writes: 0 };
   const store: StateStore = {
     configured,
+    async writable() {
+      return configured && writable;
+    },
     async read() {
       return memory.state;
     },
@@ -25,19 +28,27 @@ function memoryStore(initial: GuardState = { threads: {} }, configured = true) {
   return { store, memory };
 }
 
-function setup(options: { initial?: GuardState; configured?: boolean; remote?: string[] } = {}) {
+function setup(
+  options: { initial?: GuardState; configured?: boolean; writable?: boolean; remote?: string[] } = {},
+) {
   const tree: Record<string, string[]> = { a: ["b"] };
   const clock = { now: 1000 };
-  const { store, memory } = memoryStore(options.initial, options.configured);
+  const listing = { calls: 0, onCall: (_call: number) => {}, fail: false };
+  const { store, memory } = memoryStore(options.initial, options.configured, options.writable);
   const service = createService({
     store,
     threads: {
-      children: async (id) => tree[id] ?? [],
+      children: async (id) => {
+        listing.calls += 1;
+        listing.onCall(listing.calls);
+        if (listing.fail) throw new Error("server is busy");
+        return tree[id] ?? [];
+      },
       isLocal: async (id) => !(options.remote ?? []).includes(id),
     },
     now: () => clock.now,
   });
-  return { service, memory, tree, clock };
+  return { service, memory, tree, clock, listing };
 }
 
 async function refusal(promise: Promise<unknown>): Promise<string> {
@@ -87,6 +98,21 @@ describe("open", () => {
     expect(memory.state).toEqual({ threads: {} });
     expect(memory.writes).toBe(0);
   });
+  it("does not open a subthread that left the tree while it was being opened", async () => {
+    const { service, memory, tree, listing } = setup();
+    // The first walk (root, then b) still sees b; it moves away before the marker is written.
+    listing.onCall = (call) => {
+      if (call === 2) tree.a = [];
+    };
+    await service.open({ threadId: "a", scope: "tree", minutes: 10 });
+    expect(memory.state).toEqual({ threads: { a: { until: 1600, root: "a", tree: true } } });
+  });
+  it("opens nothing when the subthreads cannot be listed", async () => {
+    const { service, memory, listing } = setup();
+    listing.fail = true;
+    await expect(service.open({ threadId: "a", scope: "tree", minutes: 10 })).rejects.toThrow("server is busy");
+    expect(memory.state).toEqual({ threads: {} });
+  });
   it("refuses when the marker location is not set", async () => {
     const { service } = setup({ configured: false });
     expect(await refusal(service.open({ threadId: "a", scope: "thread", minutes: 10 }))).toBe("not_configured");
@@ -100,6 +126,10 @@ describe("state", () => {
   });
   it("reports a missing marker location", async () => {
     const { service } = setup({ configured: false });
+    expect(await service.state({ threadId: "a" })).toEqual({ configured: false, local: true, effective: null });
+  });
+  it("reports a location that cannot be written as not configured", async () => {
+    const { service } = setup({ writable: false, initial: { until: 4600, threads: {} } });
     expect(await service.state({ threadId: "a" })).toEqual({ configured: false, local: true, effective: null });
   });
   it("shows a global opening in any thread", async () => {
@@ -184,6 +214,25 @@ describe("resync", () => {
     });
     expect(memory.writes).toBe(1);
     expect(memory.logs).toHaveLength(1);
+  });
+  it("closes the subthreads and reports the failure when the tree cannot be listed", async () => {
+    const { service, memory, listing } = setup({
+      initial: {
+        threads: {
+          a: { until: 1600, root: "a", tree: true },
+          b: { until: 1600, root: "a", tree: true },
+          x: { until: 2800, root: "x", tree: false },
+        },
+      },
+    });
+    listing.fail = true;
+    await expect(service.resync()).rejects.toThrow("1");
+    expect(memory.state).toEqual({
+      threads: {
+        a: { until: 1600, root: "a", tree: true },
+        x: { until: 2800, root: "x", tree: false },
+      },
+    });
   });
   it("leaves a thread opened without subthreads alone", async () => {
     const { service, memory } = setup();

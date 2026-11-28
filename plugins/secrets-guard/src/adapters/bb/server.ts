@@ -3,13 +3,14 @@
 // The plugin registers no CLI command, agent tool or skill: only the owner's
 // click in the app opens the guard.
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import type { StateStore, ThreadDirectory } from "../../core/ports.ts";
+import { StoreUnavailable, type StateStore, type ThreadDirectory } from "../../core/ports.ts";
 import { createService } from "../../core/service.ts";
 import { GUARD_TAG, rpcContract } from "./contract.ts";
 import { createFileStore } from "./file-store.ts";
 import { toRefusal } from "./refusals.ts";
 
 const CHILD_PAGE = 200;
+const RESYNC_RETRY_MS = 5_000;
 const now = () => Math.floor(Date.now() / 1000);
 
 function threadDirectory(bb: BbPluginApi): ThreadDirectory {
@@ -55,18 +56,23 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
+  let disposed = false;
+  let currentPath = "";
   let current = createFileStore({ stateFile: null, now });
   const store: StateStore = {
     get configured() {
       return current.configured;
     },
+    writable: () => current.writable(),
     read: () => current.read(),
-    update: (change, log) => current.update(change, log),
+    // An unloaded instance must not write: its view of the threads is out of date.
+    update: (change, log) =>
+      disposed ? Promise.reject(new StoreUnavailable("not_configured")) : current.update(change, log),
   };
   const service = createService({ store, threads: threadDirectory(bb), now });
 
-  let disposed = false;
   let resyncQueued = false;
+  let retry: ReturnType<typeof setTimeout> | null = null;
   let chain: Promise<void> = Promise.resolve();
 
   /** One resync after the running one, however many events arrive meanwhile. */
@@ -78,16 +84,36 @@ export default function plugin(bb: BbPluginApi) {
       if (disposed) return;
       try {
         await service.resync();
-        bb.rpc.experimental_invalidate([GUARD_TAG]);
       } catch (error) {
-        // A missed resync only leaves a subthread closed.
+        if (disposed) return;
+        // The subthreads of a tree that could not be listed are closed by now; try again shortly.
         bb.log.warn(`resync failed: ${error instanceof Error ? error.message : "unknown error"}`);
+        if (retry === null) {
+          retry = setTimeout(() => {
+            retry = null;
+            scheduleResync();
+          }, RESYNC_RETRY_MS);
+        }
       }
+      if (!disposed) bb.rpc.experimental_invalidate([GUARD_TAG]);
     });
   }
 
   const apply = (values: { stateFile: string }) => {
-    current = createFileStore({ stateFile: values.stateFile, now });
+    const nextPath = values.stateFile.trim();
+    if (nextPath !== currentPath && current.configured) {
+      // The old file stays in force for the hook, and nothing here could close it any more.
+      const previous = current;
+      void previous
+        .update(
+          (state) =>
+            state.until === undefined && Object.keys(state.threads).length === 0 ? state : { threads: {} },
+          { event: "close", scope: null, root: null, until: null },
+        )
+        .catch(() => bb.log.warn("the previous marker file could not be closed"));
+    }
+    currentPath = nextPath;
+    current = createFileStore({ stateFile: nextPath, now });
     bb.rpc.experimental_invalidate([GUARD_TAG]);
     scheduleResync();
   };
@@ -123,5 +149,6 @@ export default function plugin(bb: BbPluginApi) {
   // The host drops the listeners with the plugin instance; the flag stops work already queued.
   bb.onDispose(() => {
     disposed = true;
+    if (retry !== null) clearTimeout(retry);
   });
 }
