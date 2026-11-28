@@ -1,6 +1,6 @@
 ## Git in BB
 
-Git opens on an overview of what needs you, as a list or a board. Attach working copies from the project’s sources, ready environments or a trusted path on a selected machine. Inspect staged, unstaged and untracked changes, stage individual text hunks, commit the index, compare commits, and manage branches and linked worktrees. Merge or rebase after a preview of the conflicts, then resolve them in an editor.
+Git opens on an overview of what needs you, as a list or a board, by category. Projects is one table of the attached copies with views, fetch and pull. Attach copies from project sources, environments or a trusted path. Stage files and hunks, commit, push after a dialog, and manage branches and worktrees. Merge or rebase after a preview of the conflicts, then resolve them in an editor.
 
 ## Forge and account detection
 
