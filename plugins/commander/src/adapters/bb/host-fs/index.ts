@@ -172,12 +172,16 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         if (hasErrno(error, "ENOENT")) return null;
         throw error;
       });
+      if (resolved?.stats && await editPaths?.hidden(resolved.full, resolved.stats)) {
+        throw new CommanderError("permission_denied", "Path is outside the agent's grant");
+      }
       return resolved?.stats ? describe(resolved.full, path.segments.at(-1) ?? { t: "root" }, resolved.stats) : null;
     }),
     read: handle<"read">(async ({ path, offset, length, expect }, { signal, editPaths }) => {
       await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
       return withRegularFile(full, stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
         if (expect && !matches(opened, expect)) throw changed();
         const buffer = Buffer.allocUnsafe(length);
         const { bytesRead } = await file.read(buffer, 0, length, position(offset));
@@ -288,6 +292,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       await editPaths?.check(to);
       const source = await resolvePath(from, platform);
       return withRegularFile(source.full, source.stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(source.full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
         const { session } = await writes.open(to, undefined, signal);
         try {
           await forEachChunk(file, signal, (chunk, offset) => writes.write(session, offset, chunk, signal));
@@ -303,7 +308,10 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     sha256: handle<"sha256">(async ({ path }, { signal, editPaths }) => {
       await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
-      return { hex: await withRegularFile(full, stats, signal, (file) => hashFile(file, signal)) };
+      return { hex: await withRegularFile(full, stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
+        return hashFile(file, signal);
+      }) };
     }),
     home: handle<"home">(async () => {
       const home = homedir();

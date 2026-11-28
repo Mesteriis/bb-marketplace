@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rmdir, unlink, utimes } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readlink, rename, rmdir, symlink, unlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { CommanderError } from "../../core/errors.ts";
 import { EDIT_CHUNK, EDIT_LIMIT, editTextValidator } from "../../core/edit-source.ts";
@@ -60,6 +60,23 @@ async function remove(path: string) {
   });
 }
 
+async function removePrivateLeaf(path: string) {
+  const info = await metadata(path);
+  // Keep the private directory entry while an outside hard link exposes
+  // the same inode. The ordinary provider can then keep denying that alias.
+  if (info?.isFile() && info.nlink > 1) return;
+  await remove(path);
+}
+
+async function removeView(path: string) {
+  if (!(await metadata(path))?.isDirectory()) return;
+  const entries = await readdir(path, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) await remove(join(path, entry.name));
+  }
+  await rmdir(path);
+}
+
 async function writeNew(path: string, bytes: Uint8Array) {
   const file = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
   try {
@@ -107,7 +124,7 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
       const upload = join(path, item);
       const info = await metadata(upload);
       if (info && (now() - info.mtimeMs >= UPLOAD_TTL || base !== undefined && item !== "upload-" + base)) {
-        await remove(upload);
+        await removePrivateLeaf(upload);
       }
     }
   }
@@ -197,7 +214,13 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
         validate(bytes);
         validate();
         await reserve(dataDir, 0);
-        if (hasUpload) await rename(upload, revision);
+        if (hasUpload) {
+          const previous = await metadata(revision);
+          if (previous?.isFile() && previous.nlink > 1) {
+            throw new CommanderError("permission_denied", "Private edit revision has an outside link");
+          }
+          await rename(upload, revision);
+        }
         return next;
       });
     },
@@ -213,11 +236,25 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
         return { size: stat.size.toString(), mtimeNs: stat.mtimeNs.toString(), sha256: createHash("sha256").update(bytes).digest("hex") };
       });
     },
-    route(dataDir: string, id: string, revision: number) {
+    route(dataDir: string, id: string, revision: number, name: string) {
       return transaction(async () => {
-        const path = join(await sessionPath(dataDir, id), leafName({ revision }));
-        const { file } = await regular(path, constants.O_RDONLY);
+        const folder = await sessionPath(dataDir, id);
+        const revisionName = leafName({ revision });
+        const { file } = await regular(join(folder, revisionName), constants.O_RDONLY);
         await file.close();
+        const view = join(folder, "view-" + revision);
+        await mkdir(view, { recursive: true, mode: 0o700 });
+        await directory(view);
+        if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\0")
+            || process.platform === "win32" && /[\\:"<>|?*]/u.test(name)) {
+          throw new CommanderError("invalid_name", "Invalid editor filename");
+        }
+        const path = join(view, name);
+        const target = join("..", revisionName);
+        try { await symlink(target, path, "file"); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST" || await readlink(path) !== target) throw error;
+        }
         return path;
       });
     },
@@ -248,8 +285,11 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
           ]);
           await discardStale(folder);
           for (const leaf of await readdir(folder, { withFileTypes: true })) {
+            if (/^view-[0-9]+$/.test(leaf.name) && leaf.name !== "view-" + hold?.revision) {
+              await removeView(join(folder, leaf.name));
+            }
             if (leafPattern.test(leaf.name) && !leaf.isDirectory() && !retained.has(leaf.name)) {
-              await remove(join(folder, leaf.name));
+              await removePrivateLeaf(join(folder, leaf.name));
             }
           }
           if (!hold && (await readdir(folder)).length === 0) await rmdir(folder);
@@ -260,7 +300,11 @@ export function createEditFiles({ quotaBytes = QUOTA, now = Date.now } = {}) {
       return transaction(async () => discardStale(await sessionPath(dataDir, id), base));
     },
     delete(dataDir: string, id: string, leaf: CopyLeaf) {
-      return transaction(async () => remove(join(await sessionPath(dataDir, id), leafName(leaf))));
+      return transaction(async () => {
+        const folder = await sessionPath(dataDir, id);
+        await removePrivateLeaf(join(folder, leafName(leaf)));
+        if ("revision" in leaf) await removeView(join(folder, "view-" + leaf.revision));
+      });
     },
   };
 }

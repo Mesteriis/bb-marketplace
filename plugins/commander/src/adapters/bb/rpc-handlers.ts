@@ -985,10 +985,12 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     // S16: the wrapper below admits only owner clients for every editor method.
     edit_estimate: (input, ctx) => ops.editEstimate(input, ctx.experimental_signal),
     edit_open: (input, ctx) => ops.editOpen(input, ctx.experimental_signal),
+    edit_route: async (input, ctx) => (await ops.edit()).route(input, ctx.experimental_signal),
     edit_get: async (input, ctx) => (await ops.edit()).get(input, ctx.experimental_signal),
     edit_read: async (input, ctx) => (await ops.edit()).read(input, ctx.experimental_signal),
     edit_save: async (input, ctx) => (await ops.edit()).save(input, ctx.experimental_signal),
     edit_writeback: async (input, ctx) => (await ops.edit()).writeBack(input, ctx.experimental_signal),
+    edit_compare: async (input, ctx) => (await ops.edit()).compare(input, ctx.experimental_signal),
     edit_dismiss: async (input, ctx) => (await ops.edit()).dismiss(input, ctx.experimental_signal),
     edit_close: async (input, ctx) => (await ops.edit()).close(input, ctx.experimental_signal),
     endpoints_list: (_, ctx) => ops.endpointsList(owner, ctx.experimental_signal),

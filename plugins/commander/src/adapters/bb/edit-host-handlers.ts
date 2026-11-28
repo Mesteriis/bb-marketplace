@@ -9,7 +9,7 @@ export function createEditHostHandlers(files = createEditFiles()): ExperimentalH
       return { path: await files.create(ctx.experimental_paths.dataDir, input.sessionId, input.size) };
     },
     async editRoute(input, ctx) {
-      return { path: await files.route(ctx.experimental_paths.dataDir, input.sessionId, input.revision) };
+      return { path: await files.route(ctx.experimental_paths.dataDir, input.sessionId, input.revision, input.name) };
     },
     editReadChunk(input, ctx) {
       return files.readChunk(ctx.experimental_paths.dataDir, input.sessionId, input.source, input.offset, input.length);

@@ -1,5 +1,5 @@
 import type { BigIntStats } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join as nodeJoin, win32 } from "node:path";
 import { CommanderError } from "../../core/errors.ts";
 import type { ResourcePath } from "../../core/path.ts";
@@ -43,6 +43,27 @@ export async function createEditPathPolicy(dataDir: string, platform: NamePlatfo
   const data = await followed(dataDir);
   const privateDir = await followed(nodeJoin(dataDir, EDIT_DIRECTORY));
 
+  // Only multiply linked files need the inode walk. Follow no symlinks in
+  // the private tree and reuse the result within this host RPC.
+  let privateFiles: Promise<Set<string>> | undefined;
+  const inode = ({ dev, ino }: BigIntStats) => dev + ":" + ino;
+  async function collectPrivateFiles() {
+    const root = nodeJoin(dataDir, EDIT_DIRECTORY);
+    const found = new Set<string>();
+    if (!(await lstatOrNull(root))?.isDirectory()) return found;
+    for (const child of await readdir(root, { withFileTypes: true })) {
+      signal.throwIfAborted();
+      if (!child.isDirectory()) continue;
+      const folder = nodeJoin(root, child.name);
+      for (const leaf of await readdir(folder, { withFileTypes: true })) {
+        if (!leaf.isFile()) continue;
+        const file = await lstatOrNull(nodeJoin(folder, leaf.name));
+        if (file?.isFile()) found.add(inode(file));
+      }
+    }
+    return found;
+  }
+
   async function hidden(path: FsPath, info?: BigIntStats | null): Promise<boolean> {
     signal.throwIfAborted();
     const parent = canonicalParent(path);
@@ -55,6 +76,10 @@ export async function createEditPathPolicy(dataDir: string, platform: NamePlatfo
     const metadata = info === undefined ? await lstatOrNull(path) : info;
     if (!metadata) return false;
     if (sameNode(metadata, privateDir)) return true;
+    if (metadata.isFile() && metadata.nlink > 1n) {
+      privateFiles ??= collectPrivateFiles();
+      return (await privateFiles).has(inode(metadata));
+    }
     if (!metadata.isSymbolicLink()) return false;
     for (let full = await canonical(path); full !== null;) {
       const version = await followed(full);

@@ -1,8 +1,10 @@
 import type { Database } from "better-sqlite3";
 import { EditSession, type WriteBackRequest, writeBackCommand } from "../../core/edit-session.ts";
 import { CommanderError } from "../../core/errors.ts";
+import { samePath } from "../../core/path.ts";
 import type { ResourceRef } from "../../core/model.ts";
 
+// Append-only: the migration journal hashes this SQL. Never edit this statement.
 export const EDIT_MIGRATION = `
   CREATE TABLE edit_sessions (
     session_id TEXT PRIMARY KEY NOT NULL,
@@ -53,6 +55,7 @@ function session(row: SessionRow) {
 export function createEditStore(db: Database) {
   const byId = db.prepare<[string], SessionRow>("SELECT * FROM edit_sessions WHERE session_id = ?");
   const byRef = db.prepare<[string], SessionRow>("SELECT * FROM edit_sessions WHERE ref = ?");
+  const byEndpoint = db.prepare<[string], SessionRow>("SELECT * FROM edit_sessions WHERE json_extract(ref, '$.endpoint') = ?");
   const all = db.prepare<[], SessionRow>("SELECT * FROM edit_sessions");
   const remove = db.prepare<[string]>("DELETE FROM edit_sessions WHERE session_id = ?");
   const insert = db.prepare<SessionRow>(`
@@ -76,17 +79,31 @@ export function createEditStore(db: Database) {
     };
   }
 
+  function forRef(ref: ResourceRef, caseSensitive: boolean) {
+    if (caseSensitive) {
+      const row = byRef.get(refKey(ref));
+      return row ? session(row) : null;
+    }
+    for (const row of byEndpoint.iterate(ref.endpoint)) {
+      const existing = session(row);
+      if (samePath(existing.ref.path, ref.path, false)) return existing;
+    }
+    return null;
+  }
+
+  const create = db.transaction((value: EditSession, caseSensitive: boolean) => {
+    if (forRef(value.ref, caseSensitive)) throw new CommanderError("already_exists", "Edit session already exists");
+    insert.run(stored(value));
+  });
+
   return {
     get(id: string) {
       const row = byId.get(id);
       return row ? session(row) : null;
     },
-    forRef(ref: ResourceRef) {
-      const row = byRef.get(refKey(ref));
-      return row ? session(row) : null;
-    },
+    forRef,
     list() { return all.all().map(session); },
-    open(value: EditSession) { insert.run(stored(value)); },
+    open(value: EditSession, caseSensitive: boolean) { create.immediate(value, caseSensitive); },
     save(value: EditSession) {
       if (update.run(stored(value)).changes !== 1) throw new CommanderError("not_found", "Сеанс завершён — откройте файл снова");
     },

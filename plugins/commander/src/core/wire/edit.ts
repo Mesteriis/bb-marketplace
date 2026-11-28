@@ -20,7 +20,7 @@ const route = z.strictObject({ path: z.string().min(1) });
 
 export const editHostSchemas = {
   editCreate: { input: id.extend({ size: offset }), output: route },
-  editRoute: { input: id.extend({ revision: EditRevision }), output: route },
+  editRoute: { input: id.extend({ revision: EditRevision, name: z.string().min(1).max(1024) }), output: route },
   editReadChunk: {
     input: id.extend({ source: readSource, offset, length: chunkSize }),
     output: chunk,
@@ -49,6 +49,7 @@ export const editRpcSchemas = {
     input: z.strictObject({ ref: ResourceRef, estimateId: EditId.optional() }),
     output: id.extend({ base: Fingerprint, opener }),
   },
+  edit_route: { input: id, output: opener },
   edit_get: {
     input: id,
     output: id.extend({ revision: EditRevision, ref: ResourceRef, base: Fingerprint, hostId: z.string() }),
@@ -60,6 +61,10 @@ export const editRpcSchemas = {
     output: revision,
   },
   edit_writeback: { input: WriteBackRequest, output: WriteBackResult },
+  edit_compare: {
+    input: id.extend({ conflictId: EditId }),
+    output: z.union([z.strictObject({ kind: z.literal("text"), text: z.string() }), WriteBackResult.options[1]]),
+  },
   edit_dismiss: { input: id.extend({ conflictId: EditId }), output: empty },
   edit_close: { input: id, output: empty },
 };

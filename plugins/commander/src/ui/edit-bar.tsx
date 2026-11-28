@@ -27,7 +27,7 @@ export interface EditBarActions {
   load(): Promise<{ ref: ResourceRef; revision: number; base: Fingerprint; text: string }>;
   save(baseRevision: number, text: string): Promise<number>;
   writeBack(revision: number, choice?: EditChoice, conflictId?: string): Promise<WriteBackResult>;
-  compare(ref: ResourceRef, expected: Fingerprint): Promise<string>;
+  compare(conflictId: string): Promise<Conflict | { kind: "text"; text: string }>;
   dismiss(conflictId: string): Promise<void>;
   close(): Promise<void>;
 }
@@ -135,7 +135,12 @@ export function EditBar({ api }: { api: EditBarActions }) {
       {error && <p role="alert">{error}</p>}
       <div className="cm-actions">
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(async () => {
-          setComparison({ copy: file.text, original: conflict.current ? await api.compare(file.ref, conflict.current) : ru.editFlow.deleted });
+          const result = await api.compare(conflict.conflictId);
+          if (result.kind === "conflict") {
+            if (result.revision !== file.revision) await load();
+            setConflict(result);
+            setComparison(undefined);
+          } else setComparison({ copy: file.text, original: result.text });
         })}>{ru.editFlow.compare}</Button>
         <Button size="sm" variant="destructive" disabled={busy} onClick={() => void writeBack("overwrite")}>{ru.editFlow.overwrite}</Button>
         <Button size="sm" disabled={busy} onClick={() => void writeBack("save-beside")}>{ru.editFlow.beside}</Button>

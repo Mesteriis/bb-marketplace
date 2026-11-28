@@ -10,8 +10,9 @@ import { OperationPlan, planDigest, type Entry, type OperationJob, type Resource
 import { nextFreeName } from "../../core/naming.ts";
 import { join, parent, samePath } from "../../core/path.ts";
 import { buildPlan, type PlannerDeps } from "../../core/planner.ts";
+import { entryName, readForView, replyFor } from "../../core/preview.ts";
 import { LIST_PAGE_MAX } from "../../core/provider.ts";
-import { fingerprint } from "../../core/reconcile.ts";
+import { fingerprint, matches } from "../../core/reconcile.ts";
 import { EDIT_OPENER, type editRpcSchemas } from "../../core/wire/edit.ts";
 import { snapshotIds, snapshotRef, type EditHost } from "./edit-host-client.ts";
 import type { EditStore } from "./edit-store.ts";
@@ -83,10 +84,16 @@ export function createEditOperations(deps: {
     store.save(session);
   }
 
+  async function route(session: EditSession, signal: AbortSignal): Promise<Result<"edit_route">> {
+    const { sessionId, ref, hostId, state } = session;
+    const filename = entryName(ref.path);
+    const name = filename && Buffer.byteLength(filename) <= 255 ? filename : "Копия.txt";
+    const { path } = await host.call("editRoute", { sessionId, revision: state.revision, name }, hostId, signal);
+    return { id: EDIT_OPENER, hostId, path };
+  }
+
   async function present(session: EditSession, signal: AbortSignal): Promise<Result<"edit_open">> {
-    const { sessionId, base, hostId, state } = session;
-    const { path } = await host.call("editRoute", { sessionId, revision: state.revision }, hostId, signal);
-    return { sessionId, base, opener: { id: EDIT_OPENER, hostId, path } };
+    return { sessionId: session.sessionId, base: session.base, opener: await route(session, signal) };
   }
 
   async function assignConflict(session: EditSession, current: Awaited<ReturnType<typeof currentTarget>>, signal: AbortSignal) {
@@ -135,14 +142,15 @@ export function createEditOperations(deps: {
       confirm: (estimateId: string, ref: ResourceRef, entry: Entry) => void,
     ): Promise<Result<"edit_open">> {
       return serialize(signal, async (signal) => {
-        const existing = store.forRef(ref);
-        if (existing && !expired(existing)) return present(await refreshBase(existing), signal);
-        if (existing) store.close(existing.sessionId);
         const hostId = await host.primaryHost();
         knownHosts.add(hostId);
         await deps.prepare([ref.endpoint], signal);
         const provider = planner.provider(ref.endpoint);
         assertWritable(provider.endpoint);
+        const { caseSensitive } = provider.endpoint;
+        const existing = store.forRef(ref, caseSensitive);
+        if (existing && !expired(existing)) return present(await refreshBase(existing), signal);
+        if (existing) store.close(existing.sessionId);
         let expected;
         if (provider.endpoint.provider === "sftp") {
           if (!estimateId) throw new CommanderError("consent_required", "Подтвердите объём чтения файла с сервера");
@@ -168,9 +176,13 @@ export function createEditOperations(deps: {
           createdAt: planner.now().toISOString(), lastSavedAt: null,
         };
         const result = await present(session, signal);
-        store.open(session);
+        store.open(session, caseSensitive);
         return result;
       });
+    },
+
+    route({ sessionId }: Input<"edit_route">, signal: AbortSignal): Promise<Result<"edit_route">> {
+      return serialize(signal, async (signal) => route(await activeSession(sessionId), signal));
     },
 
     get({ sessionId }: Input<"edit_get">, signal: AbortSignal): Promise<Result<"edit_get">> {
@@ -195,9 +207,10 @@ export function createEditOperations(deps: {
         const { state, hostId } = session;
         await discardExpiredUpload(session, signal, final ? baseRevision : undefined);
         if (state.revision !== baseRevision) throw new CommanderError("changed_since_plan", "Редакция изменилась — перечитайте копию");
-        await host.call("editWriteChunk", { sessionId, baseRevision, offset, bytes }, hostId, signal);
+        // The host can durably accept the bytes even if its response is lost.
         state.upload = { baseRevision, lastChunkAt: planner.now().toISOString() };
         store.save(session);
+        await host.call("editWriteChunk", { sessionId, baseRevision, offset, bytes }, hostId, signal);
         if (final) {
           const { revision } = await host.call("editCommitRevision", { sessionId, baseRevision, sha256: sha256! }, hostId, signal);
           state.revision = revision;
@@ -239,6 +252,52 @@ export function createEditOperations(deps: {
         signal.throwIfAborted();
         const job = await deps.submit(guarded, input);
         return { kind: "written", jobId: job.id };
+      });
+    },
+
+    compare({ sessionId, conflictId }: Input<"edit_compare">, signal: AbortSignal): Promise<Result<"edit_compare">> {
+      return serialize(signal, async (signal) => {
+        const session = await activeSession(sessionId);
+        const { ref, state } = session;
+        const shown = state.conflict;
+        const current = await currentTarget(session, signal);
+        if (shown?.id !== conflictId || shown.revision !== state.revision
+            || shown.targetKind !== (current?.kind ?? null)
+            || !matches(current?.fingerprint ?? null, shown.current)) {
+          return assignConflict(session, current, signal);
+        }
+        if (current === null) return { kind: "text", text: "Оригинал удалён" };
+        const provider = planner.provider(ref.endpoint);
+        const { size, mtimeNs, sha256 } = current.fingerprint;
+        const expect = { size, mtimeNs };
+        try {
+          if (sha256) {
+            const verified = await readEditSource(provider, ref.path, signal, { expected: expect });
+            if (!matches(verified.base, shown.current)) {
+              return assignConflict(session, { kind: "file", fingerprint: verified.base }, signal);
+            }
+            const budget = 256 * 1024;
+            const prefix = Buffer.alloc(Math.min(Number(size), budget));
+            let offset = 0;
+            for (const chunk of verified.chunks) {
+              const part = chunk.subarray(0, prefix.length - offset);
+              prefix.set(part, offset);
+              offset += part.length;
+              if (offset === prefix.length) break;
+            }
+            const truncated = Number(size) > budget;
+            const text = new TextDecoder("utf-8").decode(prefix, { stream: truncated });
+            return { kind: "text", text: text + (truncated ? "\n…" : "") };
+          }
+          const view = replyFor(await readForView(provider, ref.path, { offset: 0n, length: 256 * 1024, expect }, signal), "text", "owner");
+          if (view.view.kind !== "text") throw new CommanderError("unsupported", "Текущая версия недоступна для текстового просмотра");
+          return { kind: "text", text: view.view.text + (view.view.truncated ? "\n…" : "") };
+        } catch (error) {
+          if (error instanceof CommanderError && ["changed_since_plan", "not_found"].includes(error.code)) {
+            return assignConflict(session, await currentTarget(session, signal), signal);
+          }
+          throw error;
+        }
       });
     },
 

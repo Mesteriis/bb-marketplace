@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { experimental_PluginRpcCallError, type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -38,7 +38,7 @@ function ref(path = source) {
   return { endpoint: "host:test", path: parsePosix(path) };
 }
 
-async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false) {
+async function start(remote = new RemoteHubMock(), primaryHostId: string | null = "test", holdSnapshotRead = false, options: { loseChunkReply?: boolean; caseSensitive?: boolean } = {}) {
   const db = new Database(join(folder, "jobs.db"));
   const signal = new AbortController();
   const callbacks: (() => Promise<void>)[] = [];
@@ -79,7 +79,7 @@ async function start(remote = new RemoteHubMock(), primaryHostId: string | null 
     hosts: {
       experimental_client: () => ({
         async call(method: string, data: unknown, ctx: { signal?: AbortSignal }) {
-          if (method === "home") return { path: parsePosix(folder), caseSensitive: true };
+          if (method === "home") return { path: parsePosix(folder), caseSensitive: options.caseSensitive ?? true };
           if (method === "editSweep") sweepStarted = true;
           if (holdSnapshotRead && method === "editReadChunk" && "snapshotId" in (data as { source: object }).source) {
             snapshotRead.resolve();
@@ -87,7 +87,9 @@ async function start(remote = new RemoteHubMock(), primaryHostId: string | null 
             callSignal.throwIfAborted();
             await new Promise<never>((_, reject) => callSignal.addEventListener("abort", () => reject(callSignal.reason), { once: true }));
           }
-          return handlersOfWorker[method]!(data, { signal: ctx.signal ?? signal.signal, experimental_paths: { dataDir: privateData } });
+          const result = await handlersOfWorker[method]!(data, { signal: ctx.signal ?? signal.signal, experimental_paths: { dataDir: privateData } });
+          if (options.loseChunkReply && method === "editWriteChunk") throw new Error("Host response lost");
+          return result;
         },
       }),
     },
@@ -325,4 +327,85 @@ it("discards only the displayed snapshot when choosing not to write", async () =
   expect(await readdir(join(privateData, EDIT_DIRECTORY, sessionId))).toEqual(["revision-1"]);
   expect(await readFile(source, "utf8")).toBe("outside");
   expect(bb.db.prepare("SELECT count(*) AS total FROM jobs").get()).toEqual({ total: 0 });
+});
+
+it("hides external hard links from a granted ordinary file provider", async () => {
+  const bb = await start();
+  const { sessionId, opener } = await bb.open();
+  const alias = join(folder, "friendly.txt");
+  await link(await realpath(opener.path), alias);
+  await bb.rpc("agent_grants_set", { grant: {
+    threadId: "thread-edit", endpoint: "host:test", scope: parsePosix(folder), permissions: ["read"],
+  } });
+  await expect(bb.tool("read", { ref: ref(alias) })).resolves.toEqual({ code: "forbidden", message: "Commander refused the request" });
+  await expect(bb.tool("stat", { ref: ref(alias) })).resolves.toMatchObject({ code: "forbidden" });
+  await expect(bb.tool("checksum", { ref: ref(alias) })).resolves.toMatchObject({ code: "forbidden" });
+  await expect(bb.rpc("plan_create", {
+    kind: "copy", sources: [ref(alias)], targetDir: ref(privateData), newName: null,
+    conflictPolicy: "ask", verify: "size",
+  })).rejects.toMatchObject({ code: "forbidden" });
+  await expect(bb.tool("list", { ref: ref(folder) })).resolves.not.toMatchObject({
+    entries: expect.arrayContaining([expect.objectContaining({ name: { t: "friendly.txt" } })]),
+  });
+  await bb.rpc("edit_close", { sessionId });
+  await expect(bb.tool("read", { ref: ref(alias) })).resolves.toMatchObject({ code: "forbidden" });
+});
+
+it("blocks writeback after the host accepts the first chunk and its reply is lost before restart", async () => {
+  let bb = await start();
+  const { sessionId } = await bb.open();
+  await bb.close();
+  bb = await start(undefined, "test", false, { loseChunkReply: true });
+  await expect(bb.rpc("edit_save", { sessionId, baseRevision: 0, offset: 0, bytes: "aGU=", final: false })).rejects.toMatchObject({ code: "invalid" });
+  await bb.close();
+  bb = await start();
+  await expect(bb.rpc("edit_writeback", { sessionId, clientRequestId: randomUUID(), revision: 0 }))
+    .rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("Дождитесь сохранения") });
+  expect(await readFile(source, "utf8")).toBe("abc");
+  expect(bb.db.prepare("SELECT count(*) AS total FROM jobs").get()).toEqual({ total: 0 });
+});
+
+it.each([[false, true], [true, false]])("uses endpoint case sensitivity %s for repeated opens", async (caseSensitive, sameSession) => {
+  // Simulate both volume policies with distinct directory entries. On a folded
+  // volume the second spelling addresses the first existing session.
+  const bb = await start(undefined, "test", false, { caseSensitive });
+  const upper = join(folder, "A.txt");
+  await writeFile(upper, "abc");
+  const first = await bb.open();
+  const second = editRpcSchemas.edit_open.output.parse(await bb.rpc("edit_open", { ref: ref(upper) }));
+  expect(second.sessionId === first.sessionId).toBe(sameSession);
+  expect(bb.db.prepare("SELECT count(*) AS total FROM edit_sessions").get()).toEqual({ total: sameSession ? 1 : 2 });
+});
+
+it("issues a new conflict when compare finds changed bytes at identical size and mtime", async () => {
+  const bb = await start();
+  const { sessionId } = await bb.open();
+  const time = 1700000000;
+  await writeFile(source, "old");
+  await utimes(source, time, time);
+  const original = editRpcSchemas.edit_writeback.output.parse(await bb.rpc("edit_writeback", { sessionId, clientRequestId: randomUUID(), revision: 0 }));
+  if (original.kind !== "conflict") throw new Error("Expected conflict");
+  await writeFile(source, "new");
+  await utimes(source, time, time);
+  const next = await bb.rpc("edit_compare", { sessionId, conflictId: original.conflictId });
+  expect(next).toMatchObject({ kind: "conflict", current: { size: "3", mtimeNs: "1700000000000000000" } });
+  expect(next).not.toMatchObject({ conflictId: original.conflictId });
+  expect(next).not.toHaveProperty("text");
+});
+
+it("fails closed in the registered host entry when no private data directory is supplied", async () => {
+  const handler = worker.handlers.read as (input: unknown, context: unknown) => Promise<unknown>;
+  await expect(handler({ path: parsePosix(source), length: 3, offset: "0", expect: null }, { signal: client.experimental_signal }))
+    .rejects.toThrow("Каталог редактора BB недоступен");
+});
+
+it("uses the original basename and resolves a new fallback path after saving", async () => {
+  const bb = await start();
+  const { sessionId, opener } = await bb.open();
+  expect(opener.path.split("/").at(-1)).toBe("a.txt");
+  await bb.save(sessionId, 0);
+  const fresh = await bb.rpc("edit_route", { sessionId }) as { path: string };
+  expect(fresh.path.split("/").at(-1)).toBe("a.txt");
+  expect(fresh.path).not.toBe(opener.path);
+  expect(await readFile(fresh.path, "utf8")).toBe("hello");
 });

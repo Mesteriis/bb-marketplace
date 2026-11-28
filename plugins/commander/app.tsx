@@ -462,10 +462,14 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       estimate: (ref) => rpc.call("edit_estimate", { ref }),
       async open(ref, estimateId) {
         const { sessionId, opener } = await rpc.call("edit_open", estimateId ? { ref, estimateId } : { ref });
-        const retry = () => waitForEdit(sessionId, () => navigate.experimental_openFilePreview({
-          target: { kind: "host", hostId: opener.hostId, path: opener.path }, location: null, opener: opener.id,
+        const show = (target: typeof opener) => waitForEdit(sessionId, () => navigate.experimental_openFilePreview({
+          target: { kind: "host", hostId: target.hostId, path: target.path }, location: null, opener: target.id,
         }));
-        return await retry() ? null : { path: opener.path, retry };
+        if (await show(opener)) return null;
+        return {
+          path: opener.path,
+          retry: async () => show(await rpc.call("edit_route", { sessionId })),
+        };
       },
     }}
     onPreview={preview} onView={(ref, mode) => loadView(ref, mode)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}

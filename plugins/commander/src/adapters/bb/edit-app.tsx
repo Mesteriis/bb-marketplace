@@ -84,11 +84,7 @@ function useEditBar(rpc: Rpc, sessionId: string | undefined, expectedHost: strin
         return reply;
       },
       async dismiss(conflictId) { await rpc.call("edit_dismiss", { sessionId: id(), conflictId }); },
-      async compare(ref, { size, mtimeNs }) {
-        const result = await rpc.call("file_read", { ref, mode: "text", expect: { size, mtimeNs } });
-        if (result.view.kind !== "text") throw new CommanderError("unsupported", ru.editFlow.compareUnavailable);
-        return result.view.text + (result.view.truncated ? "\n…" : "");
-      },
+      compare: (conflictId) => rpc.call("edit_compare", { sessionId: id(), conflictId }),
       async close() { await rpc.call("edit_close", { sessionId: id() }); },
     };
   }, [rpc, sessionId, expectedHost]);
@@ -97,9 +93,10 @@ function useEditBar(rpc: Rpc, sessionId: string | undefined, expectedHost: strin
 export function CommanderEditOpener({ path, source }: PluginFileOpenerProps) {
   const rpc = useRpc<typeof rpcSchemas>();
   const parts = path.split(/[\\/]/u);
-  const suffix = parts.at(-1) ?? "";
-  const sessionId = source.kind === "host" && parts.at(-3) === "commander-edits" && /^revision-[0-9]+$/.test(suffix)
-    ? EditId.safeParse(parts.at(-2)).data : undefined;
+  const named = path.match(/(?:^|[\\/])commander-edits[\\/]([a-f0-9-]{36})[\\/]view-[0-9]+[\\/]/u)?.[1];
+  const previous = parts.at(-3) === "commander-edits" && /^revision-[0-9]+$/.test(parts.at(-1) ?? "");
+  const sessionId = source.kind === "host" && (named || previous)
+    ? EditId.safeParse(named ?? parts.at(-2)).data : undefined;
   const api = useEditBar(rpc, sessionId, source.experimental_hostId);
   useEffect(() => () => { if (sessionId) loaded.delete(sessionId); }, [sessionId]);
   return <EditBar api={api} key={sessionId} />;
