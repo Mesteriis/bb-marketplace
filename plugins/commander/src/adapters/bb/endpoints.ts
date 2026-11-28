@@ -8,6 +8,7 @@ import { SFTP_REFUSALS, SftpRefusal, sftpMethods, type RemoteHubPort, type SftpI
 import type { EndpointView } from "../../core/wire/rpc.ts";
 import { createLocalProvider } from "./local-provider.ts";
 import { createSftpProvider, type SftpProvider } from "./sftp-provider.ts";
+import type { ArchiveManager } from "./archive-manager.ts";
 import { z } from "zod";
 
 const remoteId = "makosh-remote-hub";
@@ -38,7 +39,7 @@ function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
 }
 
-export function createEndpoints(bb: BbPluginApi) {
+export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager | null = () => null) {
   const hostFs = bb.hosts.experimental_client({ contract: HostFsContract });
   const remote: RemoteHubPort = {
     async call<M extends SftpMethodName>(method: M, input: SftpInput<M>, signal: AbortSignal) {
@@ -92,6 +93,12 @@ export function createEndpoints(bb: BbPluginApi) {
     const endpoints = await list(signal);
     await Promise.all([...wanted].map(async (id) => {
       if (closed) throw new CommanderError("cancelled", "Commander is stopping");
+      if (id.startsWith("archive:")) {
+        const manager = archives();
+        if (!manager) throw new CommanderError("not_found", "Archives are unavailable");
+        await manager.ensure(id.slice("archive:".length), signal, { owner: true });
+        return;
+      }
       const view = endpoints.find((candidate) => candidate.id === id);
       if (!view) throw new CommanderError("not_found", "Endpoint is unavailable");
       const { consent, ...endpoint } = view;
@@ -167,12 +174,16 @@ export function createEndpoints(bb: BbPluginApi) {
 
   return {
     list, prepare, remote,
-    home: (id: string): ResourcePath => (hosts.get(id) ?? sftp.get(id))!.home,
+    home: (id: string): ResourcePath => id.startsWith("archive:") ? { segments: [] } : (hosts.get(id) ?? sftp.get(id))!.home,
     protectedPathsFor: (id: string) => {
+      if (id.startsWith("archive:")) return [];
       const host = hosts.get(id) ?? sftp.get(id);
       return host ? [host.home] : null;
     },
     provider(id: string): FileProvider {
+      if (id.startsWith("archive:")) return archives()?.provider(id.slice("archive:".length)) ?? (() => {
+        throw new CommanderError("not_found", "Archive is not open");
+      })();
       const provider = hosts.get(id)?.provider ?? sftp.get(id)?.provider;
       if (!provider) throw new CommanderError("not_found", "Endpoint is unavailable");
       return provider;

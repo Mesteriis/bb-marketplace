@@ -118,6 +118,7 @@ export function createOperations(deps: {
   ready(): Promise<void>;
   isManaged(id: string): boolean;
   scans: ScanRunner;
+  archives?: import("./archive-runtime.ts").ArchiveRuntime;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
@@ -738,6 +739,23 @@ export function createOperations(deps: {
         signal.removeEventListener("abort", cancel);
       }
     },
+    // S14: owner-only. An archive is opened as a read-only panel; its password comes from the owner's dialog.
+    async archiveOpen(source: ResourceRef, signal: AbortSignal) {
+      if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+      await endpoints.prepare([source.endpoint], signal);
+      return deps.archives.manager.open(source, signal, { owner: true });
+    },
+    async archiveClose(archiveId: string) {
+      await deps.archives?.manager.close(archiveId);
+      return {};
+    },
+    archivePassword(archiveId: string, password: string) {
+      return { accepted: deps.archives?.gate.provide(archiveId, password) === "accepted" };
+    },
+    archivePasswordCancel(archiveId: string) {
+      deps.archives?.gate.cancel(archiveId);
+      return {};
+    },
     listGrants: grants.list,
     setGrant: (grant: AgentGrant) => changeGrants(grant.threadId, () => grants.set(grant)),
     revokeGrant: (key: GrantKey) => changeGrants(key.threadId, () => grants.revoke(key)),
@@ -849,6 +867,10 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     scan_start: (input, ctx) => ops.scanStart(input, owner, ctx.experimental_signal),
     scan_get: ({ scanId }) => ops.scanGet(scanId),
     scan_cancel: (input) => ops.scanCancel(input, owner),
+    archive_open: ({ source }, ctx) => ops.archiveOpen(source, ctx.experimental_signal),
+    archive_close: ({ archiveId }) => ops.archiveClose(archiveId),
+    archive_password: ({ archiveId, password }) => ops.archivePassword(archiveId, password),
+    archive_password_cancel: ({ archiveId }) => ops.archivePasswordCancel(archiveId),
   };
   const wrap = <M extends keyof typeof handlers>(method: M) => {
     const handle = handlers[method] as (value: RpcInput<M>, ctx: Parameters<typeof handlers[M]>[1]) => unknown;
