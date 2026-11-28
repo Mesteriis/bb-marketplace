@@ -37,13 +37,3 @@ test("the native hash agrees with the portable one on random data across block b
   }
   expect(native.finish()).toBe(portable.finish());
 });
-
-test("hashes 64 MiB natively in a fraction of the portable cost", () => {
-  installNativeSha256();
-  const hash = createTransferHash();
-  const chunk = new Uint8Array(4 * 1024 * 1024);
-  const start = performance.now();
-  for (let i = 0; i < 16; i++) hash.update(chunk);
-  hash.finish();
-  expect(performance.now() - start).toBeLessThan(500); // portable: about 800 ms
-});

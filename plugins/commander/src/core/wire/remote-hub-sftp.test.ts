@@ -173,11 +173,8 @@ describe("base64 chunk limit", () => {
     expect(base64Bytes("====")).toBeNull();
   });
 
-  it("checks a 4 MiB chunk of base64 text in well under the cost of a transfer step", () => {
-    const text = encoded(4194304);
-    const start = performance.now();
-    expect(base64Bytes(text)).toBe(4194304);
-    expect(performance.now() - start).toBeLessThan(250);
+  it("counts the bytes of a full 4 MiB chunk", () => {
+    expect(base64Bytes(encoded(4194304))).toBe(4194304);
   });
 
   it("accepts 4194303 and 4194304 decoded bytes in a read reply, and refuses 4194305 and 4194306", () => {

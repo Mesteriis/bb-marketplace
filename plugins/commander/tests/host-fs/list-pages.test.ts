@@ -1,10 +1,25 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHostFs } from "../../src/adapters/bb/host-fs/index.ts";
 import { EDIT_DIRECTORY } from "../../src/adapters/bb/edit-files.ts";
 import { fixturePath } from "./fixtures.ts";
+
+// Counts directory-entry reads of the host worker, to tell one pass over a directory from a pass per page.
+const reads = vi.hoisted(() => ({ count: 0 }));
+vi.mock("node:fs/promises", async (original) => {
+  const real = await original<typeof import("node:fs/promises")>();
+  return {
+    ...real,
+    opendir: async (...args: Parameters<typeof real.opendir>) => {
+      const dir = await real.opendir(...args);
+      const read = dir.read.bind(dir) as () => Promise<unknown>;
+      (dir as unknown as { read: () => Promise<unknown> }).read = async () => { reads.count++; return read(); };
+      return dir;
+    },
+  };
+});
 
 let root: string;
 let fs: ReturnType<typeof createHostFs>;
@@ -75,12 +90,12 @@ it("keeps the page and cursor count in step when the private editor directory is
   }
 });
 
-it("pages a large directory in time linear in its size, not quadratic", async () => {
-  await fill(root, 40_000);
-  const start = performance.now();
-  const all = await listAll(at(), 200);
-  const elapsed = performance.now() - start;
-  expect(all).toHaveLength(40_000);
-  // Rescanning from the first entry on every page took about 7 s here; one pass takes under 1 s.
-  expect(elapsed).toBeLessThan(2000);
-}, 60_000);
+it("reads each directory entry about once across all pages, not once per page", async () => {
+  await fill(root, 3000);
+  reads.count = 0;
+  const all = await listAll(at(), 100);
+  expect(all).toHaveLength(3000);
+  // One pass plus the entry read ahead of each page. Rescanning from the first entry read about 46 000.
+  expect(reads.count).toBeGreaterThanOrEqual(3000);
+  expect(reads.count).toBeLessThan(3 * 3000);
+});

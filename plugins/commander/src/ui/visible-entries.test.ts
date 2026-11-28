@@ -28,11 +28,16 @@ test("filters by a case-insensitive part of the displayed name", () => {
   expect(names(visibleEntries(rows, tab({ by: "name", direction: "asc" }, "ОТЧЁТ")))).toEqual(["отчёт-2.txt", "Отчёт.txt"]);
 });
 
-test("sorts 100 000 entries within a budget the panel can spend on every page it shows", () => {
-  const rows = Array.from({ length: 100_000 }, (_, index) => entry("item-" + String((index * 7919) % 100_000).padStart(6, "0") + ".bin", "file", "1024", String(index)));
-  const start = performance.now();
+test("reads each entry name a bounded number of times, not once per comparison", () => {
+  let reads = 0;
+  const rows = Array.from({ length: 2000 }, (_, index) => {
+    const text = "item-" + String((index * 7919) % 2000).padStart(4, "0");
+    const name = { get t() { reads++; return text; } };
+    return { ...entry("x"), name } as Entry;
+  });
   const sorted = visibleEntries(rows, tab({ by: "name", direction: "asc" }));
-  const elapsed = performance.now() - start;
-  expect(names(sorted).slice(0, 2)).toEqual(["item-000000.bin", "item-000001.bin"]);
-  expect(elapsed).toBeLessThan(1000);
+  expect(sorted).toHaveLength(2000);
+  expect((sorted[0]!.name as { t: string }).t).toBe("item-0000");
+  // Per entry: the display name once, the sort key for ties. A comparator that converts names runs about 2000 * 11 * 2 times.
+  expect(reads).toBeLessThan(2000 * 8);
 });

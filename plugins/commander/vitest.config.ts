@@ -14,7 +14,6 @@ const heavy = [
   "src/core/planner.test.ts",
   "src/core/preview.test.ts",
   "tests/file-read.test.ts",
-  "tests/host-fs/list-pages.test.ts",
   "app.test.tsx",
   // The archive flow renders the whole App in jsdom as well: about 0.2 s alone, but under the same
   // load its findBy waits (1 s each) ran out. Running it one file at a time removes that contention.
