@@ -24,7 +24,7 @@ const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } =
  * class); newer SDKs throw experimental_PluginRpcCallError ("host_key_unknown: …"). Both carry the
  * refusal class in `code`, which must match the class the contract gives that refusal.
  */
-function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
+export function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   let code: unknown;
   let message: unknown;
   if (error instanceof experimental_PluginRpcCallError) {

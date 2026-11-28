@@ -67,7 +67,7 @@ function tempName(session: SftpWriteSession): string {
 
 describe("contract and capabilities", () => {
   it("exports the contract id it mirrors and declares only the stage-one capabilities", () => {
-    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@e1b0d502");
+    expect(REMOTE_HUB_SFTP_CONTRACT).toBe("remote-hub@271406d0");
     const { provider } = setup();
     expect([...provider.capabilities].sort()).toEqual(["list", "mkdir", "read", "remove", "rename", "seek", "stat", "write"]);
     expect(provider.capabilities.has("atomicReplace")).toBe(false);
@@ -695,6 +695,7 @@ describe("error mapping", () => {
     ["profile_needs_config", "unsupported", false],
     ["agent_unavailable", "auth_failed", false],
     ["keychain_locked", "auth_failed", false],
+    ["keychain_unavailable", "auth_failed", false],
     ["keychain_needs_approval", "auth_failed", false],
     ["credential_missing", "auth_failed", false],
     ["auth_failed", "auth_failed", false],
@@ -734,7 +735,7 @@ describe("error mapping", () => {
 
   it("the tables cover every refusal code of the contract", () => {
     expect([...TABLE.map(([code]) => code), ...MUTATION_ONLY].sort()).toEqual(Object.keys(SFTP_REFUSALS).sort());
-    expect(TABLE).toHaveLength(23);
+    expect(TABLE).toHaveLength(24);
   });
 
   it.each(TABLE)("refusal %s on a read is %s (retryable %s), with no leaked text", async (code, expected, retryable) => {
