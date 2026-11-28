@@ -6,7 +6,7 @@ import type { IntegrityResult } from "./archive-helper-integrity.ts";
 
 /** What the client needs from a child process (a Node ChildProcessWithoutNullStreams fits). */
 export interface HelperProcess {
-  stdin: { write(chunk: Uint8Array): unknown; end(): unknown };
+  stdin: { write(chunk: Uint8Array, callback?: () => void): unknown; end(): unknown };
   stdout: { on(event: "data", listener: (chunk: Buffer) => void): unknown };
   stderr: { on(event: "data", listener: (chunk: Buffer) => void): unknown };
   pid?: number | undefined;
@@ -25,6 +25,8 @@ export interface ArchiveHelperOptions {
   handshakeTimeoutMs?: number;
   /** A request fails when the helper sends no frame for this long. */
   requestTimeoutMs?: number;
+  /** How long the owner's password dialog may take; the request timer does not run meanwhile. */
+  passwordWaitMs?: number;
   killGraceMs?: number;
   /** Resident memory watchdog; omitted = off. */
   rssLimitBytes?: number;
@@ -70,6 +72,8 @@ const protocolError = () => new CommanderError("internal", "Archive helper proto
 export class ArchiveHelperClient {
   private proc: HelperProcess | null = null;
   private decoder = new FrameDecoder("from-helper");
+  /** Request ids of our own cancels: the helper answers each one, and that answer is expected. */
+  private cancels = new Set<number>();
   private helloWaiter: { resolve(h: HelloMessage): void; reject(e: unknown): void } | null = null;
   private current: Pending | null = null;
   private queue: Pending[] = [];
@@ -151,7 +155,11 @@ export class ArchiveHelperClient {
         this.pump();
         return;
       }
-      pending.abortListener = () => this.send({ t: "cancel", req: this.nextReq++, target: pending.req });
+      pending.abortListener = () => {
+        const id = this.nextReq++;
+        this.cancels.add(id);
+        this.send({ t: "cancel", req: id, target: pending.req });
+      };
       signal.addEventListener("abort", pending.abortListener, { once: true });
     }
     this.arm(pending);
@@ -165,9 +173,9 @@ export class ArchiveHelperClient {
     }
   }
 
-  private arm(pending: Pending): void {
+  private arm(pending: Pending, ms = this.options.requestTimeoutMs ?? 30_000): void {
     if (pending.timer) clearTimeout(pending.timer);
-    pending.timer = setTimeout(() => this.fatal(crashed("Archive helper timed out")), this.options.requestTimeoutMs ?? 30_000);
+    pending.timer = setTimeout(() => this.fatal(crashed("Archive helper timed out")), ms);
   }
 
   private finish(pending: Pending): void {
@@ -205,8 +213,18 @@ export class ArchiveHelperClient {
       const waiter = this.helloWaiter;
       this.helloWaiter = null;
       const parsed = frame.kind === "control" ? HelloMessage.safeParse(frame.json) : null;
-      if (!parsed?.success) return this.fatal(protocolError());
+      if (!parsed?.success) {
+        // The waiter is already detached: reject it here or start() would wait for ever.
+        const error = protocolError();
+        waiter.reject(error);
+        return this.fatal(error);
+      }
       waiter.resolve(parsed.data);
+      return;
+    }
+    if (frame.kind === "control" && typeof frame.json.req === "number" && this.cancels.has(frame.json.req)
+        && (frame.json.t === "ok" || frame.json.t === "err")) {
+      this.cancels.delete(frame.json.req);
       return;
     }
     const pending = this.current;
@@ -220,11 +238,13 @@ export class ArchiveHelperClient {
     }
     const json = frame.json as HelperResult["json"];
     if (typeof json.t !== "string" || json.req !== pending.req) return this.fatal(protocolError());
-    this.arm(pending);
     if (json.t === "need_password") {
+      // The owner's dialog sets the pace now, not the helper's silence.
+      this.arm(pending, this.options.passwordWaitMs ?? 6 * 60_000);
       void this.answerPassword(pending);
       return;
     }
+    this.arm(pending);
     if (json.t === "ok") {
       this.finish(pending);
       pending.resolve({ json, data: pending.data });
@@ -269,7 +289,10 @@ export class ArchiveHelperClient {
       password = new Uint8Array(1);
     }
     try {
-      this.proc?.stdin.write(encodeSecret(pending.req, password));
+      const frame = encodeSecret(pending.req, password);
+      // The frame holds a copy of the password: it is wiped once the stream is done with it, not before.
+      this.proc?.stdin.write(frame, () => frame.fill(0));
+      this.arm(pending);
     } catch {
       this.fatal(crashed());
     } finally {

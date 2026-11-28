@@ -72,6 +72,19 @@ const reason = async (promise: Promise<unknown>) => {
 afterEach(() => vi.useRealTimers());
 
 describe("starting the helper", () => {
+  it("rejects start() itself with protocol_error when the first frame is not a hello (no hang)", async () => {
+    const { client, proc } = setup({ handshakeTimeoutMs: 60_000 });
+    const started = client.start();
+    proc.say(encodeControl({ t: "ok", req: 1 }));
+    expect(await reason(started)).toBe("internal+protocol_error");
+    expect(proc.signals).toContain("SIGKILL");
+  });
+  it("rejects start() with protocol_error when the first frame is data", async () => {
+    const { client, proc } = setup({ handshakeTimeoutMs: 60_000 });
+    const started = client.start();
+    proc.say(encodeData(1, Uint8Array.from([1])));
+    expect(await reason(started)).toBe("internal+protocol_error");
+  });
   it("refuses other platforms without spawning", async () => {
     const { client, spawn } = setup({ platform: "linux" });
     expect(await reason(client.start())).toBe("unsupported+archives_unavailable");
@@ -197,6 +210,39 @@ describe("requests", () => {
   });
 });
 
+describe("answers to our own cancel", () => {
+  async function ready() {
+    const s = setup();
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    return s;
+  }
+  it("accepts the ok that answers a cancel, in either order, and stays usable after three cancels", async () => {
+    const { client, proc } = await ready();
+    for (let round = 0; round < 3; round++) {
+      const controller = new AbortController();
+      const target = round * 2 + 1;
+      const pending = client.request({ t: "verify" }, { signal: controller.signal });
+      await proc.nextControl();
+      controller.abort();
+      const cancel = await proc.nextControl();
+      expect(cancel).toMatchObject({ t: "cancel", target });
+      if (round % 2 === 0) {
+        proc.say(encodeControl({ t: "ok", req: cancel.req }), encodeControl({ t: "err", req: target, code: "cancelled", message: "c" }));
+      } else {
+        proc.say(encodeControl({ t: "err", req: target, code: "cancelled", message: "c" }), encodeControl({ t: "ok", req: cancel.req }));
+      }
+      expect(await reason(pending)).toBe("cancelled+undefined");
+    }
+    const after = client.request({ t: "verify" });
+    const sent = await proc.nextControl();
+    proc.say(encodeControl({ t: "ok", req: sent.req }));
+    await expect(after).resolves.toBeDefined();
+    expect(proc.signals).toEqual([]);
+  });
+});
+
 describe("requests with a payload", () => {
   it("sends the data frame with the same request id right after the control frame", async () => {
     const s = setup();
@@ -209,6 +255,60 @@ describe("requests with a payload", () => {
     expect(s.proc.received[0]).toMatchObject({ kind: "data", reqId: 1 });
     expect([...(s.proc.received[0] as { bytes: Uint8Array }).bytes]).toEqual([7, 8, 9]);
     s.proc.say(encodeControl({ t: "ok", req: 1, written: "3" }));
+    await pending;
+  });
+});
+
+describe("password timing and wiping", () => {
+  it("does not kill a request that waits for the owner's password, even past the request timeout", async () => {
+    const s = setup({ requestTimeoutMs: 60, passwordWaitMs: 5000 });
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    const pending = s.client.request({ t: "read_open", id: 0 }, {
+      password: () => new Promise((resolve) => setTimeout(() => resolve(Uint8Array.from([0x70, 0x77])), 250)),
+    });
+    await s.proc.nextControl();
+    s.proc.say(encodeControl({ t: "need_password", req: 1 }));
+    for (let i = 0; i < 200 && !s.proc.received.some((f) => f.kind === "secret"); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(s.proc.received.find((f) => f.kind === "secret")).toMatchObject({ reqId: 1, length: 2 });
+    s.proc.say(encodeControl({ t: "ok", req: 1 }));
+    await expect(pending).resolves.toBeDefined();
+    expect(s.proc.signals).toEqual([]);
+  });
+  it("gives up when the dialog is silent for the password wait", async () => {
+    const s = setup({ requestTimeoutMs: 1000, passwordWaitMs: 60 });
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    const pending = s.client.request({ t: "read_open", id: 0 }, { password: () => new Promise(() => {}) });
+    await s.proc.nextControl();
+    s.proc.say(encodeControl({ t: "need_password", req: 1 }));
+    expect(await reason(pending)).toBe("internal+helper_crashed");
+  });
+  it("wipes the secret frame buffer itself once it has been written", async () => {
+    const s = setup();
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    const writes: Array<{ chunk: Uint8Array; seen: number[]; done: Promise<void> }> = [];
+    const original = s.proc.stdin.write.bind(s.proc.stdin);
+    (s.proc.stdin as unknown as { write: unknown }).write = (chunk: Uint8Array, cb?: () => void) => {
+      let done!: () => void;
+      const wait = new Promise<void>((r) => { done = r; });
+      writes.push({ chunk, seen: [...chunk], done: wait });
+      return original(chunk, () => { cb?.(); done(); });
+    };
+    const pending = s.client.request({ t: "read_open", id: 0 }, { password: async () => Uint8Array.from([0x70, 0x77, 0x31]) });
+    await s.proc.nextControl();
+    s.proc.say(encodeControl({ t: "need_password", req: 1 }));
+    for (let i = 0; i < 200 && writes.length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    const secret = writes.find((w) => w.seen[4] === 0x03)!;
+    await secret.done;
+    await new Promise((r) => setTimeout(r, 5));
+    expect(secret.seen.slice(9)).toEqual([0x70, 0x77, 0x31]);
+    expect([...secret.chunk]).toEqual(new Array(secret.chunk.length).fill(0));
+    s.proc.say(encodeControl({ t: "ok", req: 1 }));
     await pending;
   });
 });
