@@ -301,7 +301,7 @@ function Dashboard({subPath}: {subPath: string}) {
     })() : subPath === "reviews" ? <>
       <ReviewsPage api={reviewsApi} revision={reviewRevision} onOpen={(copyId, targetKey) => openReview(copyId, targetKey, null)}/>
     </> : subPath === "ci" ? <>
-      <CiOverview api={api.ci} onOpen={copyId => open(copyId + "/actions")}/>
+      <CiOverview api={api.ci} onOpen={(copyId, runId) => open(copyId + "/actions/" + encodeURIComponent(runId))}/>
     </> : subPath === "inbox" ? <>
       <InboxPage api={inbox} alerts={alerts} onSeen={() => { inbox.seen().then(setAlerts,() => {}); }}
         onOpen={(item,list) => { setOrder(list); open(refPath("pr",{accountId:item.accountId,repo:item.repo,number:item.number})); }}/>

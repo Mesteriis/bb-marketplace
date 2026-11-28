@@ -3,6 +3,8 @@ import type { DispatchSpec } from "../../core/ci/dispatch.ts";
 import { queuedMinutes, type Job, type Run, type RunFilter } from "../../core/ci/model.ts";
 import type { JobLog, Workflow } from "../../core/ci/pipelines.ts";
 import type { CiOperation } from "../../core/ci/capabilities.ts";
+import type { MessageKey } from "../../core/i18n/dictionary.ts";
+import type { Values } from "../../core/i18n/language.ts";
 import type { CiTemplatesView } from "../../core/ci-templates/contract.ts";
 import type { CiValues } from "../../core/ci-templates/render.ts";
 
@@ -43,12 +45,13 @@ export type CiApi = {
 };
 
 export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
-export const stateLabel: Record<Run["state"], string> = {
-  queued: "Queued", waiting: "Waiting for an earlier stage", running: "Running", success: "Succeeded", failure: "Failed", cancelled: "Cancelled", skipped: "Skipped", neutral: "Neutral",
-};
+export const forgeNames = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "Azure DevOps"} as const;
+
+/** The dictionary key of a state's word: "running", "failed"… */
+export const stateKey = (state: Run["state"]) => ("ci.st." + state) as MessageKey;
 
 /** The state as shown: a queued run says how long the forge has kept it waiting. */
-export function stateText(run: Run, now = Date.now()) {
+export function stateText(t: (key: MessageKey, values?: Values) => string, run: Run, now = Date.now()) {
   const minutes = queuedMinutes(run, now);
-  return minutes !== null && minutes >= 1 ? "Queued for " + minutes + " min" : stateLabel[run.state];
+  return minutes !== null && minutes >= 1 ? t("ci.queued-for", {n: minutes}) : t(stateKey(run.state));
 }

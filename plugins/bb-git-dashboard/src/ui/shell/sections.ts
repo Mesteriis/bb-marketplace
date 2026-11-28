@@ -21,5 +21,8 @@ export function sectionOf(subPath: string): SectionId {
   if (head === "pr" || head === "inbox") return "inbox";
   if (head === "ci" || head === "reviews" || head === "catalog" || head === "connections") return head;
   if (head === "remotes") return "connections";
+  // A run of a copy (`<copy>/actions/<run>`) is a CI/CD page, its path leads back there.
+  const [, second, third] = subPath.split("/");
+  if (second === "actions" && third && third !== "templates") return "ci";
   return "projects";
 }

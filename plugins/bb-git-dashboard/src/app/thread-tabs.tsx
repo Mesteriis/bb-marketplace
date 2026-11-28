@@ -49,7 +49,8 @@ export function ThreadCi({threadId}: {threadId: string}) {
   const {client, state} = useThreadCopy(threadId);
   const navigate = useBbNavigate();
   const api = useMemo(() => ciApi(client, navigate), [client, navigate]);
-  return <ThreadFrame state={state}>{copy => <CiPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId}/>}</ThreadFrame>;
+  return <ThreadFrame state={state}>{copy => <CiPanel key={copy.id} api={api} copyId={copy.id} currentThreadId={threadId}
+    repository={copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root}/>}</ThreadFrame>;
 }
 
 /** The line review of the thread's working copy; comments are sent to this very thread. */

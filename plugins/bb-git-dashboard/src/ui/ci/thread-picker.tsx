@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { message, type CiApi, type ThreadRef } from "./ci-api.ts";
+import { useT } from "../i18n/use-t.tsx";
+import { Dialog } from "../system/dialog.tsx";
 
 /** What a failed run is sent with unless the owner writes something else. */
 export const defaultNote = "This CI run failed. Please find the cause and fix it.";
@@ -26,6 +28,7 @@ export function ThreadPicker({api, copyId, label, action, initial, compose, onDo
   api: CiApi; copyId: string; label: string; action: string;
   initial?: "subscribed"; compose?: {note: string}; onDone(threadIds: string[], options: SendOptions): Promise<string | null>;
 }) {
+  const t = useT();
   const [threads, setThreads] = useState<ThreadRef[]>();
   const [chosen, setChosen] = useState<string[]>([]);
   const [note, setNote] = useState(compose?.note ?? "");
@@ -56,19 +59,27 @@ export function ThreadPicker({api, copyId, label, action, initial, compose, onDo
   };
   return <fieldset className="git-ci-threads git-stack">
     <legend>{label}</legend>
-    {!threads && !error && <p className="git-muted" role="status">Loading threads…</p>}
-    {threads?.length === 0 && <p className="git-muted">This project has no open threads.</p>}
+    {!threads && !error && <p className="g-muted" role="status">{t("ci.threads.loading")}</p>}
+    {threads?.length === 0 && <p className="g-muted">{t("ci.threads.none")}</p>}
     {threads && threads.length > 0 && <div className="git-ci-thread-list">{threads.map(thread =>
       <label key={thread.id}><input type="checkbox" checked={chosen.includes(thread.id)} onChange={() => toggle(thread.id)}/> {thread.title}</label>)}</div>}
     {compose && <>
-      <label className="git-ci-thread-note">Add a message (optional)
-        <textarea value={note} maxLength={2000} onChange={event => setNote(event.target.value)}/></label>
-      <label><input type="checkbox" checked={includeLogs} onChange={event => setIncludeLogs(event.target.checked)}/> Include log excerpts of failed jobs</label>
+      <label className="git-ci-thread-note">{t("ci.threads.note")}
+        <textarea className="g-inp" value={note} maxLength={2000} onChange={event => setNote(event.target.value)}/></label>
+      <label><input type="checkbox" checked={includeLogs} onChange={event => setIncludeLogs(event.target.checked)}/> {t("ci.threads.logs")}</label>
     </>}
     <div className="git-row">
-      <button type="button" disabled={pending || !threads || (initial !== "subscribed" && !chosen.length)} onClick={() => void submit()}>{pending ? "Working…" : action}</button>
-      {status && <span className="git-muted" role="status">{status}</span>}
+      <button type="button" className="g-btn pri" disabled={pending || !threads || (initial !== "subscribed" && !chosen.length)} onClick={() => void submit()}>{pending ? t("ci.working") : action}</button>
+      {status && <span className="g-muted" role="status">{status}</span>}
     </div>
     {error && <p className="git-error" role="alert">{error}</p>}
   </fieldset>;
+}
+
+/** The thread picker in the plugin's dialog, for sending a run and for failure notifications. */
+export function ThreadsDialog({title, onClose, ...picker}: Parameters<typeof ThreadPicker>[0] & {title: string; onClose(): void}) {
+  const t = useT();
+  return <Dialog title={title} onClose={onClose} actions={<button type="button" className="g-btn" onClick={onClose}>{t("ci.close")}</button>}>
+    <ThreadPicker {...picker}/>
+  </Dialog>;
 }

@@ -37,31 +37,37 @@ try {
   const section = page.getByRole("region", { name: "CI templates" });
   check("the stack is read at HEAD with its evidence", await visible(section.getByText("Found at HEAD: Node.js (package.json, pnpm-lock.yaml).")));
   check("the forge's templates are offered", await visible(section.getByText("CI templates · Gitea Actions")));
-  // The template choice is the section's first select (its label also reads the chosen option).
-  const choice = section.locator("select").first();
-  check("the suited template comes first", await choice.evaluate(select => select.selectedOptions[0]?.textContent) === "Node.js · Gitea Actions" &&
-    await choice.locator("optgroup").first().getAttribute("label") === "Suited to this project");
+  // The templates are a list: the suited one is marked "fits" and chosen first.
+  const list = section.getByRole("navigation", { name: "Templates" });
+  const chosen = list.locator("button[aria-current=true]");
+  check("the suited template is chosen first and marked as fitting", await visible(chosen) && /^Node\.js\s*fits$/.test((await chosen.innerText()).trim()),
+    await chosen.innerText().catch(() => ""));
+  check("the list, the form and the preview stand side by side", await section.evaluate(element => {
+    const boxes = [".git-ci-tpl-list", ".git-ci-tpl-form", ".git-ci-tpl-preview"].map(selector => element.querySelector(selector)?.getBoundingClientRect());
+    return boxes.every(Boolean) && boxes[0].right <= boxes[1].left + 1 && boxes[1].right <= boxes[2].left + 1;
+  }));
+  check("the preview numbers its lines and counts them", await visible(section.locator(".git-ci-tpl-code .git-ci-number").first()) && await visible(section.getByText(/^\d+ lines$/)));
   const preview = section.getByLabel("File preview");
   const text = await preview.innerText();
   check("the preview takes pnpm and the test script from the project", /run: pnpm install --frozen-lockfile/.test(text) && /run: pnpm run test/.test(text)
     && !/pnpm run build/.test(text), text.slice(0, 600));
   check("the file goes to .gitea/workflows", await visible(section.getByText(".gitea/workflows/ci.yml", { exact: true })));
-  await page.screenshot({ path: out + "/ci-templates.png", fullPage: true });
+  await page.screenshot({ path: out + "/project-ci-templates-light.png" });
 
   const version = section.getByLabel("Node.js version");
   await version.fill("22: x");
   check("a value that does not fit is refused before anything is sent", await visible(section.getByText(/Check the values: value of nodeVersion does not fit/))
-    && await section.getByRole("button", { name: "Create branch and pull request…" }).isDisabled());
+    && await section.getByRole("button", { name: "Create branch and pull request" }).isDisabled());
   await version.fill("20");
   check("the preview follows the values", await until(async () => /node-version: "20"/.test(await preview.innerText())));
 
-  await section.getByRole("button", { name: "Create branch and pull request…" }).click();
+  await section.getByRole("button", { name: "Create branch and pull request" }).click();
   const dialog = page.getByRole("dialog");
   check("the new branch and pull request are previewed first, nothing sent", await visible(dialog.getByText("New branch · ci/node-gitea"))
     && await visible(dialog.getByText(/^stand\/beta:main @ a{40}$/)) && writes().length === before);
   check("the dialog shows the file to commit", /node-version: "20"/.test(await dialog.getByLabel("File to commit").innerText()));
   await dialog.getByRole("button", { name: "Confirm" }).click();
-  check("the pull request is reported", await visible(section.getByText("Pull request #9 opened from ci/node-gitea.")), await section.getByRole("alert").allInnerTexts());
+  check("the pull request is reported", await visible(section.getByText("Pull request #9 opened for ci/node-gitea.")), await section.getByRole("alert").allInnerTexts());
   const sent = writes().slice(before);
   const [file, pull] = sent;
   check("the file and the pull request reached the forge once each", sent.length === 2 && file?.path === "/api/v1/repos/stand/beta/contents/.gitea/workflows/ci.yml"

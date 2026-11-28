@@ -15,8 +15,8 @@ const run = (id, conclusion, title) => ({id, run_number: id, name: "CI", path: "
 const runs = [run(2, "failure", "Dispatch outcome=failure"), run(1, "success", "Initial push")];
 const jobs = {
   1: [{id: 11, name: "build", status: "completed", conclusion: "success", steps: [{number: 1, name: "Checkout", status: "completed", conclusion: "success"}]}],
-  2: [{id: 21, name: "build", status: "completed", conclusion: "success", steps: []},
-      {id: 22, name: "test (2)", status: "completed", conclusion: "failure", steps: [{number: 1, name: "Checkout", status: "completed", conclusion: "success"},
+  2: [{id: 21, name: "build", status: "completed", conclusion: "success", started_at: "2026-11-27T10:02:00Z", completed_at: "2026-11-27T10:02:18Z", steps: []},
+      {id: 22, name: "test (2)", status: "completed", conclusion: "failure", started_at: "2026-11-27T10:02:00Z", completed_at: "2026-11-27T10:04:14Z", steps: [{number: 1, name: "Checkout", status: "completed", conclusion: "success"},
         {number: 2, name: "Check greeting", status: "completed", conclusion: "failure"}]}],
 };
 const lines = Array.from({length: 120}, (_, i) => "2026-11-27T10:02:" + String(i % 60).padStart(2, "0") + ".0000000Z step output " + (i + 1));

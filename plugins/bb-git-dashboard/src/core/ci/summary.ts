@@ -1,4 +1,5 @@
-import { isActive, type Run } from "./model.ts";
+import { isActive, type Job, type Run } from "./model.ts";
+import { duration } from "../i18n/time.ts";
 
 /** The tiles above a list of runs: what runs, what waits, what failed, and how often finished runs succeed. */
 export function ciSummary(runs: Run[]) {
@@ -13,14 +14,24 @@ export function ciSummary(runs: Run[]) {
   };
 }
 
-/** How long a run has taken: to now while active, to its last update once finished. */
-export function elapsed(run: Run, now: number) {
+/** Seconds a run has taken: to now while active, to its last update once finished; null when either end is unknown. */
+export function runSeconds(run: Run, now: number): number | null {
   const start = Date.parse(run.startedAt ?? run.createdAt);
   const end = isActive(run.state) ? now : run.updatedAt ? Date.parse(run.updatedAt) : NaN;
   if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor(seconds % 3600 / 60);
-  if (hours) return hours + "h " + minutes + "m";
-  return minutes ? minutes + "m " + seconds % 60 + "s" : seconds + "s";
+  return Math.max(0, Math.floor((end - start) / 1000));
+}
+
+/** Seconds a job has taken: from its start to its end, or to now while it runs; null before it starts. */
+export function jobSeconds(job: Job, now: number): number | null {
+  const start = Date.parse(job.startedAt ?? "");
+  const end = job.completedAt ? Date.parse(job.completedAt) : isActive(job.state) ? now : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return Math.max(0, Math.floor((end - start) / 1000));
+}
+
+/** How long a run has taken, in English short form ("1h 2m"), for the command line. */
+export function elapsed(run: Run, now: number) {
+  const seconds = runSeconds(run, now);
+  return seconds === null ? null : duration("en", seconds);
 }

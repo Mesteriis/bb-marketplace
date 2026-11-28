@@ -30,18 +30,18 @@ try {
   await entry.click();
   const sections = page.getByRole("tablist", { name: "Project sections" });
   await sections.getByRole("tab", { name: "CI/CD" }).click();
-  check("GitLab and its account detected by port and connected", await visible(page.getByText(/GitLab · localhost\/stand\/gamma · stand \(stand\)/)));
-  const failed = page.getByRole("button", { name: "Pipeline #2" });
+  check("GitLab and its account detected by port and connected", await visible(page.locator(".git-ci-forge", { hasText: "GitLab · stand (stand)" })));
+  const failed = page.getByRole("button", { name: /^Pipeline #2\b/ });
   const listed = await visible(failed);
   if (!listed) { await page.screenshot({ path: out + "/gitlab-no-runs.png", fullPage: true }); console.log((await page.locator("body").innerText()).slice(0, 1500)); }
-  check("pipelines listed with their state", listed && await visible(page.locator(".git-state[data-state=running]")) &&
-    await visible(page.getByRole("button", { name: "Pipeline #1" })));
+  check("pipelines listed with their state", listed && await visible(page.locator(".git-ci-st[data-state=running]")) &&
+    await visible(page.getByRole("button", { name: /^Pipeline #1\b/ })));
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Active" }).click();
   await until(async () => await failed.count() === 0);
-  check("Active shows only the running pipeline", await page.getByRole("button", { name: "Pipeline #3" }).count() === 1 && await failed.count() === 0);
+  check("Active shows only the running pipeline", await page.getByRole("button", { name: /^Pipeline #3\b/ }).count() === 1 && await failed.count() === 0);
   await page.getByRole("group", { name: "Runs to show" }).getByRole("button", { name: "Failed" }).click();
-  await until(async () => await page.getByRole("button", { name: "Pipeline #3" }).count() === 0);
-  check("Failed shows only the failed pipeline", await failed.count() === 1 && await page.getByRole("button", { name: "Pipeline #3" }).count() === 0);
+  await until(async () => await page.getByRole("button", { name: /^Pipeline #3\b/ }).count() === 0);
+  check("Failed shows only the failed pipeline", await failed.count() === 1 && await page.getByRole("button", { name: /^Pipeline #3\b/ }).count() === 0);
   await page.screenshot({ path: out + "/gitlab-runs.png", fullPage: true });
 
   await failed.click();
@@ -61,16 +61,17 @@ try {
   await until(() => writes().length > 0);
   check("retry reached GitLab once", JSON.stringify(writes().map(write => write.path)) === JSON.stringify(["/api/v4/projects/7/pipelines/102/retry"]), writes());
 
-  await page.getByRole("button", { name: "All runs" }).click();
-  await page.getByRole("button", { name: "Run workflow" }).first().click();
-  const form = page.getByRole("form", { name: "Run workflow" });
+  await page.getByRole("navigation", { name: "Path" }).getByRole("button", { name: "gamma" }).click();
+  await page.getByRole("button", { name: "Run workflow…" }).click();
+  const form = page.getByRole("dialog", { name: "Run workflow" });
   const environment = form.getByRole("combobox").nth(1);
   check("Run pipeline offers the described variable and its options", await visible(form.getByText("DEPLOY_ENV")) &&
     (await environment.locator("option").allInnerTexts()).join(",") === "staging,production" && await form.getByText("INTERNAL").count() === 0);
   await environment.selectOption("production");
-  await form.getByRole("button", { name: "Run workflow" }).click();
-  check("Run pipeline asks for confirmation with its variable", await visible(page.getByRole("dialog").getByText("DEPLOY_ENV = production")));
-  await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
+  check("Run pipeline shows what the server will send, with its variable, before anything is sent",
+    await visible(form.getByRole("status", { name: "What will be sent" }).getByText("DEPLOY_ENV = production"), 15000)
+    && !writes().some(write => write.path === "/api/v4/projects/7/pipeline"));
+  await form.getByRole("button", { name: "Run", exact: true }).click();
   await until(() => writes().some(write => write.path === "/api/v4/projects/7/pipeline"));
   const started = writes().find(write => write.path === "/api/v4/projects/7/pipeline");
   check("Run pipeline reached GitLab with its variable", started?.body?.ref === "main" &&

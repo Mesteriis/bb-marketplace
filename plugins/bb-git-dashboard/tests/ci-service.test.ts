@@ -127,3 +127,17 @@ test("the overview reads each linked repository once and reports the unreachable
   assert.deepEqual(overview.repositories.map(row => [row.copyId, row.repository, row.forge, row.runs.length, row.error]),
     [["c1", "octo/sandbox", "github", 1, null], ["c3", "octo/other", "github", 0, "PROVIDER_DENIED"]]);
 });
+
+test("a copy keeps one dispatch preview: a new one replaces the last, so editing the run form never uses up the limit", async () => {
+  const {service, writes} = setup();
+  const first = await service.prepare("c1", {kind: "dispatch", workflowId: "123", ref: "main", inputs: {outcome: "success"}});
+  for (let index = 0; index < 40; index++) await service.prepare("c1", {kind: "dispatch", workflowId: "123", ref: "main", inputs: {n: String(index)}});
+  const last = await service.prepare("c1", {kind: "dispatch", workflowId: "123", ref: "main", inputs: {outcome: "failure"}});
+  // A re-run still finds room: the replaced previews do not count.
+  const rerun = await service.prepare("c1", {kind: "rerun", runId: "9", failedOnly: true});
+  await assert.rejects(service.confirm(first.id), {message: "PREVIEW_EXPIRED"});
+  assert.deepEqual(writes, []);
+  await service.confirm(last.id);
+  await service.confirm(rerun.id);
+  assert.deepEqual(writes, ["/repos/octo/sandbox/actions/workflows/123/dispatches", "/repos/octo/sandbox/actions/runs/9/rerun-failed-jobs"]);
+});

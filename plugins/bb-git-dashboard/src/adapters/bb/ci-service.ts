@@ -143,6 +143,8 @@ export function ciService(deps: CiDeps) {
         target = run.workflow + " #" + (run.number ?? run.id);
       }
       for (const [key, value] of previews) if (value.expires < Date.now()) previews.delete(key);
+      // The run form asks for a preview each time it rests: a copy keeps only its latest dispatch preview.
+      if (action.kind === "dispatch") for (const [key, value] of previews) if (value.copyId === copyId && value.action.kind === "dispatch") previews.delete(key);
       if (previews.size >= 32) throw new Error("REPO_LIMIT");
       const id = randomUUID();
       const lines = describeAction(action, target);

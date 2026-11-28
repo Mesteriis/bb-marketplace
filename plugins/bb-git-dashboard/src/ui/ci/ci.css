@@ -1,42 +1,162 @@
-.git-ws .git-ci-toolbar { justify-content: space-between; }
+/* CI/CD: the section page, a copy's tab, a run, the run dialog and the templates. Only BB tokens and --git-*. */
 .git-ws .git-ci-spacer { flex: 1 1 auto; }
-.git-ws .git-ci [aria-pressed="true"] { background: var(--git-selected); color: var(--git-focus); border-color: var(--git-focus); }
-.git-ws .git-ci-run-title { gap: 10px; }
-.git-ws .git-ci-run-title h3 { margin: 0; font-size: 14px; }
-.git-ws .git-ci-run-body { display: grid; grid-template-columns: minmax(180px, 28%) minmax(0, 1fr); gap: 12px; min-width: 0; align-items: start; }
-.git-ws .git-ci-jobs, .git-ws .git-ci-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 0; align-content: start; }
-.git-ws .git-ci-jobs > li > button { width: 100%; text-align: start; overflow-wrap: anywhere; }
-.git-ws .git-ci-jobs > li > button[aria-current="true"] { background: var(--git-selected); color: var(--git-focus); }
-.git-ws .git-ci-steps { padding: 4px 0 6px 12px; color: var(--muted-foreground); font-size: 12px; }
-.git-ws .git-ci-log-pane { min-width: 0; }
-.git-ws .git-ci-log { position: relative; max-height: 62vh; white-space: pre-wrap; overflow-wrap: anywhere; }
-.git-ws .git-ci-line { display: block; padding-inline-start: 4.2em; text-indent: -4.2em; }
+
+/* A state: its mark and word in the state's colour. */
+.git-ws .git-ci-st { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--muted-foreground); }
+.git-ws .git-ci-st[data-state="success"] .g-icon { color: var(--git-success); }
+.git-ws .git-ci-st[data-state="failure"] { color: var(--destructive); font-weight: 600; }
+.git-ws .git-ci-st[data-state="running"], .git-ws .git-ci-st[data-state="queued"], .git-ws .git-ci-st[data-state="waiting"] { color: var(--foreground); }
+.git-ws .git-ci-st[data-state="running"] .g-icon { color: var(--git-warning); animation: git-ci-spin 1.2s linear infinite; }
+@keyframes git-ci-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .git-ws .git-ci-st[data-state="running"] .g-icon { animation: none; } }
+
+/* The line of numbers under a head. */
+.git-ws .git-ci-numbers { display: flex; flex-wrap: wrap; gap: 6px 24px; margin: 0; padding: 0 24px 14px; color: var(--muted-foreground); }
+.git-ws .git-ci-numbers strong { color: var(--foreground); font-weight: 650; }
+.git-ws .git-ci-numbers .g-bad, .git-ws .git-ci-numbers .g-bad strong { color: var(--destructive); }
+
+/* The runs table. */
+.git-ws .git-ci-table { border-top: 1px solid var(--border); }
+.git-ws .git-ci-row { cursor: pointer; }
+.git-ws .git-ci-row:hover td, .git-ws .git-ci-row:hover th { background: var(--git-subtle); }
+.git-ws .git-ci-row th[scope="row"] { text-align: left; font-weight: inherit; font-size: 14px; letter-spacing: normal; text-transform: none; color: var(--foreground); padding: 0 10px 0 24px; height: 46px; border-bottom: 1px solid var(--git-hairline); }
+.git-ws .git-ci-row td { height: 46px; white-space: nowrap; }
+.git-ws .git-ci-entry { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--foreground); text-align: left; cursor: pointer;
+  max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.git-ws .git-ci-entry:hover { background: none; text-decoration: underline; text-underline-offset: 3px; }
+.git-ws .git-ci-branch-cell .g-branch { display: inline-block; max-width: 24ch; vertical-align: middle; }
+.git-ws .git-ci-when, .git-ws .git-ci-repo { color: var(--foreground); }
+
+/* A copy's tab: the filters, notifications and forge on the left, the actions on the right. */
+.git-ws .git-ci-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 24px; }
+.git-ws .git-ci-bar-end { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.git-ws .git-ci-notify, .git-ws .git-ci-follow, .git-ws .git-ci-switch { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.git-ws .git-ci-notify label, .git-ws .git-ci-follow label { cursor: pointer; }
+.git-ws .git-ci-forge { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-foreground); white-space: nowrap; font-weight: 400; }
+.git-ws .git-ci-forge > .g-icon { color: var(--git-success); }
+.git-ws .git-ci-status { margin: 0; padding: 0 24px 10px; }
+.git-ws .git-ci-pages { display: flex; align-items: center; gap: 8px; padding: 14px 24px; }
+.git-ws .git-ci-end { margin-left: auto; }
+.git-ws .git-ci-link { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 7px; color: var(--foreground);
+  text-decoration: none; font-weight: 500; white-space: nowrap; }
+.git-ws .git-ci-link:hover { background: var(--accent); }
+.git-ws .git-ci-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* A run: the path, the title and its links, what it ran on, the actions, then jobs beside the log. */
+.git-ws .git-ci-page { display: flex; flex-direction: column; min-height: 100%; }
+/* In a copy's page the tab runs edge to edge, as its table and bars do on the reference. */
+.git-ws .git-project-main > .git-ci-section { margin: 0 -24px -24px; }
+.git-ws .git-ci-section, .git-ws .git-ci-run { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.git-ws .git-ci-run-head { display: grid; gap: 6px; padding: 16px 24px 14px; border-bottom: 1px solid var(--border); }
+.git-ws .git-ci-path { display: flex; align-items: center; gap: 2px; color: var(--muted-foreground); margin-left: -8px; }
+.git-ws .git-ci-run-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+.git-ws .git-ci-run-title h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.015em; line-height: 1.3; min-width: 0; overflow-wrap: anywhere; }
+.git-ws .git-ci-run-links { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.git-ws .git-ci-run-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; }
+.git-ws .git-ci-run-meta > :not(:first-child)::before { content: "·"; margin-right: 8px; color: var(--muted-foreground); }
+.git-ws .git-ci-run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.git-ws .git-ci-run .g-banner { margin: 12px 24px 0; }
+.git-ws .git-ci-run .git-ci-status { padding-top: 10px; }
+.git-ws .git-ci-menu { position: relative; display: inline-flex; }
+.git-ws .git-ci-menu-list { position: absolute; top: calc(100% + 4px); left: 0; z-index: 5; display: grid; min-width: 220px; padding: 4px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--popover, var(--background)); box-shadow: var(--git-shadow); }
+.git-ws .git-ci-menu-list button { border: 0; background: none; text-align: left; padding: 6px 10px; border-radius: 5px; }
+.git-ws .git-ci-menu-list button:hover, .git-ws .git-ci-menu-list button:focus-visible { background: var(--accent); }
+.git-ws .git-ci-run-body { display: grid; grid-template-columns: minmax(220px, 30%) minmax(0, 1fr); flex: 1 1 auto; min-height: 0; }
+.git-ws .git-ci-jobs-pane { border-right: 1px solid var(--border); padding: 14px 0; min-width: 0; }
+.git-ws .git-ci-jobs-pane h2 { margin: 0 0 8px; padding: 0 16px; }
+.git-ws .git-ci-jobs, .git-ws .git-ci-steps { list-style: none; margin: 0; padding: 0; display: grid; min-width: 0; }
+.git-ws .git-ci-jobs > li > button { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 0; background: none;
+  padding: 8px 16px; text-align: start; font-size: 14px; }
+.git-ws .git-ci-jobs > li > button:hover { background: var(--git-subtle); }
+.git-ws .git-ci-jobs > li > button[aria-current="true"] { background: var(--accent); }
+.git-ws .git-ci-job-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.git-ws .git-ci-took { white-space: nowrap; }
+.git-ws .git-ci-steps { padding: 2px 0 6px; font-size: 13px; color: var(--foreground); }
+.git-ws .git-ci-steps li { display: flex; align-items: center; gap: 10px; padding: 4px 16px 4px 42px; }
+
+/* The log: its tools, the error line and the lines, numbered. */
+.git-ws .git-ci-log-pane { min-width: 0; display: flex; flex-direction: column; }
+.git-ws .git-ci-log-pane > .g-state-page, .git-ws .git-ci-log-pane > .g-banner { margin: 12px 24px; }
+.git-ws .git-ci-log-box { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.git-ws .git-ci-log-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.git-ws .git-ci-log-find { flex: 1 1 14em; min-width: 0; display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 7px; color: var(--muted-foreground); }
+.git-ws .git-ci-log-find input { flex: 1 1 auto; min-width: 0; border: 0; padding: 0; background: none; outline: none; color: var(--foreground); }
+.git-ws .git-ci-log-find:focus-within { outline: 2px solid var(--ring); outline-offset: 0; }
+.git-ws .git-ci-log-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 16px 0; }
+.git-ws .git-ci-log-note .g-bad { display: inline-flex; align-items: center; gap: 6px; color: var(--destructive); }
+.git-ws .git-ci-log { margin: 0; padding: 8px 0 16px; max-height: 70vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 13px/1.65 var(--font-mono), ui-monospace, monospace; background: none; border: 0; }
+.git-ws .git-ci-line { display: block; padding: 0 16px 0 calc(4.2em + 16px); text-indent: -4.2em; }
 .git-ws .git-ci-number { display: inline-block; width: 3.6em; margin-inline-end: .6em; text-align: end; color: var(--muted-foreground); text-indent: 0; user-select: none; }
-.git-ws .git-ci-line[data-error] { background: color-mix(in srgb, var(--destructive) 16%, transparent); }
-.git-ws .git-ci-dispatch, .git-ws .git-ci-threads { border: 1px solid var(--border); border-radius: 7px; padding: 12px; background: var(--card); }
-.git-ws .git-ci-dispatch label { display: grid; gap: 4px; }
-.git-ws .git-ci-dispatch label.git-ci-check { grid-template-columns: auto 1fr; align-items: center; }
-.git-ws .git-ci-template-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.git-ws .git-ci-template-pick select { min-width: 0; max-width: 100%; }
-.git-ws .git-ci-dispatch label.git-ci-check > input { order: -1; }
-.git-ws .git-ci-threads legend { padding: 0 4px; font-weight: 600; }
+.git-ws .git-ci-line[data-error] { background: var(--git-bad-bg); color: var(--destructive); }
+.git-ws .git-ci-lines { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+
+/* The run dialog and its "what will be sent". */
+.git-ws .g-dialog:has(.git-ci-dispatch) { width: min(640px, calc(100vw - 32px)); }
+.git-ws .git-ci-dispatch { display: grid; gap: 12px; min-width: 0; }
+.git-ws .git-ci-dispatch .g-inp { width: 100%; }
+.git-ws .git-ci-dispatch label { display: grid; gap: 6px; color: var(--foreground); font-size: 13px; font-weight: 500; }
+.git-ws .git-ci-dispatch .git-ci-switch label { display: inline; font-weight: 400; }
+.git-ws .git-ci-dispatch h3 { margin: 4px 0 0; }
+.git-ws .git-ci-sends { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 8px; background: var(--git-subtle); }
+.git-ws .git-ci-sends .git-ci-lines { padding: 0; list-style: none; }
+.git-ws .git-ci-dispatch label.git-ci-check, .git-ws .git-ci-tpl-form label.git-ci-check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+.git-ws .git-ci-threads { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; }
+.git-ws .git-ci-threads legend { padding: 0 0 6px; font-weight: 600; }
 .git-ws .git-ci-thread-list { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }
-.git-ci-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--background); color: var(--foreground); padding: 16px; width: min(460px, calc(100vw - 32px)); }
-.git-ci-dialog::backdrop { background: rgb(0 0 0 / .35); }
-.git-ci-dialog h2 { margin: 0; font-size: 15px; }
-.git-ci-lines { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
-.git-ci-dialog-actions { justify-content: flex-end; }
-.git-ci-dialog button { font: inherit; color: inherit; border: 1px solid var(--border); border-radius: 6px; background: var(--background); padding: 6px 9px; cursor: pointer; }
-.git-ci-dialog .git-primary { background: var(--primary); color: var(--primary-foreground); }
-.git-ws .git-ci .git-state, .git-ws .git-ci thead th { white-space: nowrap; }
-@container (max-width: 720px) { .git-ws .git-ci-run-body { grid-template-columns: 1fr; } .git-ws .git-ci [data-col="event"] { display: none; } }
-.git-ws .git-ci-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
-.git-ws .git-ci-tile { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; background: var(--card); min-width: 0; }
-.git-ws .git-ci-tile dt { font-size: 12px; color: var(--muted-foreground); }
-.git-ws .git-ci-tile dd { margin: 2px 0 0; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.git-ws .git-ci-tile[data-state="failure"] dd { color: var(--destructive); }
-.git-ws .git-ci-log-tools { gap: 8px; align-items: center; flex-wrap: wrap; }
-.git-ws .git-ci-log-tools input[type="search"] { flex: 1 1 12em; min-width: 0; }
 .git-ws .git-ci-thread-note { display: grid; gap: 4px; }
-.git-ws .git-ci-thread-note textarea { font: inherit; min-height: 3.2em; resize: vertical; }
-@container (max-width: 520px) { .git-ws .git-ci-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.git-ws .git-ci-thread-note textarea { height: auto; min-height: 3.2em; padding: 6px 10px; resize: vertical; }
+
+/* Templates: the head line, then list · form · preview. */
+.git-ws .git-ci-templates { display: flex; flex-direction: column; min-height: 0; }
+.git-ws .git-ci-tpl-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+.git-ws .git-ci-tpl-head h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.git-ws .git-ci-templates > .g-banner { margin: 12px 24px; }
+.git-ws .git-ci-tpl-grid { display: grid; grid-template-columns: minmax(200px, 22%) minmax(0, 1fr); align-items: stretch; flex: 1 1 auto; }
+.git-ws .git-ci-tpl-list { border-right: 1px solid var(--border); padding: 14px 0; }
+.git-ws .git-ci-tpl-list h3 { margin: 10px 16px 6px; }
+.git-ws .git-ci-tpl-list h3:first-child { margin-top: 0; }
+.git-ws .git-ci-tpl-list ul { list-style: none; margin: 0; padding: 0; display: grid; }
+.git-ws .git-ci-tpl-list li > button, .git-ws .git-ci-tpl-refused { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 8px 16px; border: 0;
+  border-radius: 0; background: none; text-align: left; font-size: 14px; }
+.git-ws .git-ci-tpl-list li > button:hover { background: var(--git-subtle); }
+.git-ws .git-ci-tpl-list li > button[aria-current="true"] { background: var(--accent); }
+.git-ws .git-ci-tpl-name { flex: 0 1 auto; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ws .git-ci-tpl-refused { color: var(--muted-foreground); flex-wrap: wrap; }
+.git-ws .git-ci-tpl-why { flex: 1 0 100%; padding-left: 26px; font-size: 12px; overflow-wrap: anywhere; }
+.git-ws .git-ci-tpl-src { margin-left: auto; font-size: 12px; }
+.git-ws .git-ci-tpl-refused > .g-icon { color: var(--git-warning); }
+.git-ws .git-ci-tpl-refused > .g-muted { margin-left: auto; font-size: 12px; }
+.git-ws .git-ci-tpl-work { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); min-width: 0; }
+.git-ws .git-ci-tpl-form { display: grid; gap: 14px; align-content: start; padding: 16px 24px; border-right: 1px solid var(--border); min-width: 0; }
+.git-ws .git-ci-tpl-form label { display: grid; gap: 6px; font-size: 13px; font-weight: 500; }
+.git-ws .git-ci-tpl-form :is(input:not([type="checkbox"]), select, textarea) { height: 32px; border: 1px solid var(--border); border-radius: 7px; padding: 0 10px;
+  background: var(--background); color: var(--foreground); font: inherit; font-weight: 400; min-width: 0; }
+.git-ws .git-ci-tpl-form textarea { height: auto; padding: 6px 10px; resize: vertical; }
+.git-ws .git-ci-tpl-form h3 { margin: 6px 0 0; }
+.git-ws .git-ci-tpl-preview { display: grid; gap: 12px; align-content: start; padding: 16px 24px; min-width: 0; }
+.git-ws .git-ci-tpl-file { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.git-ws .git-ci-tpl-file .g-num { margin-left: auto; }
+.git-ws .git-ci-tpl-code { margin: 0; padding: 10px 0; border: 1px solid var(--border); border-radius: 8px; max-height: 52vh; overflow: auto;
+  font: 13px/1.65 var(--font-mono), ui-monospace, monospace; white-space: pre; }
+.git-ws .git-ci-tpl-code .git-ci-line { padding-left: calc(3.6em + 12px); text-indent: -3.6em; white-space: pre; }
+.git-ws .git-ci-tpl-code .git-ci-number { width: 3em; }
+
+@container (max-width: 900px) {
+  .git-ws .git-ci-tpl-work { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-ci-tpl-form { border-right: 0; border-bottom: 1px solid var(--border); }
+}
+@container (max-width: 720px) {
+  .git-ws .git-ci-run-body, .git-ws .git-ci-tpl-grid { grid-template-columns: minmax(0, 1fr); }
+  .git-ws .git-ci-jobs-pane, .git-ws .git-ci-tpl-list { border-right: 0; border-bottom: 1px solid var(--border); }
+  .git-ws .git-ci [data-col="event"] { display: none; }
+}
+.git-ws .git-ci .g-head select.g-inp { width: auto; max-width: 260px; }
+.git-ws .git-ci-tpl-head > .g-muted { flex: 1 1 20em; min-width: 0; }
+.git-ws button.git-ci-notify { display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 4px 6px; border-radius: 6px; white-space: nowrap; }
+.git-ws button.git-ci-notify:hover:not(:disabled) { background: var(--accent); }
+.git-ws .git-ci-notify .g-tog { display: inline-block; }
+.git-ws .g-tog[data-on="true"] { background: var(--primary); }
+.git-ws .g-tog[data-on="true"]::after { left: 14px; }

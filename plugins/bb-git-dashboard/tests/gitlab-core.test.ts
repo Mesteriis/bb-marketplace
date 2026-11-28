@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { gitlabJobState, gitlabState } from "../src/core/ci/state.ts";
 import { isActive } from "../src/core/ci/model.ts";
 import { stateText } from "../src/ui/ci/ci-api.ts";
+import { format } from "../src/core/i18n/language.ts";
 import { cleanLog, errorLine } from "../src/core/ci/log.ts";
 import { gitlabDispatchSpec } from "../src/core/ci/dispatch.ts";
 
@@ -72,5 +73,11 @@ test("a GitLab job of a stage not reached yet waits for it; a created pipeline i
   assert.equal(isActive("neutral"), false);
   const run = {id: "1", number: 1, workflow: "Pipeline", workflowId: "pipeline", title: "main", branch: "main", sha: null, event: null,
     state: "waiting" as const, attempt: 1, createdAt: "2026-11-27T10:00:00Z", updatedAt: "2026-11-27T10:00:00Z", url: null, actor: null};
-  assert.equal(stateText(run, Date.parse("2026-11-27T10:30:00Z")), "Waiting for an earlier stage");
+  const en = (key: Parameters<typeof format>[1], values?: Parameters<typeof format>[2]) => format("en", key, values);
+  const ru = (key: Parameters<typeof format>[1], values?: Parameters<typeof format>[2]) => format("ru", key, values);
+  // A stage wait is not "queued": it is waiting for the earlier stage, in the words of each language.
+  assert.equal(stateText(en, run, Date.parse("2026-11-27T10:30:00Z")), "waiting for a stage");
+  assert.equal(stateText(ru, run, Date.parse("2026-11-27T10:30:00Z")), "ждёт стадию");
+  // A queued run says how long the forge has kept it.
+  assert.equal(stateText(ru, {...run, state: "queued"}, Date.parse("2026-11-27T10:30:00Z")), "в очереди 30 мин");
 });

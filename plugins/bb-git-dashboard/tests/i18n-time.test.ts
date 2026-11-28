@@ -18,3 +18,15 @@ test("how long ago, in the words of each language", () => {
   // A clock a little ahead of the forge's is not "in the future".
   assert.equal(ago("en", now, "2026-11-28T12:00:30Z"), "just now");
 });
+
+test("a duration in the words of each language: seconds under a minute, minutes and seconds under an hour, then hours and minutes", async () => {
+  const { duration } = await import("../src/core/i18n/time.ts");
+  assert.equal(duration("ru", 8), "8 с");
+  assert.equal(duration("ru", 134), "2 мин 14 с");
+  assert.equal(duration("ru", 120), "2 мин 0 с");
+  assert.equal(duration("ru", 3720), "1 ч 2 мин");
+  assert.equal(duration("en", 134), "2m 14s");
+  assert.equal(duration("en", 3720), "1h 2m");
+  assert.equal(duration("en", 0), "0s");
+  assert.equal(duration("en", null), "");
+});

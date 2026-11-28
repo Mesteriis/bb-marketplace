@@ -56,3 +56,20 @@ describe("elapsed of a re-run", () => {
     assert.equal(elapsed(rerun, Date.parse("2026-11-27T12:00:00Z")), "4m 0s");
   });
 });
+
+describe("runSeconds and jobSeconds", async () => {
+  const { runSeconds, jobSeconds } = await import("../src/core/ci/summary.ts");
+  const now = Date.parse("2026-11-27T10:05:07Z");
+  const job = (extra: Partial<import("../src/core/ci/model.ts").Job>) => ({id: "j", name: "test", state: "success" as const, startedAt: null, completedAt: null, url: null, steps: [], ...extra});
+  it("counts a run's seconds to now while active and to its last update once finished", () => {
+    assert.equal(runSeconds(run("1", "running"), now), 307);
+    assert.equal(runSeconds(run("1", "success", {updatedAt: "2026-11-27T10:02:14Z"}), now), 134);
+    assert.equal(runSeconds(run("1", "failure"), now), null);
+  });
+  it("counts a job's seconds from its start to its end, or to now while it runs; none before it starts", () => {
+    assert.equal(jobSeconds(job({startedAt: "2026-11-27T10:00:00Z", completedAt: "2026-11-27T10:00:42Z"}), now), 42);
+    assert.equal(jobSeconds(job({state: "running", startedAt: "2026-11-27T10:05:00Z"}), now), 7);
+    assert.equal(jobSeconds(job({state: "queued"}), now), null);
+    assert.equal(jobSeconds(job({startedAt: "2026-11-27T10:00:00Z"}), now), null);
+  });
+});

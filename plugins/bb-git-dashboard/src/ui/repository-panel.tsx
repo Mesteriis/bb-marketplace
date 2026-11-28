@@ -4,7 +4,10 @@ import type { Account, Repo } from "../core/providers.ts";
 import type { FeatureList, RepositorySection } from "../core/repository-features.ts";
 import type { RemoteApi } from "./remotes.tsx";
 import { ForgeStatusLine, type ForgeStatus } from "./forge-status.tsx";
-import { CiPanel } from "./ci/ci-panel.tsx";
+import { limitation } from "../core/forge/capabilities.ts";
+import { CiPanel, type CiView } from "./ci/ci-panel.tsx";
+import { Icon } from "./system/icon.tsx";
+import { useT } from "./i18n/use-t.tsx";
 import type { CiApi } from "./ci/ci-api.ts";
 import type { HistoryApi } from "./history/history-api.ts";
 
@@ -25,10 +28,13 @@ const labels = {
   issues:{title:"Issues", idle:"No issues found.", detail:"Labels"},
   variables:{title:"Variables and secrets", idle:"No repository variables or secrets found.", detail:"Value"},
 };
+const forgeNames = {github:"GitHub", gitlab:"GitLab", gitea:"Gitea", azure:"Azure DevOps"} as const;
 const message = (error:unknown) => error instanceof Error ? error.message : "Request failed.";
 
-export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnection,onOpenIssue}: {
+export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnection,onOpenIssue,ci}: {
   copyId:string;name:string;accounts:Account[];api:RepositoryApi;section:RepositorySection;onAddConnection():void;
+  /** CI/CD: where in the section the address points (runs, a run, the templates), and the way back to the CI/CD section. */
+  ci?:{view:CiView;onView(view:CiView):void;onSection():void};
   /** Opens an issue, or the new-issue form, inside Makosh Git. */
   onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
@@ -43,6 +49,7 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
   const [forge,setForge] = useState<ForgeStatus>();
   const [recheck,setRecheck] = useState(false);
   const label = labels[section];
+  const t = useT();
   useEffect(() => {
     let active = true;
     setPending(true);
@@ -78,10 +85,35 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
   };
   const rows = data?.features.items.filter(row => filter === "all" || row.status === filter) ?? [];
   const provider = data?.repo && accounts.find(account => account.id === data.repo.accountId);
+  const picker = (target === null || changing) && (accounts.length > 0
+    ? <ConnectionPicker accounts={accounts} target={target} api={api} onChange={change}/>
+    : <div className="git-row"><button type="button" onClick={onAddConnection}>{section === "actions" ? t("ci.add-connection") : "Add connection"}</button></div>);
+  if (section === "actions") {
+    const account = forge?.candidates.find(row => row.id === forge.chosen) ?? accounts.find(item => item.id === target?.accountId);
+    const kind = forge?.detection?.kind;
+    const where = forge?.remote && forge.detection ? forge.detection.host + (forge.remote.path ? "/" + forge.remote.path : "") : "";
+    // The full status line stays whenever there is something to say or do: an unknown or silent server, a choice, a fault, a limit.
+    const explain = !!forge && (!target || !kind || forge.detection?.status === "unreachable" || forge.reason === "ambiguous" || !!forge.error
+      || !!(kind && limitation(kind, "repositories")));
+    const line = target && <button type="button" className="g-btn ghost sm git-ci-forge" aria-expanded={changing} title={t("ci.connection") + (where ? " · " + where : "")}
+      onClick={() => setChanging(value => !value)}>
+      {kind && !forge?.error && <Icon name="CircleCheck" small/>}{kind ? forgeNames[kind] : where}{account ? " · " + account.label + ("username" in account && account.username ? " (" + account.username + ")" : "") : ""}
+    </button>;
+    return <section className="git-repository-panel git-ci-section">
+      {explain && forge && <div className="git-ci-status"><ForgeStatusLine key={copyId + ":" + forge.candidates.map(row => row.id).join(",")}
+        status={forge} busy={pending} onChoose={choose} onRecheck={() => { setRecheck(true); setRevision(value => value + 1); }}/></div>}
+      {target === null && <p className="git-ci-status g-muted">{t("ci.connect-by-hand")}</p>}
+      {picker && <div className="git-ci-status">{picker}</div>}
+      {notice && <div className="g-banner bad" role="alert">{notice}</div>}
+      {pending && !target && <p role="status" className="g-state-page">{t("ci.loading")}</p>}
+      {error && <div role="alert" className="g-banner bad">{error}</div>}
+      {target && <CiPanel api={api.ci} copyId={copyId} repository={name} forge={line} view={ci?.view} onView={ci?.onView} onSection={ci?.onSection}/>}
+    </section>;
+  }
   return <section className="git-project-code git-repository-panel">
     <div className="git-project-title"><div><h2>{label.title}</h2>
       <p className="git-muted">{data?.repo.path ?? name}{provider ? " · " + provider.label : ""}</p></div>
-      {target && section !== "actions" && <div className="git-row">
+      {target && <div className="git-row">
         {section === "issues" && <select aria-label="Issue state" value={filter} onChange={event => setFilter(event.target.value)}>
           <option value="all">All states</option><option value="open">Open</option><option value="closed">Closed</option>
         </select>}
@@ -94,12 +126,8 @@ export function RepositoryPanel({copyId,name,accounts,api,section,onAddConnectio
     {forge && <ForgeStatusLine key={copyId + ":" + forge.candidates.map(row => row.id).join(",")} status={forge} busy={pending} onChoose={choose}
       onRecheck={() => { setRecheck(true); setRevision(value => value + 1); }}/>}
     {target === null && <p className="git-muted">Or connect an account repository matching this working copy’s origin by hand.</p>}
-    {(target === null || changing) && (accounts.length > 0
-      ? <ConnectionPicker accounts={accounts} target={target} api={api} onChange={change}/>
-      : <div className="git-row"><button type="button" onClick={onAddConnection}>Add connection</button></div>)}
-    {target && section === "actions" && <div className="git-row"><button type="button" aria-expanded={changing} onClick={() => setChanging(value => !value)}>Connection</button></div>}
+    {picker}
     {notice && <p className="git-error" role="alert">{notice}</p>}
-    {target && section === "actions" && <CiPanel api={api.ci} copyId={copyId}/>}
     {pending && <p role="status" className="git-muted">Loading {label.title.toLowerCase()}…</p>}
     {error && <p role="alert" className="git-error">{error}</p>}
     {data?.features.notice && <p className="git-muted" role="status">{data.features.notice}</p>}

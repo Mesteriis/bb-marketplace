@@ -11,3 +11,13 @@ export function ago(language: Language, now: number, at: string | null): string 
   if (hours < 24) return format(language, "time.hours", {n: hours});
   return format(language, "time.days", {n: Math.floor(hours / 24)});
 }
+
+/** A length of time in the words of the language: "8 s", "2 min 14 s", "1 h 2 min" (English "2m 14s"); empty for none. */
+export function duration(language: Language, seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "";
+  const whole = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(whole / 3600), minutes = Math.floor(whole % 3600 / 60), rest = whole % 60;
+  if (hours) return format(language, "time.span-hours", {h: hours, m: minutes});
+  if (minutes) return format(language, "time.span-minutes", {m: minutes, s: rest});
+  return format(language, "time.span-seconds", {s: rest});
+}

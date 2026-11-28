@@ -5,6 +5,7 @@ import type { RepositorySection } from "../core/repository-features.ts";
 import type { Copy } from "../core/workspace.ts";
 import { ConnectionWizard, type ConnectionApi } from "./connection-wizard.tsx";
 import { RepositoryPanel, type RepositoryApi } from "./repository-panel.tsx";
+import type { CiView } from "./ci/ci-panel.tsx";
 import "./project-workspace.css";
 import { useT } from "./i18n/use-t.tsx";
 import { HistoryPanel } from "./history/history-panel.tsx";
@@ -56,10 +57,24 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
   const hostName = (id:string) => hosts.find(host => host.id === id)?.name ?? id;
   const name = copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root;
   const forge = section !== "Code" && section !== "History" && section !== "Review";
+  // `<copy>/actions/<run>` and `<copy>/actions/templates`: a place inside CI/CD the address keeps.
+  const ciView: CiView = section !== "Actions" || !third ? {kind: "runs"} : third === "templates" ? {kind: "templates"}
+    : {kind: "run", runId: decodeURIComponentSafe(third)};
+  const ci = {view: ciView, onSection: () => onOpen("ci"), onView: (next: CiView) => onOpen(copy.id + "/actions"
+    + (next.kind === "run" ? "/" + encodeURIComponent(next.runId) : next.kind === "templates" ? "/templates" : ""))};
+  const panel = forge && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={name} ci={section === "Actions" ? ci : undefined}
+    accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>;
+  const wizard = connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {
+    setAccounts(previous => [...previous.filter(item => item.id !== account.id),account]);
+    setConnecting(false);
+  }}/>;
+  // A run is a page of its own: its path leads back, so the copy's head and tabs stay away. The tree stays the same,
+  // so the CI/CD tab keeps its filter and page while a run is open.
+  const run = ciView.kind === "run";
 
-  return <div className="g-page git-project">
-    {renderHead(copy,setFiles)}
-    <div className="g-views" role="tablist" aria-label={t("pg.sections")}>
+  return <div className={"g-page git-project" + (run ? " git-ci-page" : "")}>
+    {!run && renderHead(copy,setFiles)}
+    {!run && <div className="g-views" role="tablist" aria-label={t("pg.sections")}>
       {sections.map(item => <button key={item} id={"git-section-" + item} type="button" role="tab" data-section={item} aria-selected={item === section}
         aria-controls="git-section-panel" tabIndex={item === section ? 0 : -1}
         onClick={() => openCopy(item)} onKeyDown={event => {
@@ -69,8 +84,8 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
           openCopy(next);
           (event.currentTarget.parentElement?.querySelector("[data-section=\"" + next + "\"]") as HTMLElement | null)?.focus();
         }}>{t(labels[item])}{item === "Code" && files ? <span className="g-num g-muted"> {files}</span> : null}</button>)}
-    </div>
-    <main className="git-project-main" role="tabpanel" id="git-section-panel" aria-labelledby={"git-section-" + section}>
+    </div>}
+    <main className="git-project-main" {...(run ? {} : {role: "tabpanel", "aria-labelledby": "git-section-" + section})} id="git-section-panel">
       {accountError && forge && <p role="alert" className="git-panel-message git-error">{accountError}</p>}
       {error && <p className="git-panel-message git-error" role="alert">{error}</p>}
       {section === "Code" && renderWorktree(copy,hostName(copy.hostId),async root => {
@@ -79,12 +94,8 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
       })}
       {section === "History" && <HistoryPanel key={copy.id} api={api.history} copyId={copy.id} graph={historyGraph}/>}
       {section === "Review" && <ReviewPanel key={copy.id + (reviewFile ?? "")} api={api.review} copyId={copy.id} revision={reviewRevisions[copy.id] ?? 0} initialFile={reviewFile}/>}
-      {forge && <RepositoryPanel key={copy.id + section} copyId={copy.id} name={name}
-        accounts={accounts} api={api} onAddConnection={() => setConnecting(true)} section={section.toLowerCase() as RepositorySection} onOpenIssue={onOpenIssue}/>}
-      {connecting && <ConnectionWizard api={api} onClose={() => setConnecting(false)} onSaved={account => {
-        setAccounts(previous => [...previous.filter(item => item.id !== account.id),account]);
-        setConnecting(false);
-      }}/>}
+      {panel}
+      {wizard}
     </main>
   </div>;
 }

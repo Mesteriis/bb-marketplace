@@ -1,46 +1,45 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { isActive, type Run, type RunFilter } from "../../core/ci/model.ts";
-import { ciSummary, elapsed } from "../../core/ci/summary.ts";
-import { message, stateText, type CiApi, type RunsPage } from "./ci-api.ts";
-import { DispatchForm } from "./dispatch-form.tsx";
+import { useT } from "../i18n/use-t.tsx";
+import { Icon } from "../system/icon.tsx";
+import { message, type CiApi, type RunsPage } from "./ci-api.ts";
+import { RunsTable, useNow } from "./ci-parts.tsx";
+import { DispatchDialog } from "./dispatch-dialog.tsx";
 import { RunDetail } from "./run-detail.tsx";
+import { RunFilterSeg } from "./run-filter.tsx";
 import { TemplatePage } from "./template-page.tsx";
-import { ThreadPicker } from "./thread-picker.tsx";
+import { ThreadsDialog } from "./thread-picker.tsx";
 import "./ci.css";
 
-const filters: {value: RunFilter; label: string}[] = [{value: "all", label: "All"}, {value: "active", label: "Active"}, {value: "failed", label: "Failed"}];
-const when = (value: string | null) => value ? value.replace("T", " ").slice(0, 16) : "—";
+export { useNow } from "./ci-parts.tsx";
 
-/** Re-renders once a second while `enabled`, for live durations. */
-export function useNow(enabled: boolean) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [enabled]);
-  return now;
-}
+/** What the tab shows: the runs, one run, or the templates; in a page it lives in the address. */
+export type CiView = {kind: "runs"} | {kind: "run"; runId: string} | {kind: "templates"};
 
-/** Running, queued, failed and the success rate of the runs shown. */
-export function CiTiles({runs}: {runs: Run[]}) {
-  const summary = ciSummary(runs);
-  const tiles: [string, string, string][] = [["Running", String(summary.running), "running"], ["Queued", String(summary.queued), "queued"],
-    ["Failed", String(summary.failed), "failure"], ["Success rate", summary.successRate === null ? "—" : summary.successRate + "%", "success"]];
-  return <dl className="git-ci-tiles" aria-label={"Summary of " + summary.total + " runs"}>{tiles.map(([label, value, state]) =>
-    <div key={label} className="git-ci-tile" data-state={state}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
-}
-
-/** CI/CD of the linked repository: runs by filter, one run in detail, manual runs and failure notifications. */
-export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: string; currentThreadId?: string}) {
+/**
+ * CI/CD of the linked repository: runs by filter with paging, failure notifications, manual runs and templates; a
+ * run opens as its own page. `view` and `onView` put the place in the address; without them it is kept here.
+ */
+export function CiPanel({api, copyId, currentThreadId, repository = "", view: routed, onView, onSection, forge}: {
+  api: CiApi; copyId: string; currentThreadId?: string; repository?: string;
+  view?: CiView; onView?(view: CiView): void;
+  /** Goes to the CI/CD section over every repository. */
+  onSection?(): void;
+  /** The forge and account line, with the connection controls, beside the filters. */
+  forge?: ReactNode;
+}) {
+  const t = useT();
+  const [kept, setKept] = useState<CiView>({kind: "runs"});
+  const view = routed ?? kept;
+  const go = onView ?? setKept;
   const [filter, setFilter] = useState<RunFilter>("all");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<RunsPage>();
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
   const [dispatching, setDispatching] = useState<{workflowId: string | null; ref: string | null} | null>(null);
   const [notifying, setNotifying] = useState(false);
-  const [templates, setTemplates] = useState(false);
+  const [subscribed, setSubscribed] = useState<number | null>(null);
+  const [notice, setNotice] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let active = true;
@@ -55,54 +54,59 @@ export function CiPanel({api, copyId, currentThreadId}: {api: CiApi; copyId: str
     void load();
     return () => { active = false; clearTimeout(timer); };
   }, [api, copyId, filter, page, revision]);
+  useEffect(() => {
+    let active = true;
+    api.threads(copyId).then(result => { if (active) setSubscribed(result.subscribed.length); }, () => {});
+    return () => { active = false; };
+  }, [api, copyId]);
 
   const now = useNow(!!data?.items.some(run => isActive(run.state)));
   const refresh = () => setRevision(value => value + 1);
-  const rerunWith = (run: Run) => { setSelected(null); setDispatching({workflowId: run.workflowId, ref: run.branch}); };
-  if (templates) return <TemplatePage api={api} copyId={copyId} onClose={() => { setTemplates(false); refresh(); }}/>;
-  if (selected && data) return <RunDetail api={api} copyId={copyId} runId={selected} page={data} onBack={() => setSelected(null)} onChanged={refresh}
-    currentThreadId={currentThreadId} onRunWith={data.operations.dispatch ? rerunWith : undefined}/>;
-  return <div className="git-stack git-ci">
-    <div className="git-row git-ci-toolbar">
-      <div className="git-row" role="group" aria-label="Runs to show">{filters.map(item =>
-        <button key={item.value} type="button" aria-pressed={filter === item.value} onClick={() => { setFilter(item.value); setPage(1); }}>{item.label}</button>)}</div>
-      <span className="git-ci-spacer"/>
-      {data?.operations.dispatch && <button type="button" className="git-primary" aria-expanded={!!dispatching}
-        onClick={() => setDispatching(value => value ? null : {workflowId: null, ref: null})}>Run workflow</button>}
-      {data?.limitations.dispatch && !data.operations.dispatch && <span className="git-muted">{data.limitations.dispatch}</span>}
-      <button type="button" onClick={() => setTemplates(true)}>Templates</button>
-      <button type="button" aria-expanded={notifying} onClick={() => setNotifying(value => !value)}>Failure notifications</button>
-      <button type="button" onClick={refresh}>Refresh</button>
+  const rerunWith = (run: Run) => setDispatching({workflowId: run.workflowId, ref: run.branch});
+  const dialog = dispatching && <DispatchDialog key={(dispatching.workflowId ?? "") + "@" + (dispatching.ref ?? "")} api={api} copyId={copyId}
+    initialWorkflow={dispatching.workflowId} initialRef={dispatching.ref} inputsLimitation={data?.limitations.dispatchInputs ?? null}
+    onClose={() => setDispatching(null)} onDone={() => { setDispatching(null); setNotice(t("ci.dispatched")); refresh(); }}/>;
+  if (view.kind === "templates") return <TemplatePage api={api} copyId={copyId} onClose={() => { go({kind: "runs"}); refresh(); }}/>;
+  if (view.kind === "run") return <>
+    {/* The run reads itself; the list's answer only adds what may be written, so a failed list still leaves the page and its path. */}
+    {error && !data && <div className="g-banner bad" role="alert">{error}</div>}
+    <RunDetail api={api} copyId={copyId} runId={view.runId} page={data} notice={notice} repository={repository} onBack={() => go({kind: "runs"})} onSection={onSection}
+      onChanged={refresh} currentThreadId={currentThreadId} onRunWith={data?.operations.dispatch ? rerunWith : undefined}/>
+    {dialog}
+  </>;
+  return <div className="git-ci git-ci-tab">
+    <div className="git-ci-bar">
+      <RunFilterSeg value={filter} onChange={next => { setFilter(next); setPage(1); }}/>
+      {/* It opens the choice of threads rather than flipping a state, so it is a button that says the state. */}
+      <button type="button" className="git-ci-notify" aria-haspopup="dialog" disabled={subscribed === null}
+        aria-label={t("ci.notify") + ": " + t(subscribed ? "ci.notify-state-on" : "ci.notify-state-off")} onClick={() => setNotifying(true)}>
+        <span className="g-tog" data-on={!!subscribed} aria-hidden="true"/>{t("ci.notify")}</button>
+      {forge}
+      <span className="git-ci-bar-end">
+        <button type="button" className="g-btn" onClick={() => go({kind: "templates"})}><Icon name="FileText" small/>{t("ci.templates")}</button>
+        {data?.operations.dispatch && <button type="button" className="g-btn" aria-haspopup="dialog"
+          onClick={() => setDispatching({workflowId: null, ref: null})}><Icon name="Play" small/>{t("ci.run-workflow")}</button>}
+        <button type="button" className="g-btn ghost" onClick={refresh}><Icon name="RotateCcw" small/>{t("ci.refresh")}</button>
+      </span>
     </div>
-    {dispatching && <DispatchForm key={(dispatching.workflowId ?? "") + "@" + (dispatching.ref ?? "")} api={api} copyId={copyId}
-      initialWorkflow={dispatching.workflowId} initialRef={dispatching.ref} inputsLimitation={data?.limitations.dispatchInputs ?? null}
-      onClose={() => setDispatching(null)} onDone={() => { setDispatching(null); refresh(); }}/>}
-    {notifying && <ThreadPicker api={api} copyId={copyId} initial="subscribed" label="Send each new failed run to" action="Save"
-      onDone={async threadIds => {
-        const result = await api.subscribe(copyId, threadIds);
-        return result.subscribed.length ? "New failures go to " + result.subscribed.length + " thread(s)." : "Notifications are off.";
-      }}/>}
-    {error && <p className="git-error" role="alert">{error}</p>}
-    {!data && !error && <p className="git-muted" role="status">Loading runs…</p>}
-    {data && filter === "all" && data.items.length > 0 && <CiTiles runs={data.items}/>}
-    {data && !data.items.length && <p className="git-muted">{filter === "all" ? "No runs yet." : filter === "active" ? "Nothing is running." : "No failed runs."}</p>}
-    {data && data.items.length > 0 && <div className="git-workspace-table"><table>
-      <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col">Branch</th><th scope="col" data-col="event">Event</th><th scope="col">Started</th><th scope="col">Duration</th>{data.operations.dispatch && <th scope="col" aria-label="Actions"/>}</tr></thead>
-      <tbody>{data.items.map(run => <tr key={run.id + "#" + run.attempt} data-selected="false" onClick={() => setSelected(run.id)}>
-        <th scope="row"><button type="button" className="git-table-entry" onClick={event => { event.stopPropagation(); setSelected(run.id); }}>
-          {run.workflow} #{run.number ?? run.id}</button>{run.title && <span className="git-muted"> {run.title}</span>}</th>
-        <td><span className="git-state" data-state={run.state}>{stateText(run)}</span></td>
-        <td>{run.branch ?? "—"}</td><td data-col="event">{run.event ?? "—"}</td>
-        <td><time dateTime={run.createdAt}>{when(run.createdAt)}</time></td>
-        <td>{elapsed(run, now) ?? "—"}</td>
-        {data.operations.dispatch && <td><button type="button" disabled={!run.workflowId} title={run.workflowId ? undefined : "The forge did not say which workflow started this run."}
-          onClick={event => { event.stopPropagation(); rerunWith(run); }}>Run with inputs…</button></td>}
-      </tr>)}</tbody>
-    </table></div>}
-    {data && (page > 1 || data.more) && <div className="git-row">
-      <button type="button" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>Newer</button>
-      <span className="git-muted">Page {page}</span>
-      <button type="button" disabled={!data.more} onClick={() => setPage(value => value + 1)}>Older</button>
+    {data?.limitations.dispatch && !data.operations.dispatch && <p className="git-ci-status g-muted">{data.limitations.dispatch}</p>}
+    {notice && <p className="git-ci-status g-muted" role="status">{notice}</p>}
+    {error && <div className="g-banner bad" role="alert">{error}</div>}
+    {!data && !error && <p className="g-state-page" role="status">{t("ci.loading")}</p>}
+    {data && !data.items.length && <p className="g-state-page">{t(filter === "all" ? "ci.none" : filter === "active" ? "ci.none-active" : "ci.none-failed")}</p>}
+    {data && data.items.length > 0 && <RunsTable label={t("ci.runs")} rows={data.items.map(run => ({key: run.id + "#" + run.attempt, run}))} now={now}
+      onOpen={row => go({kind: "run", runId: row.run.id})}/>}
+    {data && (page > 1 || data.more) && <div className="git-ci-pages">
+      <button type="button" className="g-btn" disabled={page <= 1} onClick={() => setPage(value => value - 1)}><Icon name="ChevronLeft" small/>{t("ci.newer")}</button>
+      <button type="button" className="g-btn" disabled={!data.more} onClick={() => setPage(value => value + 1)}>{t("ci.older")}<Icon name="ChevronRight" small/></button>
+      <span className="g-muted">{t("ci.page", {n: page})}</span>
     </div>}
+    {dialog}
+    {notifying && <ThreadsDialog title={t("ci.notify")} onClose={() => setNotifying(false)} api={api} copyId={copyId} initial="subscribed"
+      label={t("ci.notify-to")} action={t("ci.save")} onDone={async threadIds => {
+        const result = await api.subscribe(copyId, threadIds);
+        setSubscribed(result.subscribed.length);
+        return result.subscribed.length ? t("ci.notify-on", {n: result.subscribed.length}) : t("ci.notify-off");
+      }}/>}
   </div>;
 }

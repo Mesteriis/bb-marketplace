@@ -3,6 +3,8 @@ import { filterLines } from "../../core/ci/log.ts";
 import { isActive, type Job } from "../../core/ci/model.ts";
 import type { JobLog } from "../../core/ci/pipelines.ts";
 import { message, type CiApi } from "./ci-api.ts";
+import { useT } from "../i18n/use-t.tsx";
+import { Icon } from "../system/icon.tsx";
 
 const livePoll = 5_000;
 
@@ -13,6 +15,7 @@ const livePoll = 5_000;
 export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
   api: CiApi; copyId: string; runId: string; job: Job; liveLog: boolean; liveLimitation: string | null;
 }) {
+  const t = useT();
   const [log, setLog] = useState<JobLog | undefined>();
   const [errorAt, setErrorAt] = useState<number | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
@@ -53,29 +56,34 @@ export function LogView({api, copyId, runId, job, liveLog, liveLimitation}: {
   const lines = useMemo(() => log ? log.text.replace(/\n$/, "").split("\n") : [], [log]);
   const shown = useMemo(() => filterLines(lines, query), [lines, query]);
 
-  if (running && !liveLog) return <p className="git-muted" role="status">{liveLimitation ?? "The log is available when the job ends."}</p>;
-  if (error) return <p className="git-error" role="alert">{error}</p>;
-  if (log === undefined) return <p className="git-muted" role="status">Loading log…</p>;
+  if (running && !liveLog) return <p className="g-state-page" role="status">{liveLimitation ?? t("ci.log.after")}</p>;
+  if (error) return <div className="g-banner bad" role="alert">{error}</div>;
+  if (log === undefined) return <p className="g-state-page" role="status">{t("ci.log.loading")}</p>;
   if (log === null) return notes.length
-    ? <div className="git-stack" role="status"><p>The forge reports for this job:</p><ul className="git-ci-lines">{notes.map((note, index) => <li key={index}>{note}</li>)}</ul></div>
-    : <p className="git-muted" role="status">The forge has not published a log for this job yet.</p>;
+    ? <div className="g-state-page" role="status"><p>{t("ci.log.notes")}</p><ul className="git-ci-lines">{notes.map((note, index) => <li key={index}>{note}</li>)}</ul></div>
+    : <p className="g-state-page" role="status">{t("ci.log.none")}</p>;
   const filtering = query.trim().length > 0;
-  return <div className="git-stack">
-    <div className="git-row git-ci-log-tools">
-      <input type="search" aria-label="Filter log lines" placeholder="Filter" value={query} onChange={event => setQuery(event.target.value)}/>
-      {filtering && <span className="git-muted" role="status">{shown.length} of {lines.length} lines</span>}
-      <label><input type="checkbox" checked={follow} onChange={event => setFollow(event.target.checked)}/> Follow the end</label>
-      <button type="button" onClick={() => void api.copy(filtering ? shown.map(index => lines[index]).join("\n") : log.text)
-        .then(done => setCopied(done ? (filtering ? "Shown lines copied." : "Log copied.") : "The browser did not allow copying."))}>{filtering ? "Copy shown lines" : "Copy log"}</button>
-      {job.url && <a href={job.url} target="_blank" rel="noreferrer">Open job on the forge</a>}
-      {copied && <span className="git-muted" role="status">{copied}</span>}
+  return <div className="git-ci-log-box">
+    <div className="git-ci-log-tools">
+      <label className="git-ci-log-find"><Icon name="Search" small/>
+        <input type="search" aria-label={t("ci.log.filter")} placeholder={t("ci.log.filter")} value={query} onChange={event => setQuery(event.target.value)}/></label>
+      {filtering && <span className="g-muted g-num" role="status">{t("ci.log.shown", {n: shown.length, all: lines.length})}</span>}
+      <span className="git-ci-follow"><button type="button" role="switch" id={"git-ci-follow-" + job.id} className="g-tog" aria-checked={follow}
+        aria-label={t("ci.log.follow")} onClick={() => setFollow(value => !value)}/><label htmlFor={"git-ci-follow-" + job.id}>{t("ci.log.follow")}</label></span>
+      <button type="button" className="g-btn" onClick={() => void api.copy(filtering ? shown.map(index => lines[index]).join("\n") : log.text)
+        .then(done => setCopied(done ? t(filtering ? "ci.log.copied-shown" : "ci.log.copied") : t("ci.copy-refused")))}>
+        <Icon name="Copy" small/>{t(filtering ? "ci.log.copy-shown" : "ci.log.copy")}</button>
+      {job.url && <a className="git-ci-link" href={job.url} target="_blank" rel="noreferrer"><Icon name="ExternalLink" small/>{t("ci.log.job-on-forge")}</a>}
+      {copied && <span className="g-muted" role="status">{copied}</span>}
     </div>
-    {notes.length > 0 && <ul className="git-ci-lines" aria-label="Annotations">{notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
-    {log.truncated && <p className="git-muted">Showing the end of a long log.</p>}
-    {errorAt !== null && !filtering && <p className="git-muted">Opened at the error on line {errorAt + 1}.</p>}
-    <pre ref={pane} className="git-code git-ci-log" aria-label={"Log of " + job.name}>{shown.map(index =>
+    {(errorAt !== null && !filtering || log.truncated || notes.length > 0) && <div className="git-ci-log-note">
+      {errorAt !== null && !filtering && <span className="g-bad"><Icon name="CircleX" small/>{t("ci.log.opened-at", {n: errorAt + 1})}</span>}
+      {log.truncated && <span className="g-muted">{t("ci.log.tail")}</span>}
+      {notes.length > 0 && <ul className="git-ci-lines" aria-label={t("ci.log.annotations")}>{notes.map((note, index) => <li key={index}>{note}</li>)}</ul>}
+    </div>}
+    <pre ref={pane} className="git-ci-log" aria-label={t("ci.log.of", {name: job.name})}>{shown.map(index =>
       <span key={index} className="git-ci-line" data-error={index === errorAt || undefined} ref={index === errorAt ? marker : undefined}>
         <span className="git-ci-number" aria-hidden="true">{index + 1}</span>{lines[index] + "\n"}</span>)}</pre>
-    {filtering && !shown.length && <p className="git-muted">No line contains every word of the filter.</p>}
+    {filtering && !shown.length && <p className="g-state-page">{t("ci.log.no-match")}</p>}
   </div>;
 }
