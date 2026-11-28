@@ -3,6 +3,7 @@ use crate::cancel::Ctx;
 use crate::errors::{self, HErr};
 use crate::fsio::{self, Fingerprint, PreadFile};
 use crate::links;
+use crate::names;
 use crate::model::{Format, Index, Kind, Limits, RATIO_ENTRY_GRACE, RATIO_TOTAL_GRACE};
 use crate::tarscan;
 use crate::zipscan::{self, CenInfo};
@@ -123,6 +124,19 @@ impl OpenArchive {
                         }
                     }
                 }
+                // Second line: the library's own name check, after our raw-segment check.
+                for i in 0..index.entries.len() {
+                    let e = &index.entries[i];
+                    if e.refused.is_some() || !matches!(e.kind, Kind::File | Kind::Dir) {
+                        continue;
+                    }
+                    // SAFETY: single-threaded access, no ZipFile alive at this point.
+                    let archive = unsafe { &mut *ptr };
+                    let none = archive.by_index_raw(i).map(|f| f.enclosed_name().is_none()).unwrap_or(false);
+                    if let Some(reason) = names::second_line(none, None) {
+                        index.refuse(i as u32, reason);
+                    }
+                }
                 (index, infos, Some(ptr))
             }
         };
@@ -173,6 +187,9 @@ impl OpenArchive {
             Kind::Dir => return Err(HErr::new("is_a_directory", None, "The entry is a directory")),
             Kind::Symlink | Kind::Hardlink => return Err(errors::unsupported(if entry.refused == Some("link_escapes") { "link_escapes" } else { "link_not_supported" })),
             Kind::Special => return Err(errors::unsupported("unsupported_format")),
+        }
+        if entry.refused == Some(names::UNSAFE_NAME) {
+            return Err(errors::invalid_path("The entry name is refused"));
         }
         // Drop the previous stream first: its ZipFile borrows the archive.
         self.stream = None;

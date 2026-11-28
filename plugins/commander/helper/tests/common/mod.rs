@@ -176,6 +176,7 @@ impl Helper {
         }
     }
 
+    #[cfg(feature = "test-hooks")]
     pub fn counters(&mut self) -> Value {
         self.request("test_counters", json!({})).ok()
     }

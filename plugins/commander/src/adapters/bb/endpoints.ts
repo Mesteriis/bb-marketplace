@@ -91,15 +91,18 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
   async function prepare(ids: Iterable<string>, signal: AbortSignal) {
     const wanted = new Set(ids);
     if (!wanted.size) return;
+    // An archive that is not open is never copied by a plain request: the owner estimates and confirms first
+    // (archive_resume). The refusal names the element, it is not swallowed.
+    for (const id of [...wanted].filter((item) => item.startsWith("archive:"))) {
+      wanted.delete(id);
+      const manager = archives();
+      if (!manager) throw new CommanderError("not_found", "Archives are unavailable");
+      manager.provider(id.slice("archive:".length));
+    }
+    if (!wanted.size) return;
     const endpoints = await list(signal);
     await Promise.all([...wanted].map(async (id) => {
       if (closed) throw new CommanderError("cancelled", "Commander is stopping");
-      if (id.startsWith("archive:")) {
-        const manager = archives();
-        if (!manager) throw new CommanderError("not_found", "Archives are unavailable");
-        await manager.ensure(id.slice("archive:".length), signal, { owner: true });
-        return;
-      }
       const view = endpoints.find((candidate) => candidate.id === id);
       if (!view) throw new CommanderError("not_found", "Endpoint is unavailable");
       const { consent, ...endpoint } = view;

@@ -284,6 +284,14 @@ export const rpcSchemas = {
       z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size }),
     ]),
   },
+  // After a restart an archive tab names an archive id whose copy is gone: the owner estimates and confirms again.
+  archive_resume: {
+    input: z.strictObject({ archiveId: z.uuid(), estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
+    output: z.union([
+      z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size }),
+    ]),
+  },
   archive_close: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },
   archive_password: {
     input: z.strictObject({ archiveId: z.uuid(), password: z.string().min(1).max(256) }),

@@ -72,11 +72,17 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
   const limits = deps.limits ?? (() => EXTRACT_LIMITS);
   const maxFile = deps.maxArchiveFileBytes ?? 10 * 2 ** 30;
 
-  async function copySource(ref: ResourceRef, id: string, signal: AbortSignal) {
+  async function copySource(ref: ResourceRef, id: string, signal: AbortSignal, expect: Array<{ size: string; mtimeNs: string | null }> = []) {
     const provider = deps.sourceProvider(ref.endpoint);
     const entry = await provider.stat(ref.path, signal);
     if (!entry) throw new CommanderError("not_found", "The archive file does not exist");
     if (entry.kind !== "file") throw new CommanderError("invalid_path", "The archive must be a regular file");
+    // The version the owner confirmed (and, on a resume, the one stored) must still be the file's: nothing is read otherwise.
+    for (const version of expect) {
+      if (version.size !== entry.size || version.mtimeNs !== entry.mtimeNs) {
+        throw new CommanderError("changed_since_plan", "The archive file changed; estimate again");
+      }
+    }
     const size = BigInt(entry.size);
     if (size > BigInt(maxFile)) throw new CommanderError("limit_exceeded", "The archive file is larger than the limit", false, "total_bytes");
     const copyDir = await deps.dirs.newCopyDir(id);
@@ -184,9 +190,9 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
   }
 
   return {
-    async open(ref: ResourceRef, signal: AbortSignal, opts: { owner?: boolean } = {}): Promise<OpenedArchive> {
+    async open(ref: ResourceRef, signal: AbortSignal, opts: { owner?: boolean; expect?: { size: string; mtimeNs: string | null } } = {}): Promise<OpenedArchive> {
       const id = newId();
-      const { copyDir, fingerprint } = await copySource(ref, id, signal);
+      const { copyDir, fingerprint } = await copySource(ref, id, signal, opts.expect ? [opts.expect] : []);
       let session: Session | null = null;
       try {
         const openBody = await openBodyFor(copyDir);
@@ -205,17 +211,22 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
       }
     },
 
-    /** Opens an archive the registry knows (after a restart): copies it again and starts a helper. */
-    async ensure(id: string, signal: AbortSignal, opts: { owner?: boolean } = {}): Promise<void> {
-      if (sessions.has(id)) return;
+    /**
+     * Opens again an archive the registry knows under its old id (after a restart or a failure). It copies the file
+     * again, so the caller has the owner's confirmed estimate; the stored version and that estimate's are both
+     * checked before the first byte is read.
+     */
+    async resume(id: string, signal: AbortSignal, opts: { owner?: boolean; expect?: { size: string; mtimeNs: string | null } } = {}): Promise<OpenedArchive> {
+      if (sessions.has(id)) return { archiveId: id, endpoint: ("archive:" + id) as EndpointId, entries: 0, encrypted: false };
       const known = deps.registry.get(id);
       if (!known) throw new CommanderError("not_found", "Archive is no longer available");
-      const { copyDir } = await copySource(known.source, id, signal);
+      const { copyDir } = await copySource(known.source, id, signal, [known.fingerprint, ...(opts.expect ? [opts.expect] : [])]);
       let session: Session | null = null;
       try {
         const openBody = await openBodyFor(copyDir);
         session = build(id, known.source, known.fingerprint, copyDir, openBody, opts.owner === true);
-        await startHelper(session, signal);
+        const result = await startHelper(session, signal);
+        return { archiveId: id, endpoint: ("archive:" + id) as EndpointId, entries: Number(result.json.entries ?? 0), encrypted: result.json.encrypted === true };
       } catch (error) {
         sessions.delete(id);
         await session?.helper?.close().catch(() => undefined);
@@ -224,9 +235,19 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
       }
     },
 
+    /** The registry still knows this archive id (it was opened before), whether or not it is open now. */
+    known: (id: string) => deps.registry.get(id) !== null,
+
+    /** The registered source of an archive that is not open, for a new estimate. */
+    sourceOf: (id: string) => deps.registry.get(id)?.source ?? null,
+
     provider(id: string): FileProvider {
       const session = sessions.get(id);
-      if (!session) throw new CommanderError("not_found", "Archive is not open");
+      if (!session) {
+        // A known archive that is not open (after a restart) is copied again only after a new estimate.
+        if (deps.registry.get(id) !== null) throw new CommanderError("consent_required", "The archive must be estimated again");
+        throw new CommanderError("not_found", "Archive is not open");
+      }
       return session.provider;
     },
 

@@ -45,9 +45,12 @@ fn l_k_x_g_headers_claiming_256_mib_are_refused_after_one_header() {
         let p = write(&dir, "bomb.tar", &header);
         let mut h = Helper::spawn();
         assert_eq!(refusal(h.open(&p)), ("limit_exceeded".to_string(), "meta_too_large".to_string()), "flag {}", flag as char);
-        let c = h.counters();
-        // 512 header bytes plus the 9 bytes of format detection; never a byte of the announced 256 MiB body.
-        assert_eq!(c["bytesRead"], 521, "flag {}: only the header may be read", flag as char);
+        #[cfg(feature = "test-hooks")]
+        {
+            let c = h.counters();
+            // 512 header bytes plus the 9 bytes of format detection; never a byte of the announced 256 MiB body.
+            assert_eq!(c["bytesRead"], 521, "flag {}: only the header may be read", flag as char);
+        }
         let pid = h.child.id() as i32;
         h.send(&json!({"t": "close", "req": 99}));
         let mut status = 0;

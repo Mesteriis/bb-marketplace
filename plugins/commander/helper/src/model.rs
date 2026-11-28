@@ -230,6 +230,13 @@ impl Index {
 
 impl Index {
     /// Record a symlink target read after the library opened the archive.
+    /// Mark an entry refused after the fact (the library's own name check disagreed with ours).
+    pub fn refuse(&mut self, id: u32, reason: &'static str) {
+        if let Some(e) = self.entries.get_mut(id as usize) {
+            e.refused.get_or_insert(reason);
+        }
+    }
+
     pub fn set_link(&mut self, id: u32, link: Vec<u8>, refused: &'static str) {
         let e = &mut self.entries[id as usize];
         e.link = Some(link);

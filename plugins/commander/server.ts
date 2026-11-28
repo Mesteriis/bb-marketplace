@@ -79,15 +79,6 @@ export default function activate(bb: BbPluginApi) {
     get archives() {
       return archives ?? undefined;
     },
-    // The server's own machine is the BB primary host. Anything else, or an unreadable config, is not direct.
-    async isDirectEndpoint(id) {
-      try {
-        const primary = (await bb.sdk.system.config()).primaryHostId;
-        return primary !== null && id === "host:" + primary;
-      } catch {
-        return false;
-      }
-    },
     isManaged: (id) => live.has(id),
     async ready() {
       if (recovery === "failed") throw refusal("conflict", "Commander recovery failed");

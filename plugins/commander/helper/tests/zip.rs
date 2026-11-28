@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "test-hooks"), allow(unused_variables, unused_mut))]
 mod common;
 use common::*;
 use serde_json::json;
@@ -35,6 +36,7 @@ fn valid_zip_lists_reads_and_verifies_crc() {
     assert_eq!(h.read_entry(2, None).unwrap(), b"");
     let root: Vec<String> = h.list_root().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect();
     assert_eq!(root, ["a.txt", "d", "empty"]);
+    #[cfg(feature = "test-hooks")]
     assert_eq!(h.counters()["zipNewCalls"], 1);
 }
 
@@ -54,6 +56,7 @@ fn entry_count_above_the_limit_never_reaches_the_library() {
     let z = zip_with_count(&entries);
     let (mut h, r) = open_zip(&z);
     assert_eq!(refusal(r), pair("limit_exceeded", "too_many_entries"));
+    #[cfg(feature = "test-hooks")]
     assert_eq!(h.counters()["zipNewCalls"], 0);
 }
 
@@ -118,6 +121,7 @@ fn exactly_100_000_entries_pass_the_preflight() {
     let z = zip_with_count(&entries);
     let (mut h, r) = open_zip(&z);
     assert_eq!(r.ok()["entries"], 100_000);
+    #[cfg(feature = "test-hooks")]
     assert_eq!(h.counters()["zipNewCalls"], 1);
 }
 
@@ -127,6 +131,7 @@ fn directory_larger_than_64_mib_is_refused_before_the_library() {
     bytes.extend(eocd(1, (64 << 20) + 1, 0, 0, b""));
     let (mut h, r) = open_zip(&bytes);
     assert_eq!(refusal(r), pair("limit_exceeded", "directory_too_large"));
+    #[cfg(feature = "test-hooks")]
     assert_eq!(h.counters()["zipNewCalls"], 0);
 }
 
@@ -319,4 +324,16 @@ fn unsupported_compression_is_reported() {
     let mut e = ZEntry::stored(b"a", b"1");
     e.method = 12; // bzip2
     assert_eq!(refusal(open_zip(&zip(&[e]).bytes).1), pair("unsupported", "unsupported_compression"));
+}
+
+#[test]
+fn a_refused_name_cannot_be_opened_for_reading_and_ordinary_names_still_can() {
+    let z = zip(&[ZEntry::stored(b"../x", b"evil"), ZEntry::stored(b"ok/a b.txt", b"fine"), ZEntry::stored(b"dir/", b"")]);
+    let (mut h, r) = open_zip(&z.bytes);
+    r.ok();
+    assert_eq!(h.read_entry(0, None).unwrap_err().0, "invalid_path", "an unsafe name is refused at read_open");
+    assert_eq!(h.read_entry(1, None).unwrap(), b"fine");
+    // The library's own check (ZipFile::enclosed_name) agrees on every name our checks let through.
+    let listed: Vec<Option<String>> = h.list_root().iter().map(|e| e["refused"].as_str().map(str::to_string)).collect();
+    assert!(listed.iter().filter(|r| r.is_some()).count() == 1, "{listed:?}");
 }

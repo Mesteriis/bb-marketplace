@@ -169,18 +169,49 @@ test("after a helper crash the next request restarts it, and a fourth restart wi
   await manager.close(ID);
 });
 
-test("an archive known to the registry is opened again after a plugin restart", async () => {
+test("the estimate's version is checked before the first byte is read", async () => {
+  const { manager, dirs } = await make();
+  const read = vi.spyOn(source, "read");
+  await expect(manager.open(ref, signal, { owner: true, expect: { size: "1000", mtimeNs: "6" } }))
+    .rejects.toMatchObject({ code: "changed_since_plan", message: "The archive file changed; estimate again" });
+  await expect(manager.open(ref, signal, { owner: true, expect: { size: "999", mtimeNs: "5" } }))
+    .rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(read).not.toHaveBeenCalled();
+  expect(existsSync(join(dirs.runDir, ID))).toBe(false);
+  await expect(manager.open(ref, signal, { owner: true, expect: { size: "1000", mtimeNs: "5" } })).resolves.toMatchObject({ archiveId: ID });
+});
+
+test("a cold archive: id is not copied again by itself: it asks for a new estimate, and reads nothing", async () => {
   const first = await make();
   await first.manager.open(ref, signal);
-  // The plugin restarts: the old process's work directory is gone, the registry row stays.
+  await first.manager.close(ID);
+  const read = vi.spyOn(source, "read");
+  // A new manager after a restart: the registry row survives, the copy does not.
+  const second = createArchiveManager({
+    registry: first.registry, dirs: first.dirs, sourceProvider: () => source, createHelper: () => new FakeHelper(),
+    maxArchiveFileBytes: 2 ** 30, freeBytes: async () => 2n ** 40n, now: () => new Date(), uuid: () => "223e4567-e89b-42d3-a456-426614174000",
+  });
+  expect(() => second.provider(ID)).toThrowError(expect.objectContaining({ code: "consent_required" }));
+  expect(() => second.provider("323e4567-e89b-42d3-a456-426614174000")).toThrowError(expect.objectContaining({ code: "not_found" }));
+  expect(second.known(ID)).toBe(true);
+  expect(read).not.toHaveBeenCalled();
+});
+
+test("resuming reopens the same archive id from the registry after a confirmed estimate, and checks the stored version first", async () => {
+  const first = await make();
+  await first.manager.open(ref, signal);
   await first.manager.close(ID);
   const second = createArchiveManager({
-    registry: first.registry, dirs: first.dirs, sourceProvider: () => source,
-    createHelper: () => new FakeHelper(), maxArchiveFileBytes: 2 ** 30, freeBytes: async () => 2n ** 40n,
-    now: () => new Date(), uuid: () => "223e4567-e89b-42d3-a456-426614174000",
+    registry: first.registry, dirs: first.dirs, sourceProvider: () => source, createHelper: () => new FakeHelper(),
+    maxArchiveFileBytes: 2 ** 30, freeBytes: async () => 2n ** 40n, now: () => new Date(), uuid: () => "223e4567-e89b-42d3-a456-426614174000",
   });
-  expect(() => second.provider(ID)).toThrow();
-  await second.ensure(ID, signal);
+  source.put(ref.path, bytes, "6");
+  const read = vi.spyOn(source, "read");
+  await expect(second.resume(ID, signal, { owner: true })).rejects.toMatchObject({ code: "changed_since_plan" });
+  expect(read).not.toHaveBeenCalled();
+  source.put(ref.path, bytes, "5");
+  const opened = await second.resume(ID, signal, { owner: true });
+  expect(opened).toMatchObject({ archiveId: ID, endpoint: "archive:" + ID });
   expect(second.provider(ID).endpoint.id).toBe("archive:" + ID);
-  await expect(second.ensure("323e4567-e89b-42d3-a456-426614174000", signal)).rejects.toMatchObject({ code: "not_found" });
+  await expect(second.resume("323e4567-e89b-42d3-a456-426614174000", signal, { owner: true })).rejects.toMatchObject({ code: "not_found" });
 });

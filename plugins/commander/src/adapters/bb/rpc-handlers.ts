@@ -126,8 +126,6 @@ export function createOperations(deps: {
   isManaged(id: string): boolean;
   scans: ScanRunner;
   archives?: import("./archive-runtime.ts").ArchiveRuntime;
-  /** True for a host the server reads without a network hop (its own machine); anything unproven is false. */
-  isDirectEndpoint?: (endpoint: string) => Promise<boolean>;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
@@ -429,6 +427,46 @@ export function createOperations(deps: {
         return { ...diff, equal };
       },
     };
+  }
+
+  // S14a: every archive is copied to the server, so every open needs the owner's confirmed, one-time estimate.
+  // (No source is treated as "the server's own machine" until that is proven; the estimate then costs one click.)
+  async function openArchive(
+    source: ResourceRef, input: { estimateOnly?: boolean | undefined; estimateId?: string | undefined }, initiator: Initiator,
+    signal: AbortSignal, resumeId: string | null,
+  ) {
+    const { estimateOnly, estimateId } = input;
+    if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
+    if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
+    // The source's own endpoint is prepared first, so a resumed archive reads through a ready provider.
+    await endpoints.prepare([source.endpoint], signal);
+    const entry = await endpoints.provider(source.endpoint).stat(source.path, signal);
+    if (!entry) throw new CommanderError("not_found", "The archive file does not exist");
+    if (entry.kind !== "file") throw new CommanderError("invalid_path", "The archive must be a regular file");
+    const request = JSON.stringify({ source, resumeId });
+    if (estimateOnly) {
+      const now = Date.now();
+      for (const [id, item] of archiveEstimates) if (now >= item.expires) archiveEstimates.delete(id);
+      if (archiveEstimates.size >= 32) throw refusal("conflict", "Archive estimate pool is full");
+      const id = planner.uuid();
+      archiveEstimates.set(id, { request, version: { size: entry.size, mtimeNs: entry.mtimeNs }, expires: now + 600_000 });
+      return { estimateId: id, bytesPlanned: entry.size };
+    }
+    if (!estimateId) throw refusal("forbidden", "A remote archive requires a confirmed estimate");
+    const estimate = archiveEstimates.get(estimateId);
+    if (!estimate || Date.now() >= estimate.expires) {
+      archiveEstimates.delete(estimateId);
+      throw refusal("forbidden", "Archive estimate is missing or expired");
+    }
+    if (estimate.request !== request) throw refusal("forbidden", "Archive estimate does not match the request");
+    archiveEstimates.delete(estimateId);
+    if (estimate.version.size !== entry.size || estimate.version.mtimeNs !== entry.mtimeNs) {
+      throw refusal("conflict", "Archive changed; estimate again");
+    }
+    // The confirmed version travels into the copy and is checked there before the first byte is read.
+    const expect = estimate.version;
+    return resumeId ? deps.archives.manager.resume(resumeId, signal, { owner: true, expect })
+      : deps.archives.manager.open(source, signal, { owner: true, expect });
   }
 
   function requireScanEstimate(id: string, initiator: Initiator, request: string) {
@@ -797,39 +835,14 @@ export function createOperations(deps: {
     },
     // S14: owner-only. An archive is opened as a read-only panel; its password comes from the owner's dialog.
     async archiveOpen(input: RpcInput<"archive_open">, initiator: Initiator, signal: AbortSignal) {
-      const { source, estimateOnly, estimateId } = input;
+      return openArchive(input.source, input, initiator, signal, null);
+    },
+    async archiveResume(input: RpcInput<"archive_resume">, initiator: Initiator, signal: AbortSignal) {
       if (!deps.archives) throw new CommanderError("unsupported", "Archives are unavailable: no helper for this platform", false, "archives_unavailable");
       if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
-      await endpoints.prepare([source.endpoint], signal);
-      const entry = await endpoints.provider(source.endpoint).stat(source.path, signal);
-      if (!entry) throw new CommanderError("not_found", "The archive file does not exist");
-      if (entry.kind !== "file") throw new CommanderError("invalid_path", "The archive must be a regular file");
-      const direct = source.endpoint.startsWith("host:") && await (deps.isDirectEndpoint?.(source.endpoint) ?? Promise.resolve(false));
-      if (!direct) {
-        const request = JSON.stringify(source);
-        if (estimateOnly) {
-          const now = Date.now();
-          for (const [id, item] of archiveEstimates) if (now >= item.expires) archiveEstimates.delete(id);
-          if (archiveEstimates.size >= 32) throw refusal("conflict", "Archive estimate pool is full");
-          const id = planner.uuid();
-          archiveEstimates.set(id, { request, version: { size: entry.size, mtimeNs: entry.mtimeNs }, expires: now + 600_000 });
-          return { estimateId: id, bytesPlanned: entry.size };
-        }
-        if (!estimateId) throw refusal("forbidden", "A remote archive requires a confirmed estimate");
-        const estimate = archiveEstimates.get(estimateId);
-        if (!estimate || Date.now() >= estimate.expires) {
-          archiveEstimates.delete(estimateId);
-          throw refusal("forbidden", "Archive estimate is missing or expired");
-        }
-        if (estimate.request !== request) throw refusal("forbidden", "Archive estimate does not match the request");
-        archiveEstimates.delete(estimateId);
-        if (estimate.version.size !== entry.size || estimate.version.mtimeNs !== entry.mtimeNs) {
-          throw refusal("conflict", "Archive changed; estimate again");
-        }
-      } else if (estimateOnly) {
-        return { estimateId: planner.uuid(), bytesPlanned: "0" };
-      }
-      return deps.archives.manager.open(source, signal, { owner: true });
+      const source = deps.archives.manager.sourceOf(input.archiveId);
+      if (!source) throw new CommanderError("not_found", "Archive is no longer available");
+      return openArchive(source, input, initiator, signal, input.archiveId);
     },
     async archiveClose(archiveId: string) {
       await deps.archives?.manager.close(archiveId);
@@ -955,6 +968,7 @@ export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandler
     scan_get: ({ scanId }) => ops.scanGet(scanId),
     scan_cancel: (input) => ops.scanCancel(input, owner),
     archive_open: (input, ctx) => ops.archiveOpen(input, owner, ctx.experimental_signal),
+    archive_resume: (input, ctx) => ops.archiveResume(input, owner, ctx.experimental_signal),
     archive_close: ({ archiveId }) => ops.archiveClose(archiveId),
     archive_password: ({ archiveId, password }) => ops.archivePassword(archiveId, password),
     archive_password_cancel: ({ archiveId }) => ops.archivePasswordCancel(archiveId),

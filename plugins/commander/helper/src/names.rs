@@ -48,6 +48,12 @@ pub fn check_entry_name(raw: &[u8]) -> Result<Vec<Vec<u8>>, &'static str> {
     Ok(segments)
 }
 
+/// Second line after `check_entry_name`: the library's `ZipFile::enclosed_name()` returned `None` for a name our
+/// raw checks accepted. Such an entry is refused as `unsafe_name`; an entry already refused keeps its reason.
+pub fn second_line(enclosed_is_none: bool, already: Option<&'static str>) -> Option<&'static str> {
+    if already.is_some() { already } else if enclosed_is_none { Some(UNSAFE_NAME) } else { None }
+}
+
 /// Normalised key of a name for tree building; `None` when the name is refused.
 pub fn tree_key(raw: &[u8]) -> Option<Vec<Vec<u8>>> {
     check_entry_name(raw).ok()
@@ -79,6 +85,14 @@ pub fn cp437(raw: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_library_check_refuses_what_ours_let_through_and_never_overrides_an_earlier_reason() {
+        assert_eq!(super::second_line(true, None), Some("unsafe_name"));
+        assert_eq!(super::second_line(true, Some("backslash")), Some("backslash"));
+        assert_eq!(super::second_line(false, None), None);
+        assert_eq!(super::second_line(false, Some("name_encoding")), Some("name_encoding"));
+    }
+
     use super::*;
 
     #[test]

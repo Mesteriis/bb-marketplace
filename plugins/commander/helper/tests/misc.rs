@@ -58,8 +58,11 @@ fn expect_is_compared_with_the_opened_descriptor_before_parsing() {
     std::fs::rename(&other, &file).unwrap();
     let mut h = Helper::spawn();
     assert_eq!(open_raw(&mut h, &dir, &["a.zip"], stale).err().0, "changed_since_plan");
-    let c = h.counters();
-    assert_eq!(c["zipNewCalls"], 0, "nothing may be parsed after a failed comparison");
+    #[cfg(feature = "test-hooks")]
+    {
+        let c = h.counters();
+        assert_eq!(c["zipNewCalls"], 0, "nothing may be parsed after a failed comparison");
+    }
     // a wrong inode alone is enough
     let mut e = expect_of(&file);
     e["ino"] = json!("1");
@@ -305,6 +308,7 @@ fn pack_with_aes_asks_for_a_password_and_the_result_opens_with_it() {
     assert_eq!(t.request("pack_open", json!({"format": "tar", "staging": b64(dir.join("e.tar").as_os_str().as_bytes()), "zip": {"encryption": "aes256"}})).ok()["packId"], 1);
 }
 
+#[cfg(feature = "test-hooks")]
 #[test]
 fn memory_balloon_hook_exists_only_for_tests() {
     let mut h = Helper::spawn();
