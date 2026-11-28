@@ -843,7 +843,10 @@ export function createOperations(deps: {
       if (initiator.kind !== "owner") throw refusal("forbidden", "Path is outside the agent's grant");
       const source = deps.archives.manager.sourceOf(input.archiveId);
       if (!source) throw new CommanderError("not_found", "Archive is no longer available");
-      return openArchive(source, input, initiator, signal, input.archiveId);
+      const opened = await openArchive(source, input, initiator, signal, input.archiveId);
+      // Jobs that waited for this archive's copy go on from their checkpoints.
+      if ("endpoint" in opened) void runner.recover().catch(() => undefined);
+      return opened;
     },
     async archiveClose(archiveId: string) {
       await deps.archives?.manager.close(archiveId);

@@ -9,6 +9,7 @@ use crate::tarscan;
 use crate::zipscan::{self, CenInfo};
 use std::fs::File;
 use std::io::Read;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
@@ -24,7 +25,7 @@ pub struct OpenArchive {
     file: PreadFile,
     zip: Option<*mut zip::ZipArchive<PreadFile>>,
     infos: Vec<CenInfo>,
-    stream: Option<Stream>,
+    streams: Vec<Stream>,
     next_stream: u32,
     out_total: u64,
     in_total: u64,
@@ -37,10 +38,17 @@ enum Reading {
     Tar { pos: u64 },
 }
 
+/// At most this many read streams are open at once; each has its own decoder and file cursor.
+pub const MAX_STREAMS: usize = 4;
+
 struct Stream {
     id: u32,
     entry: u32,
+    /// Declared before `_owner`: the ZipFile must be dropped while its archive still exists.
     reading: Reading,
+    _owner: Option<Box<zip::ZipArchive<PreadFile>>>,
+    /// Compressed input of this stream alone.
+    counter: Arc<AtomicU64>,
     out: u64,
     size: u64,
     /// Compressed bytes charged to this entry so far (declared size once the entry ends).
@@ -48,6 +56,12 @@ struct Stream {
     in_counted: u64,
     in_base: u64,
     finished: bool,
+}
+
+/// The library's own name check as a verdict: `true` = it refuses the name. A record the library cannot
+/// even locate is a refusal of the archive (`bad_zip`); the check is never skipped.
+pub fn enclosed_verdict(found: zip::result::ZipResult<bool>) -> Result<bool, HErr> {
+    found.map_err(|_| errors::invalid("bad_zip"))
 }
 
 pub fn zip_error(e: &zip::result::ZipError, entry: &crate::model::Entry) -> HErr {
@@ -132,7 +146,16 @@ impl OpenArchive {
                     }
                     // SAFETY: single-threaded access, no ZipFile alive at this point.
                     let archive = unsafe { &mut *ptr };
-                    let none = archive.by_index_raw(i).map(|f| f.enclosed_name().is_none()).unwrap_or(false);
+                    // A record the library cannot even locate is a refusal of the archive, not a skipped check.
+                    let verdict = enclosed_verdict(archive.by_index_raw(i).map(|f| f.enclosed_name().is_none()));
+                    let none = match verdict {
+                        Ok(none) => none,
+                        Err(e) => {
+                            // SAFETY: no ZipFile is alive; nothing else points at the box on this path.
+                            drop(unsafe { Box::from_raw(ptr) });
+                            return Err(e);
+                        }
+                    };
                     if let Some(reason) = names::second_line(none, None) {
                         index.refuse(i as u32, reason);
                     }
@@ -149,7 +172,7 @@ impl OpenArchive {
             file: pread,
             zip,
             infos,
-            stream: None,
+            streams: Vec::new(),
             next_stream: 1,
             out_total: 0,
             in_total: 0,
@@ -178,7 +201,7 @@ impl OpenArchive {
         self.index.entries.get(id as usize).is_some_and(|e| e.encrypted)
     }
 
-    /// Open a read stream for entry `id`.
+    /// Open a read stream for entry `id`. Up to MAX_STREAMS streams are open at once, each independent.
     pub fn read_open(&mut self, id: u32) -> Result<(u32, u64), HErr> {
         self.verify()?;
         let entry = self.index.entries.get(id as usize).ok_or_else(|| errors::invalid_path("No such entry"))?.clone();
@@ -191,17 +214,23 @@ impl OpenArchive {
         if entry.refused == Some(names::UNSAFE_NAME) {
             return Err(errors::invalid_path("The entry name is refused"));
         }
-        // Drop the previous stream first: its ZipFile borrows the archive.
-        self.stream = None;
-        let reading = match self.index.format {
-            Format::Tar => Reading::Tar { pos: 0 },
+        if self.streams.len() >= MAX_STREAMS {
+            return Err(errors::invalid_path("Too many open streams"));
+        }
+        let (reading, owner, counter) = match self.index.format {
+            Format::Tar => (Reading::Tar { pos: 0 }, None, Arc::new(AtomicU64::new(0))),
             Format::Zip => {
                 let info = &self.infos[id as usize];
                 if info.name != entry.name_raw {
                     return Err(errors::invalid("scan_mismatch"));
                 }
-                // SAFETY: `zip` is non-null for ZIP archives; the previous ZipFile was dropped above.
-                let archive: &'static mut zip::ZipArchive<PreadFile> = unsafe { &mut *self.zip.unwrap() };
+                // A stream decodes on a clone of the archive: shared metadata, its own reader and counter.
+                // SAFETY: `zip` is non-null for ZIP archives and is only cloned from after the index was built.
+                let mut owned = Box::new(unsafe { &*self.zip.unwrap() }.clone());
+                let counter = fsio::take_last_fork().unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
+                let ptr: *mut zip::ZipArchive<PreadFile> = &mut *owned;
+                // SAFETY: the box is stored in the same Stream, after the ZipFile, so it outlives it; its address is stable.
+                let archive: &'static mut zip::ZipArchive<PreadFile> = unsafe { &mut *ptr };
                 let file = if entry.encrypted {
                     let pw = self.password.as_ref().ok_or_else(|| errors::auth("password_required"))?;
                     match archive.by_index_decrypt(id as usize, pw) {
@@ -215,12 +244,13 @@ impl OpenArchive {
                 if file.name_raw() != entry.name_raw.as_slice() {
                     return Err(errors::invalid("scan_mismatch"));
                 }
-                Reading::Zip(file)
+                (Reading::Zip(file), Some(owned), counter)
             }
         };
         let sid = self.next_stream;
         self.next_stream += 1;
-        self.stream = Some(Stream { id: sid, entry: id, reading, out: 0, size: entry.size, csize: entry.csize, in_counted: 0, in_base: self.file.consumed(), finished: false });
+        let in_base = counter.load(Ordering::Relaxed);
+        self.streams.push(Stream { id: sid, entry: id, reading, _owner: owner, counter, out: 0, size: entry.size, csize: entry.csize, in_counted: 0, in_base, finished: false });
         Ok((sid, entry.size))
     }
 
@@ -231,10 +261,7 @@ impl OpenArchive {
     }
 
     fn stream_mut(&mut self, sid: u32) -> Result<&mut Stream, HErr> {
-        match self.stream.as_mut() {
-            Some(s) if s.id == sid => Ok(s),
-            _ => Err(errors::invalid_path("No such stream")),
-        }
+        self.streams.iter_mut().find(|s| s.id == sid).ok_or_else(|| errors::invalid_path("No such stream"))
     }
 
     /// Read up to `length` bytes; counters are checked every STEP bytes, before the data is returned.
@@ -244,9 +271,9 @@ impl OpenArchive {
         let (mut out_total, mut in_total) = (self.out_total, self.in_total);
         let file = self.file.clone();
         let entries = &self.index.entries;
-        let stream = match self.stream.as_mut() {
-            Some(s) if s.id == sid => s,
-            _ => return Err(errors::invalid_path("No such stream")),
+        let stream = match self.streams.iter_mut().find(|s| s.id == sid) {
+            Some(s) => s,
+            None => return Err(errors::invalid_path("No such stream")),
         };
         let entry = entries[stream.entry as usize].clone();
         let mut data: Vec<u8> = Vec::new();
@@ -284,7 +311,7 @@ impl OpenArchive {
             // Compressed input charged so far: declared size, scaled by progress; never more than declared.
             let in_entry = match &stream.reading {
                 Reading::Tar { .. } => stream.out.max(1),
-                Reading::Zip(_) => stream.csize.max(1).min((file.consumed() - stream.in_base).max(1)),
+                Reading::Zip(_) => stream.csize.max(1).min((stream.counter.load(Ordering::Relaxed) - stream.in_base).max(1)),
             };
             let in_entry = in_entry.max(stream.in_counted);
             in_total += in_entry - stream.in_counted;
@@ -337,16 +364,16 @@ impl OpenArchive {
 
     pub fn read_close(&mut self, sid: u32) -> Result<(), HErr> {
         self.stream_mut(sid)?;
-        self.stream = None;
+        self.streams.retain(|s| s.id != sid);
         Ok(())
     }
 
-    pub fn stream_pos(&self) -> u64 {
-        self.stream.as_ref().map(|s| s.out).unwrap_or(0)
+    pub fn stream_pos(&self, sid: u32) -> u64 {
+        self.streams.iter().find(|s| s.id == sid).map(|s| s.out).unwrap_or(0)
     }
 
-    pub fn close_stream(&mut self) {
-        self.stream = None;
+    pub fn close_streams(&mut self) {
+        self.streams.clear();
     }
 }
 
@@ -385,5 +412,24 @@ fn detect(f: &PreadFile) -> Result<Format, HErr> {
 impl Fingerprint {
     pub fn of_pread(f: &PreadFile) -> std::io::Result<Fingerprint> {
         f.fingerprint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_record_the_library_cannot_read_refuses_the_archive_instead_of_skipping_the_check() {
+        let e = enclosed_verdict(Err(zip::result::ZipError::FileNotFound)).unwrap_err();
+        assert_eq!((e.code, e.reason), ("invalid_archive", Some("bad_zip")));
+        let e = enclosed_verdict(Err(zip::result::ZipError::InvalidArchive("Invalid local file header".into()))).unwrap_err();
+        assert_eq!(e.reason, Some("bad_zip"));
+    }
+
+    #[test]
+    fn a_readable_record_gives_the_librarys_verdict() {
+        assert!(enclosed_verdict(Ok(true)).unwrap());
+        assert!(!enclosed_verdict(Ok(false)).unwrap());
     }
 }

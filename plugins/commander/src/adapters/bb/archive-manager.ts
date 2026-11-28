@@ -245,7 +245,7 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
       const session = sessions.get(id);
       if (!session) {
         // A known archive that is not open (after a restart) is copied again only after a new estimate.
-        if (deps.registry.get(id) !== null) throw new CommanderError("consent_required", "The archive must be estimated again");
+        if (deps.registry.get(id) !== null) throw new CommanderError("consent_required", "The archive must be estimated again", false, "archive_copy");
         throw new CommanderError("not_found", "Archive is not open");
       }
       return session.provider;

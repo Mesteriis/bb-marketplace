@@ -374,7 +374,7 @@ impl Server {
                 }
                 let a = self.archive()?;
                 let data = a.read(stream, length, ctx)?;
-                let pos = a.stream_pos();
+                let pos = a.stream_pos(stream);
                 Ok(Reply::OkData(data, json!({"pos": pos.to_string()})))
             }
             "read_finish" => {
@@ -395,7 +395,7 @@ impl Server {
             "cancel" => Ok(Reply::Ok(json!({}))),
             "close" => {
                 if let Some(a) = self.archive.as_mut() {
-                    a.close_stream();
+                    a.close_streams();
                 }
                 if let Some(p) = self.pack.as_mut() {
                     p.abort();

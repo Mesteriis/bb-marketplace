@@ -551,6 +551,17 @@ export class JobRunner {
       }
       if (job.state !== "interrupted") return;
       const cancelling = job.error?.code === "cancelled" && job.error.message === cancelledError.message;
+      // S14a: a job over an archive whose copy is gone waits, still interrupted and with its checkpoint, until the
+      // owner confirms a new copy; a later recovery pass goes on from the checkpoint. It is not an unknown outcome.
+      if (!cancelling) {
+        const waiting = this.archiveWait(job);
+        if (waiting) {
+          if (job.error?.code !== waiting.code || job.error.reason !== waiting.reason) {
+            await this.patch(job, { error: waiting.toShape() }, "progress");
+          }
+          return;
+        }
+      }
       if (!cancelling && job.pendingConflict) {
         if (await this.change(job, "restore_conflict", { pendingConflict: job.pendingConflict }, "conflict")) return "resumed";
         continue;
@@ -596,6 +607,26 @@ export class JobRunner {
         return "resumed";
       }
     }
+  }
+
+  /** The refusal of a plan's archive endpoint that needs a new estimate, or null when none does. */
+  private archiveWait(job: OperationJob): CommanderError | null {
+    const endpoints = new Set<string>();
+    for (const endpoint of [job.plan.sourceEndpoint, job.plan.targetEndpoint]) if (endpoint) endpoints.add(endpoint);
+    for (const item of job.plan.items) {
+      if (item.source) endpoints.add(item.source.endpoint);
+      if (item.target) endpoints.add(item.target.endpoint);
+    }
+    for (const endpoint of endpoints) {
+      if (!endpoint.startsWith("archive:")) continue;
+      try {
+        this.deps.provider(endpoint as EndpointId);
+      } catch (error) {
+        if (isCommanderError(error) && error.code === "consent_required") return error;
+        // Anything else (an unknown archive) is left to the normal path, which reports it per item.
+      }
+    }
+    return null;
   }
 
   private async recoverStartedItem(

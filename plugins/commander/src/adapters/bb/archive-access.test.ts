@@ -57,7 +57,7 @@ function rig() {
     runner, store, planner, scans: {} as ScanRunner, grants: createAgentGrants(pluginKv), kv: pluginKv,
     publish: () => {}, ready: async () => {}, isManaged: () => false, archives,
   });
-  return { ops, open, resume, sourceOf, sftp, host, kv, archives };
+  return { ops, runner, open, resume, sourceOf, sftp, host, kv, archives };
 }
 
 // --- the agent never reaches an archive in this stage ---
@@ -186,4 +186,16 @@ test("an agent's endpoint list never shows an open archive or its name; the owne
   expect(JSON.stringify(shown)).not.toContain("secret-plans");
   const mine = await ops.endpointsList(owner, signal);
   expect(mine.endpoints.map((e) => e.id)).toEqual(["host:abc", ARCHIVE]);
+});
+
+test("a confirmed resume lets the jobs that waited for the archive recover; a plain open and a bare estimate do not", async () => {
+  const { ops, runner } = rig();
+  const recover = vi.spyOn(runner, "recover");
+  const id = "123e4567-e89b-42d3-a456-426614174000";
+  const first = await ops.archiveOpen({ source: ref(SFTP), estimateOnly: true }, owner, signal) as { estimateId: string };
+  await ops.archiveOpen({ source: ref(SFTP), estimateId: first.estimateId }, owner, signal);
+  const second = await ops.archiveResume({ archiveId: id, estimateOnly: true }, owner, signal) as { estimateId: string };
+  expect(recover).not.toHaveBeenCalled();
+  await ops.archiveResume({ archiveId: id, estimateId: second.estimateId }, owner, signal);
+  expect(recover).toHaveBeenCalledTimes(1);
 });

@@ -90,14 +90,32 @@ pub fn open_walk(root: &[u8], segments: &[Vec<u8>]) -> Result<File, HErr> {
     unreachable!()
 }
 
+thread_local! {
+    /// The counter of the clone made last on this thread (see `PreadFile::clone`).
+    static LAST_FORK: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The compressed-input counter of the `PreadFile` clone made last on this thread, if any.
+pub fn take_last_fork() -> Option<Arc<AtomicU64>> {
+    LAST_FORK.with(|l| l.borrow_mut().take())
+}
+
 /// Positional reader over a shared file: every reader keeps its own offset, none moves the file cursor.
-#[derive(Clone)]
+/// A clone counts its own compressed input (a stream's ZipArchive is a clone), so streams do not mix.
 pub struct PreadFile {
     file: Arc<File>,
     pos: u64,
     len: u64,
     /// Bytes pulled through `Read` by any clone (the ZIP library's compressed input).
     consumed: Arc<AtomicU64>,
+}
+
+impl Clone for PreadFile {
+    fn clone(&self) -> Self {
+        let consumed = Arc::new(AtomicU64::new(0));
+        LAST_FORK.with(|l| *l.borrow_mut() = Some(consumed.clone()));
+        PreadFile { file: self.file.clone(), pos: self.pos, len: self.len, consumed }
+    }
 }
 
 impl PreadFile {

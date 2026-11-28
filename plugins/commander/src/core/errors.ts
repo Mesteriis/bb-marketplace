@@ -23,6 +23,7 @@ export const ERROR_REASONS = {
     "too_many_open_archives",
   ],
   auth_failed: ["password_required", "bad_password"],
+  consent_required: ["archive_copy"],
   unsupported: [
     "link_not_supported", "link_escapes", "encryption_unsupported", "v7_tar", "pax_size", "unsupported_format",
     "unsupported_compression", "archives_unavailable",
@@ -32,7 +33,7 @@ export const ERROR_REASONS = {
 
 export const ErrorReason = z.enum([
   ...ERROR_REASONS.invalid_archive, ...ERROR_REASONS.limit_exceeded, ...ERROR_REASONS.auth_failed,
-  ...ERROR_REASONS.unsupported, ...ERROR_REASONS.internal,
+  ...ERROR_REASONS.unsupported, ...ERROR_REASONS.internal, ...ERROR_REASONS.consent_required,
 ]);
 export type ErrorReason = z.infer<typeof ErrorReason>;
 
