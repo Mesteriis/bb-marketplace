@@ -1,4 +1,5 @@
 import { CommanderError } from "./errors.ts";
+import type { EndpointId, PlanItem } from "./model.ts";
 import type { NameSegment } from "./path.ts";
 
 /** Plan-time archive guards (S14). The helper repeats these checks at open; this is the second line. */
@@ -138,4 +139,26 @@ export function checkExtractLimits(totals: ArchiveTotals, limits: ExtractLimits)
     );
   }
   return null;
+}
+
+/**
+ * Two items of an archive plan that would land on one name in the destination: the names are compared after NFC
+ * (and case folding on a case-insensitive endpoint), because an archive may hold both spellings. The refusal names
+ * the problem in the archive's own terms instead of the generic overlap text.
+ */
+export function assertArchiveTargetNames(items: readonly PlanItem[], caseOf: (endpoint: EndpointId) => boolean): void {
+  const seen = new Set<string>();
+  for (const item of items) {
+    if (!item.source?.endpoint.startsWith("archive:") || item.target === null) continue;
+    const sensitive = caseOf(item.target.endpoint);
+    const key = item.target.endpoint + "\u0001" + item.target.path.segments.map((name) => {
+      if ("b" in name) return "b" + name.b;
+      const nfc = name.t.normalize("NFC");
+      return "t" + (sensitive ? nfc : nfc.toLowerCase());
+    }).join("\u0000");
+    if (seen.has(key)) {
+      throw new CommanderError("invalid_archive", "Two archive entries would get the same name in the destination", false, "name_collision");
+    }
+    seen.add(key);
+  }
 }

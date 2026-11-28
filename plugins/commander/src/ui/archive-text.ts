@@ -8,6 +8,7 @@ const format = "Формат или вариант архива не подде�
 const stopped = "Модуль архивов остановился. Повторите; пароль придётся ввести заново";
 
 const lines: Record<string, string> = {
+  "invalid_archive/name_collision": "Два элемента архива получают одинаковое имя в каталоге назначения",
   "invalid_archive/duplicate_name": "В архиве повторяются имена записей; распаковка невозможна",
   "invalid_archive/crc_mismatch": damaged, "invalid_archive/size_mismatch": damaged, "invalid_archive/aes_auth_failed": damaged,
   "limit_exceeded/meta_too_large": unusual, "limit_exceeded/directory_too_large": unusual,

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CommanderError } from "./errors.ts";
+import { assertArchiveTargetNames } from "./archive-guard.ts";
 import {
   assertNoSourceOverlap,
   assertNoTargetOverlap,
@@ -532,6 +533,7 @@ async function renameBatchItems(
  * duplicate targets are refused. Every other kind keeps the overlap guard.
  */
 function checkTargets(items: PlanItem[], caseOf: (id: EndpointId) => boolean, kind: OperationKind): void {
+  assertArchiveTargetNames(items, caseOf);
   if (kind !== "rename" || items.length < 2) {
     assertNoTargetOverlap(items, caseOf, kind);
     return;

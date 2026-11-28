@@ -30,9 +30,14 @@ it("has a line for every allowed code and reason pair, and none for a pair the s
       expect(archiveReasonText(code, reason), `${code}+${reason}`).toEqual(expect.any(String));
     }
   }
-  expect(pairs).toBe(38);
+  expect(pairs).toBe(39);
   expect(archiveReasonText("invalid_archive", "ratio")).toBeNull();
   expect(archiveReasonText("limit_exceeded", "nope")).toBeNull();
+});
+
+it("names a collision of two archive entries on the target in plain words", () => {
+  expect(problemOf(host("invalid_archive", "name_collision")).message)
+    .toBe("Два элемента архива получают одинаковое имя в каталоге назначения");
 });
 
 it("falls back to the code's own line when the reason is unknown, and never prints the host message", () => {
