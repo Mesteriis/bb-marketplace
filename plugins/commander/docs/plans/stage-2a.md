@@ -446,6 +446,27 @@ Remote Hub `9da1d6bb`, тестовый sshd (Alpine) в Docker на `127.0.0.1:
 связкой ключей и тестовыми ключами, запись тестового хоста в
 `~/.ssh/known_hosts`.
 
+## Находки приёмки S18
+
+Срез доработок после S18 (решение координатора). Продуктовый код в S18 не
+меняется.
+
+1. **HOME под symlink даёт `connection_failed`.** Стенд с `HOME=/tmp/…`
+   (на Darwin `/tmp` — symlink): host-fs отвечает `permission_denied`
+   «Symbolic link in directory path», а `endpoints.prepare` превращает любую
+   ошибку `home` в `connection_failed` «Host filesystem is unavailable».
+   Воспроизведение: `node s18/live-sftp.mjs local-f4 <stand>` при таком HOME.
+   Решение:
+   - `endpoints.prepare` пробрасывает код host-fs (`permission_denied` с
+     понятным текстом) вместо `connection_failed`;
+   - корень endpoint (`home`) канонизируется `realpath` один раз при
+     подготовке: ссылки выше корня допустимы, ниже корня запрет остаётся;
+   - тест с HOME через symlink.
+2. **Первая отрисовка панели на 100 000 записей — около 15 с.** Оптимизация в
+   том же срезе, цель — по замеру S18.
+3. **Чтение SFTP примерно в 10 раз медленнее записи.** Оптимизация в том же
+   срезе, цель — по замеру S18.
+
 ## Известные нестабильности
 
 На ветке этапа после слияния S15 (`ada29356`) в одном полном прогоне
