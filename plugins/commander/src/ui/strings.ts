@@ -1,5 +1,6 @@
 export const ru = {
   archive: {
+    kind: "Архив",
     passwordTitle: "Зашифрованный архив", password: "Пароль архива",
     estimateTitle: "Открыть архив с другого компьютера",
     estimateText: (size: string) => "Архив сначала копируется на этот компьютер: будет прочитано " + size + ". Продолжить?",

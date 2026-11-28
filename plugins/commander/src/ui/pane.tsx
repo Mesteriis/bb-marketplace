@@ -144,7 +144,7 @@ export function Pane(props: PaneProps) {
   const renderedCursor = cursor !== null && cursorIndex >= first && cursorIndex < end
     && (cursor === upKey || cursorIndex >= offset);
   const sources = props.endpoints.map((source) => <option key={source.id} value={source.id}>{source.label}</option>);
-  const provider = endpoint?.provider === "sftp" ? ru.sftp : ru.local;
+  const provider = endpoint?.provider === "sftp" ? ru.sftp : endpoint?.provider === "archive" ? ru.archive.kind : ru.local;
   const access = endpoint?.readOnly ? ru.readOnly : ru.writable;
   const sortCells = [
     { by: "name", label: ru.nameSort }, { by: "size", label: ru.sizeSort }, { by: "mtime", label: ru.dateSort },
