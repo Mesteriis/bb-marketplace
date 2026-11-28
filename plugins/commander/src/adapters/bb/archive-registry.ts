@@ -24,7 +24,7 @@ interface Row {
 }
 
 export interface ArchiveRegistry {
-  register(source: ResourceRef, fingerprint: z.infer<typeof SourceVersion>): string;
+  register(source: ResourceRef, fingerprint: z.infer<typeof SourceVersion>, id?: string): string;
   get(id: string): { source: ResourceRef; fingerprint: z.infer<typeof SourceVersion> } | null;
   /** The panel is closed or a referencing job ended: the retention clock restarts. */
   release(id: string): void;
@@ -70,8 +70,8 @@ export function createArchiveRegistry(deps: {
   const remove = db.prepare("DELETE FROM archives WHERE id = ?");
 
   return {
-    register(source, fingerprint) {
-      const id = uuid();
+    register(source, fingerprint, given) {
+      const id = given ?? uuid();
       insert.run({
         id,
         source: JSON.stringify(ResourceRef.parse(source)),
