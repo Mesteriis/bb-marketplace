@@ -49,7 +49,7 @@ describe("statusLine", () => {
   });
   it("asks for the setting when the marker location is missing", () => {
     expect(statusLine({ configured: false, local: true, effective: null }, 1000)).toBe(
-      "Укажите файл отметки в настройках плагина",
+      "Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина",
     );
   });
   it("explains a thread on another machine", () => {

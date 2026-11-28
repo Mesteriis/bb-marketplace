@@ -7,7 +7,6 @@ import type { GuardState } from "../src/core/state.ts";
 function memoryStore(initial: GuardState = { threads: {} }, configured = true, writable = true) {
   const memory = { state: initial, logs: [] as LogEvent[], writes: 0 };
   const store: StateStore = {
-    configured,
     async writable() {
       return configured && writable;
     },

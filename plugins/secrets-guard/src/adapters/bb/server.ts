@@ -1,12 +1,14 @@
-// BB server entry: the marker location comes from a setting, the three RPC
+// BB server entry: the marker location comes from the guard hook's pointer or,
+// as an override, from a setting; the three RPC
 // methods expose the service, and thread events keep opened trees in step.
 // The plugin registers no CLI command, agent tool or skill: only the owner's
 // click in the app opens the guard.
+import { homedir } from "node:os";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { StoreUnavailable, type StateStore, type ThreadDirectory } from "../../core/ports.ts";
 import { createService } from "../../core/service.ts";
 import { GUARD_TAG, rpcContract } from "./contract.ts";
-import { createFileStore } from "./file-store.ts";
+import { createLocatedStore, locateStateFile } from "./location.ts";
 import { toRefusal } from "./refusals.ts";
 
 const CHILD_PAGE = 200;
@@ -45,29 +47,37 @@ function threadDirectory(bb: BbPluginApi): ThreadDirectory {
   };
 }
 
-export default function plugin(bb: BbPluginApi) {
+/** `homeDir` is where the guard hook keeps its pointer; tests pass a temporary directory. */
+export function createPlugin(host: { homeDir: string }) {
+  return (bb: BbPluginApi) => start(bb, host.homeDir);
+}
+
+export default createPlugin({ homeDir: homedir() });
+
+function start(bb: BbPluginApi, homeDir: string): void {
   const settings = bb.settings.define({
     stateFile: {
       type: "string",
-      label: "Файл отметки охраны",
+      label: "Файл отметки охраны (необязательно)",
       description:
-        "Полный путь к файлу отметки, который читает хук охраны Claude Code на этом Mac. Пока поле пусто, кнопка неактивна.",
+        "Пусто — путь берётся у хука охраны Claude Code на этом Mac. Заполните, чтобы переопределить его: полный путь к файлу отметки.",
       default: "",
     },
   });
 
   let disposed = false;
-  let currentPath = "";
-  let current = createFileStore({ stateFile: null, now });
+  let setting = "";
+  const located = createLocatedStore({
+    locate: () => locateStateFile({ setting, homeDir }),
+    now,
+    onLeaveFailed: () => bb.log.warn("the previous marker file could not be closed"),
+  });
   const store: StateStore = {
-    get configured() {
-      return current.configured;
-    },
-    writable: () => current.writable(),
-    read: () => current.read(),
+    writable: () => located.writable(),
+    read: () => located.read(),
     // An unloaded instance must not write: its view of the threads is out of date.
     update: (change, log) =>
-      disposed ? Promise.reject(new StoreUnavailable("not_configured")) : current.update(change, log),
+      disposed ? Promise.reject(new StoreUnavailable("not_configured")) : located.update(change, log),
   };
   const service = createService({ store, threads: threadDirectory(bb), now });
 
@@ -99,29 +109,19 @@ export default function plugin(bb: BbPluginApi) {
     });
   }
 
-  const apply = (values: { stateFile: string }) => {
-    const nextPath = values.stateFile.trim();
-    if (nextPath !== currentPath && current.configured) {
-      // The old file stays in force for the hook, and nothing here could close it any more.
-      const previous = current;
-      void previous
-        .update(
-          (state) =>
-            state.until === undefined && Object.keys(state.threads).length === 0 ? state : { threads: {} },
-          { event: "close", scope: null, root: null, until: null },
-        )
-        .catch(() => bb.log.warn("the previous marker file could not be closed"));
-    }
-    currentPath = nextPath;
-    current = createFileStore({ stateFile: nextPath, now });
+  /** A changed setting leaves the file used so far: what is open there is closed first. */
+  const apply = async (values: { stateFile: string }, changed: boolean) => {
+    if (changed && !disposed) await located.leave();
+    setting = values.stateFile;
     bb.rpc.experimental_invalidate([GUARD_TAG]);
     scheduleResync();
   };
-  const ready = settings.get().then(apply, (error: unknown) => {
-    bb.log.error(`settings are unreadable: ${error instanceof Error ? error.message : "unknown error"}`);
-  });
-  settings.onChange((next) => {
-    if (!disposed) apply(next);
+  const report = (error: unknown) =>
+    bb.log.error(`settings could not be applied: ${error instanceof Error ? error.message : "unknown error"}`);
+  let ready: Promise<void> = settings.get().then((values) => apply(values, false), report);
+  settings.onChange((next, previous) => {
+    if (disposed) return;
+    ready = ready.then(() => apply(next, next.stateFile.trim() !== previous.stateFile.trim())).catch(report);
   });
 
   async function guarded<T>(run: () => Promise<T>, changes: boolean): Promise<T> {

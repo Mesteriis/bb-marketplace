@@ -49,7 +49,7 @@ describe("GuardButton", () => {
   it("is inactive with an explanation when the marker location is missing", () => {
     const html = button({ configured: false, local: true, effective: null });
     expect(html).toContain('disabled=""');
-    expect(html).toContain('title="Укажите файл отметки в настройках плагина"');
+    expect(html).toContain('title="Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина"');
   });
   it("is inactive on a thread that runs on another machine", () => {
     const html = button({ configured: true, local: false, effective: null });
@@ -100,7 +100,7 @@ describe("GuardPopup", () => {
   });
   it("explains instead of offering terms when the marker location is missing", () => {
     const html = popup({ configured: false, local: true, effective: null });
-    expect(html).toContain("Укажите файл отметки в настройках плагина");
+    expect(html).toContain("Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина");
     expect(html).not.toContain("10 мин");
   });
   it("explains a thread on another machine", () => {

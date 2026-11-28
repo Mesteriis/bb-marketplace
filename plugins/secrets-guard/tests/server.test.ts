@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import plugin from "../src/adapters/bb/server.ts";
+import { createPlugin } from "../src/adapters/bb/server.ts";
 
 let dir: string;
 let file: string;
@@ -42,7 +42,8 @@ async function load(stateFile: string | null) {
       system: { config: async () => ({ primaryHostId: "host_here" }) },
     } as never,
   });
-  await plugin(bb);
+  // The temporary directory stands in for the home folder: the real one is never read.
+  await createPlugin({ homeDir: dir })(bb);
   return harness;
 }
 
@@ -58,7 +59,11 @@ describe("without a marker location", () => {
     });
     await expect(
       harness.behavior.callRpc("open", { threadId: "thr_a", scope: "thread", minutes: 10 }),
-    ).rejects.toMatchObject({ code: "conflict", message: "Укажите файл отметки в настройках плагина" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message:
+        "Охрана не найдена: хук охраны Claude Code ещё не создал указатель. Запустите любой тред Claude Code или укажите файл отметки в настройках плагина",
+    });
     await harness.lifecycle.dispose();
   });
   it("becomes usable when the owner sets the path", async () => {
@@ -68,6 +73,53 @@ describe("without a marker location", () => {
       configured: true,
       local: true,
       effective: { scope: "thread", until: 1600, rootThreadId: "thr_a" },
+    });
+    await harness.lifecycle.dispose();
+  });
+});
+
+describe("the pointer published by the guard hook", () => {
+  const publish = async (stateFile: string) => {
+    await mkdir(join(dir, ".claude", "hooks"), { recursive: true });
+    await writeFile(join(dir, ".claude", "hooks", "guard-location.json"), JSON.stringify({ stateFile }));
+  };
+  it("is used when the setting is empty", async () => {
+    await publish(file);
+    const harness = await load(null);
+    expect(await harness.behavior.callRpc("open", { threadId: "thr_a", scope: "thread", minutes: 10 })).toEqual({
+      configured: true,
+      local: true,
+      effective: { scope: "thread", until: 1600, rootThreadId: "thr_a" },
+    });
+    expect(await marker()).toEqual({ threads: { thr_a: { until: 1600, root: "thr_a", tree: false } } });
+    await harness.lifecycle.dispose();
+  });
+  it("is picked up when the hook creates it after the plugin has started", async () => {
+    const harness = await load(null);
+    expect(await harness.behavior.callRpc("state", { threadId: "thr_a" })).toMatchObject({ configured: false });
+    await publish(file);
+    expect(await harness.behavior.callRpc("state", { threadId: "thr_a" })).toEqual({
+      configured: true,
+      local: true,
+      effective: null,
+    });
+    await harness.lifecycle.dispose();
+  });
+  it("is ignored when the setting names another file", async () => {
+    await publish(join(dir, "from-hook.json"));
+    const harness = await load(file);
+    await harness.behavior.callRpc("open", { threadId: "thr_a", scope: "thread", minutes: 10 });
+    expect(await marker()).toEqual({ threads: { thr_a: { until: 1600, root: "thr_a", tree: false } } });
+    await expect(readFile(join(dir, "from-hook.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await harness.lifecycle.dispose();
+  });
+  it("describes the setting as optional", async () => {
+    const harness = await load(null);
+    expect(harness.inspection.registrations.settingsDescriptors.stateFile).toMatchObject({
+      label: "Файл отметки охраны (необязательно)",
+      description:
+        "Пусто — путь берётся у хука охраны Claude Code на этом Mac. Заполните, чтобы переопределить его: полный путь к файлу отметки.",
+      default: "",
     });
     await harness.lifecycle.dispose();
   });

@@ -164,7 +164,6 @@ export function createFileStore(options: FileStoreOptions): StateStore {
   }
 
   return {
-    configured: stateFile !== null,
     async writable() {
       if (stateFile === null) return false;
       try {

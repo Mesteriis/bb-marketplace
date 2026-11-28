@@ -44,23 +44,22 @@ async function reasonOf(promise: Promise<unknown>): Promise<string> {
 }
 
 describe("without a marker location", () => {
-  it("reads as closed and is not configured", async () => {
-    expect(store(null).configured).toBe(false);
+  it("reads as closed and is not writable", async () => {
+    expect(await store(null).writable()).toBe(false);
     expect(await store(null).read()).toEqual({ threads: {} });
   });
   it("refuses to write", async () => {
     expect(await reasonOf(store(null).update(openA, OPEN_A))).toBe("not_configured");
   });
   it("treats a blank or relative path as not configured", async () => {
-    expect(store("   ").configured).toBe(false);
-    expect(store("marker.json").configured).toBe(false);
+    expect(await store("   ").writable()).toBe(false);
+    expect(await store("marker.json").writable()).toBe(false);
     expect(await reasonOf(store("marker.json").update(openA, OPEN_A))).toBe("not_configured");
   });
 });
 
 describe("reading", () => {
   it("reads a missing file as closed", async () => {
-    expect(store().configured).toBe(true);
     expect(await store().read()).toEqual({ threads: {} });
   });
   it("reads a file that is not JSON as closed", async () => {
