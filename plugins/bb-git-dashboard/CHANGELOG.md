@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.4 — 2026-11-28
+
+The new interface, fifth slice: CI/CD.
+
+- **CI/CD** has the head of every section (the repository filter, All / Active / Failed, Refresh) and one line of numbers — running, queued, failed and how often the finished runs shown succeeded — in place of the four tiles. The table: run (workflow, number, title), repository, state as a mark and a word, branch, event, when it started and how long it took, in the interface language. A row opens that run, addressed as `<copy>/actions/<run>`.
+- **A run** is a page of its own with its path (CI/CD › repository › run), its title and state, Open on the forge and Copy link, what it ran on and how long; the actions in one row: Re-run failed jobs (the main one), Re-run all or Cancel, **Ask agent ▾** (start the investigation, or choose the model in the composer), **Send to threads** in a dialog, and Run with inputs. The jobs say how long each took, the chosen one its steps; the log has a filter, **Follow the end** as a switch, Copy log, and the line it opened on.
+- **Run workflow** is a dialog: workflow, branch, inputs (yes/no inputs are switches), then what the server will send, read from its own preview after the form rests, and one **Run** that sends exactly that preview. A change prepares a new one, and a copy keeps only its latest run preview, so editing the form never uses up the server's 32 previews; a refused or expired preview is asked for again by Run.
+- A copy's **CI/CD** tab: All / Active / Failed, **Notify about failures** (a switch that opens the choice of threads), the forge and account (click it to change the connection), Templates, Run workflow and Refresh; Newer and Older under the table.
+- **Templates** (`<copy>/actions/templates`) stand in three columns: the list — built-in, then your own, the ones that fit the stack marked and the refused ones with their reason — the chosen template's values and where it goes, and the file with its lines numbered, what will happen and **Create branch and pull request**.
+- Pull request page: Send of an agent's draft is the main button in the primary colours (a probe caught it mid-transition); a thread under a diff line says Waiting for you on your own pull request and when in relative time, with the exact time in the tooltip; the title's edit is a pencil icon and Open on the forge a ghost button with the external-link mark; the review outcome keeps to one line in Russian. The bell is BB's own bell icon.
+
 ## 0.14.3 — 2026-11-28
 
 The new interface, fourth slice: My PRs and the pull request page.

@@ -28,7 +28,7 @@ A pull request opens with its Markdown discussion and Jira links, checks, files 
 
 ## CI/CD
 
-The Actions tab and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with tiles and filters, open a failed job's log at its error line, and re-run, cancel or run a workflow after a confirmation. **Templates** write a pipeline for the copy's stack to a new branch with a pull request. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
+A copy's and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab CI/CD or Azure Pipelines runs with filters; a run opens as a page at its failed job's error line, to re-run, cancel or run a workflow after a confirmation. **Templates** write a pipeline for the copy's stack to a new branch with a pull request. **CI/CD** in Git sums up every linked repository. Ask agent, Send to threads and `bb git-dashboard ci` pass runs to agents as fenced, untrusted text.
 
 ## Remote repositories
 
