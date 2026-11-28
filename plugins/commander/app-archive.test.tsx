@@ -86,3 +86,43 @@ test("a saved archive panel survives the start, asks for a new estimate, and rea
   expect(await within(grid).findByRole("row", { name: /внутри\.txt/ })).toBeTruthy();
   expect(saved.left.tabs[0]!.endpoint).toBe(ARCHIVE);
 });
+
+test("two cold panels: confirming one does not make the other ask a second time", async () => {
+  const ID2 = "999e4567-e89b-42d3-a456-426614174000", B = "archive:" + ID2, ESTIMATE2 = "333e4567-e89b-42d3-a456-426614174000";
+  saved = {
+    left: { activeTab: 0, tabs: [{ ...tab, endpoint: ARCHIVE, path: { segments: [] } }] },
+    right: { activeTab: 0, tabs: [{ ...tab, endpoint: B, path: { segments: [] } }] },
+    activePane: "left", layout: "horizontal", split: 0.5,
+  };
+  const views = { [ARCHIVE]: archiveView, [B]: { ...archiveView, id: B, label: "other.zip" } };
+  const opened = new Set<string>();
+  const where = (id: string) => ({ endpoint: "host:fixture", path: { segments: [{ t: id === ID ? "site.zip" : "other.zip" }] } });
+  host.call.mockImplementation(async (method, input) => {
+    switch (method) {
+      case "ui_state_get": return { state: saved };
+      case "ui_state_set": saved = structuredClone(input.state); return {};
+      case "endpoint_home": return { path: { segments: [] } };
+      case "endpoints_list": return { endpoints: [local, ...[...opened].map((id) => views["archive:" + id as keyof typeof views])] };
+      case "job_list": return { jobs: [] };
+      case "dir_list":
+        if (input.ref.endpoint.startsWith("archive:") && !opened.has(input.ref.endpoint.slice(8))) throw refusal;
+        return { entries: [], cursor: null };
+      case "archive_resume":
+        if (input.estimateOnly) return { estimateId: input.archiveId === ID ? ESTIMATE : ESTIMATE2, bytesPlanned: "2147483648", source: where(input.archiveId) };
+        opened.add(input.archiveId);
+        return { archiveId: input.archiveId, endpoint: "archive:" + input.archiveId, entries: 0, encrypted: false };
+      default: throw new Error("Unexpected RPC " + method);
+    }
+  });
+  mount();
+  expect(await screen.findByText("site.zip")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
+  await waitFor(() => expect(host.call).toHaveBeenCalledWith("archive_resume", { archiveId: ID, estimateId: ESTIMATE }));
+  expect(await screen.findByText("other.zip")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+  await waitFor(() => expect(screen.queryByText("other.zip")).toBeNull());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.queryByRole("heading", { name: "Скопировать архив для открытия" })).toBeNull();
+  const estimatesOfB = host.call.mock.calls.filter(([method, input]) => method === "archive_resume" && input.archiveId === ID2 && input.estimateOnly);
+  expect(estimatesOfB).toHaveLength(1);
+});

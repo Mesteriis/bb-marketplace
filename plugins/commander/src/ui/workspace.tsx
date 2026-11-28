@@ -3,7 +3,7 @@ import type { SearchHit } from "../core/search.ts";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
+import type { ConflictAction, Endpoint, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
 import { displayPath, join, NameSegment, parent, parsePosix, samePath, type ResourcePath } from "../core/path.ts";
 import type { AgentGrant, SavedUiScan, UiState } from "../core/wire/rpc.ts";
 import { CompareView, type ScanActions, type ScanSubject } from "./compare-view.tsx";
@@ -21,7 +21,8 @@ import { SyncDialog, type SyncActions } from "./sync-dialog.tsx";
 import { Viewer } from "./viewer.tsx";
 
 /** A question that waits for the owner: copy this archive to the server (S14a). Several can wait at once. */
-type ArchiveAsk = { pane: Side | null; ref: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string };
+type ArchiveAsk = { pane: Side | null; ref: ResourceRef | null; source: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string };
+type EstimateReply = { estimateId: string; bytesPlanned: string; source?: ResourceRef };
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
@@ -72,13 +73,13 @@ export interface WorkspaceProps {
   onOpenThread: (threadId: string) => void;
   onOpenPage: () => void;
   /** S14: opens a ZIP or TAR as a read-only panel; absent where archives are unavailable. */
-  onOpenArchive?: (ref: ResourceRef, estimateId?: string) => Promise<{ endpoint: string } | { estimateId: string; bytesPlanned: string }>;
+  onOpenArchive?: (ref: ResourceRef, estimateId?: string) => Promise<{ endpoint: string } | EstimateReply>;
   /** S14: the archive that asks the owner for its password, if any. The password goes only to onPassword. */
   passwordFor?: string | null;
   onPassword?: (archiveId: string, password: string) => Promise<unknown>;
   onPasswordCancel?: (archiveId: string) => void;
   /** S14a: reopens an archive tab whose copy is gone (after a restart) through a new estimate. */
-  onResumeArchive?: (archiveId: string, estimateId?: string) => Promise<{ endpoint: string } | { estimateId: string; bytesPlanned: string }>;
+  onResumeArchive?: (archiveId: string, estimateId?: string) => Promise<{ endpoint: string } | EstimateReply>;
 }
 
 /** A file that changed after the estimate gets its own line; everything else is the usual problem. */
@@ -157,16 +158,29 @@ export function Workspace(props: WorkspaceProps) {
   const [searchRoots, setSearchRoots] = useState<Partial<Record<Side, ResourceRef>>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [asks, setAsks] = useState<ArchiveAsk[]>([]);
-  const ask = (next: ArchiveAsk) => setAsks((previous) => [...previous, next]);
+  // One question per archive at a time: while an estimate of an archive is requested or its question waits, the
+  // same archive (a second panel, a refresh, a job) does not ask again.
+  const waitingArchives = useRef(new Set<string>());
+  const ask = (next: ArchiveAsk) => setAsks((previous) => previous.some((item) => item.resumeId !== undefined && item.resumeId === next.resumeId) ? previous : [...previous, next]);
+  const dropAsk = () => setAsks((previous) => {
+    const [first, ...rest] = previous;
+    if (first?.resumeId) waitingArchives.current.delete(first.resumeId);
+    return rest;
+  });
+  function requestResume(pane: Side | null, resumeId: string) {
+    if (!props.onResumeArchive || waitingArchives.current.has(resumeId)) return;
+    waitingArchives.current.add(resumeId);
+    void props.onResumeArchive(resumeId).then((reply) => {
+      if ("estimateId" in reply) ask({ pane, ref: null, source: reply.source ?? null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+      else waitingArchives.current.delete(resumeId);
+    }).catch((error: unknown) => { waitingArchives.current.delete(resumeId); setProblem(archiveProblem(error)); });
+  }
   // S14a: a job that waits for its archive's copy names the archive in its plan; the question is the same as a panel's.
   const confirmArchive = (job: OperationJob) => {
     const endpoint = [job.plan.sourceEndpoint, job.plan.targetEndpoint, ...job.plan.items.flatMap((item) => [item.source?.endpoint, item.target?.endpoint])]
       .find((id): id is string => typeof id === "string" && id.startsWith("archive:"));
-    if (!endpoint || !props.onResumeArchive) return;
-    const resumeId = endpoint.slice("archive:".length);
-    void props.onResumeArchive(resumeId).then((reply) => {
-      if ("estimateId" in reply) ask({ pane: null, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
-    }).catch((error: unknown) => setProblem(archiveProblem(error)));
+    if (!endpoint) return;
+    requestResume(null, endpoint.slice("archive:".length));
   };
   const [same, setSame] = useState(false);
   const [retryConflict, setRetryConflict] = useState<{ view: ConflictView; problem: Problem } | null>(null);
@@ -199,10 +213,7 @@ export function Workspace(props: WorkspaceProps) {
       const key = pane + ":" + value.endpoint;
       if (asked.current.has(key) && asked.current.get(key) === directory) continue;
       asked.current.set(key, directory);
-      const resumeId = value.endpoint.slice("archive:".length);
-      void props.onResumeArchive(resumeId).then((reply) => {
-        if ("estimateId" in reply) ask({ pane, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
-      }).catch((error: unknown) => setProblem(archiveProblem(error)));
+      requestResume(pane, value.endpoint.slice("archive:".length));
     }
   });
   // S11: a search replaces only its source pane; the other pane remains the copy destination.
@@ -427,7 +438,7 @@ export function Workspace(props: WorkspaceProps) {
         // An estimate of zero bytes needs no question: the file is read in place. Anything else asks first.
         if ("estimateId" in reply) {
           if (reply.bytesPlanned !== "0") {
-            ask({ pane, ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+            ask({ pane, ref, source: ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
             return;
           }
           reply = await props.onOpenArchive!(ref, reply.estimateId);
@@ -780,20 +791,21 @@ export function Workspace(props: WorkspaceProps) {
       })}
       cancel={() => open({ kind: "cancel", job: dialog.job, returnTo: dialog })} close={close} busy={busy} error={problem} />}
     {!dialog && asks[0] && <Modal key={asks[0].estimateId} title={ru.archive.estimateTitle} description={ru.archive.estimateText(bytes(asks[0].bytes))}
-      close={() => { setAsks((previous) => previous.slice(1)); setProblem(null); }} busy={busy}>
+      close={() => { dropAsk(); setProblem(null); }} busy={busy}>
+      {asks[0].source && <ArchiveSource source={asks[0].source} endpoints={endpoints} />}
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
         <Button size="sm" disabled={busy} onClick={() => { const current = asks[0]!; void perform(async () => {
           if (current.resumeId) {
             await props.onResumeArchive!(current.resumeId, current.estimateId);
-            props.onRefresh("left");
-            props.onRefresh("right");
+            // Only the panels that show this archive are listed again: another cold panel keeps its own question.
+            for (const pane of sides) if (tabs[pane]?.endpoint === "archive:" + current.resumeId) props.onRefresh(pane);
             return;
           }
           const reply = await props.onOpenArchive!(current.ref!, current.estimateId);
           if ("endpoint" in reply && current.pane) await props.onEndpoint(current.pane, reply.endpoint);
-        }, () => setAsks((previous) => previous.slice(1)), archiveProblem); }}>{ru.archive.copyAndOpen}</Button>
-        <Button size="sm" variant="outline" onClick={() => { setAsks((previous) => previous.slice(1)); setProblem(null); }} disabled={busy}>{ru.cancel}</Button>
+        }, dropAsk, archiveProblem); }}>{ru.archive.copyAndOpen}</Button>
+        <Button size="sm" variant="outline" onClick={() => { dropAsk(); setProblem(null); }} disabled={busy}>{ru.cancel}</Button>
       </div>
     </Modal>}
     {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} busy={busy}>
@@ -830,4 +842,12 @@ export function Workspace(props: WorkspaceProps) {
     </Modal>}
     </>}
   </div>;
+}
+
+// The dialog names the archive file and where it is read from, so two archives of one size cannot be mixed up.
+function ArchiveSource({ source, endpoints }: { source: ResourceRef; endpoints: Endpoint[] }) {
+  const last = source.path.segments[source.path.segments.length - 1];
+  const name = last ? displayPath({ segments: [last] }).replace(/^\//, "") : "";
+  const label = endpoints.find((item) => item.id === source.endpoint)?.label ?? source.endpoint;
+  return <p className="cm-meta cm-archive-source"><strong>{name}</strong> · {label} · <code>{displayPath(source.path)}</code></p>;
 }

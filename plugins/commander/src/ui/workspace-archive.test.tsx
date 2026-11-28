@@ -200,7 +200,7 @@ describe("confirming a copy from the queue, and several questions at once", () =
     expect(onResumeArchive).toHaveBeenCalledWith(ID);
     fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
     await waitFor(() => expect(onResumeArchive).toHaveBeenLastCalledWith(ID, ESTIMATE));
-    await waitFor(() => expect(props.onRefresh).toHaveBeenCalled());
+    expect(props.onRefresh).not.toHaveBeenCalled();
   });
 
   it("the dialog has a neutral title", async () => {
@@ -227,6 +227,21 @@ describe("confirming a copy from the queue, and several questions at once", () =
     await waitFor(() => expect(onResumeArchive).toHaveBeenCalledWith(ID, ESTIMATE));
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     await waitFor(() => expect(screen.queryByText(/2 ГБ/)).toBeNull());
+  });
+});
+
+describe("the question names the archive and where it is read from", () => {
+  const ESTIMATE = "223e4567-e89b-42d3-a456-426614174000";
+  it("two archives of one size are told apart by name, endpoint and path in the dialog", async () => {
+    for (const [name] of [["docs.zip"], ["notes.tar"]] as const) {
+      const onOpenArchive = vi.fn(async () => ({ estimateId: ESTIMATE, bytesPlanned: "1073741824" }));
+      mount({ onOpenArchive } as never);
+      enterOn(new RegExp(name.replace(".", "\\.")));
+      expect(await screen.findByText(name)).toBeTruthy();
+      expect(screen.getByText("/data/" + name)).toBeTruthy();
+      expect(document.querySelector(".cm-archive-source")!.textContent).toBe(name + " · Fixture · /data/" + name);
+      cleanup();
+    }
   });
 });
 

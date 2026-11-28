@@ -281,7 +281,7 @@ export const rpcSchemas = {
     // copy reads, the second (with that estimateId) opens it. The id is one-time and bound to owner, ref and version.
     output: z.union([
       z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
-      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
     ]),
   },
   // After a restart an archive tab names an archive id whose copy is gone: the owner estimates and confirms again.
@@ -289,7 +289,7 @@ export const rpcSchemas = {
     input: z.strictObject({ archiveId: z.uuid(), estimateOnly: z.boolean().optional(), estimateId: z.uuid().optional() }),
     output: z.union([
       z.strictObject({ archiveId: z.uuid(), endpoint: EndpointId, entries: z.int().min(0), encrypted: z.boolean() }),
-      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size }),
+      z.strictObject({ estimateId: z.uuid(), bytesPlanned: Size, source: ResourceRef }),
     ]),
   },
   archive_close: { input: z.strictObject({ archiveId: z.uuid() }), output: empty },

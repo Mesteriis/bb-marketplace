@@ -93,7 +93,7 @@ test("a remote archive is refused without a confirmed estimate and nothing is re
 test("the estimate reports the bytes the copy will read and reads nothing itself", async () => {
   const { ops, open, sftp } = rig();
   const estimate = await ops.archiveOpen({ source: ref(SFTP), estimateOnly: true }, owner, signal);
-  expect(estimate).toEqual({ estimateId: expect.stringMatching(/^[0-9a-f-]{36}$/), bytesPlanned: "1234" });
+  expect(estimate).toEqual({ estimateId: expect.stringMatching(/^[0-9a-f-]{36}$/), bytesPlanned: "1234", source: expect.anything() });
   expect(open).not.toHaveBeenCalled();
   expect(sftp.calls.filter((c) => c.op === "read")).toHaveLength(0);
 });

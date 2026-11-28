@@ -450,7 +450,7 @@ export function createOperations(deps: {
       if (archiveEstimates.size >= 32) throw refusal("conflict", "Archive estimate pool is full");
       const id = planner.uuid();
       archiveEstimates.set(id, { request, version: { size: entry.size, mtimeNs: entry.mtimeNs }, expires: now + 600_000 });
-      return { estimateId: id, bytesPlanned: entry.size };
+      return { estimateId: id, bytesPlanned: entry.size, source };
     }
     if (!estimateId) throw refusal("forbidden", "A remote archive requires a confirmed estimate");
     const estimate = archiveEstimates.get(estimateId);
