@@ -60,7 +60,9 @@ if (existsSync(target)) fail(target + " exists: render writes into a new folder 
 let built;
 try { built = buildScaffold(entry.scaffold, values, {}, entry.common); }
 catch (error) { fail(error instanceof CodedError ? error.message + ": " + error.detail : String(error)); }
-const ci = scaffoldCi(built!.files, entry.scaffold, forge, {name: String(built!.values.name), branch: "main"});
+const made = scaffoldCi(built!.files, entry.scaffold, forge, {name: String(built!.values.name), branch: "main"});
+const ci = made && "text" in made ? made : null;
+if (made && "reason" in made) process.stderr.write("no CI file: " + made.reason + "\n");
 for (const file of [...built!.files.filter(item => item.path !== ci?.path), ...(ci ? [{path: ci.path, text: ci.text, executable: false}] : [])]) {
   const path = join(target, file.path);
   mkdirSync(dirname(path), {recursive: true});

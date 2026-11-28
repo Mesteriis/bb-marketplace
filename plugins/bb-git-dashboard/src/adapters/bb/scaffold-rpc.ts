@@ -114,7 +114,8 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps & {send?: typeof fe
       const revision = entry.source === "github" ? {repository: state.repository, branch: state.branch, sha: state.revision!.sha} : null;
       const {values, files} = buildScaffold(entry.scaffold, input.values, {year: year()}, entry.common);
       const name = String(values.name);
-      const ci = scaffoldCi(files, entry.scaffold, input.ciForge, {name, branch: "main"});
+      const made = scaffoldCi(files, entry.scaffold, input.ciForge, {name, branch: "main"});
+      const ci = made && "text" in made ? made : null;
       const all = ci ? [...files.filter(file => file.path !== ci.path), {path: ci.path, text: ci.text, executable: false}]
         .sort((a, b) => a.path < b.path ? -1 : 1) : files;
       const {root} = await deps.rules();
@@ -155,7 +156,7 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps & {send?: typeof fe
           entry.scaffold.title + " · " + all.length + " files",
           ...(revision ? ["Templates " + revision.repository + "@" + revision.sha.slice(0, 7) + " (" + revision.branch + ")"] : []),
           input.hostId + " · " + [root.replace(/\/+$/, ""), input.category, name].filter(Boolean).join("/"),
-          ci ? "CI · " + ci.path + " (" + ci.template + ")" : "No CI file",
+          ci ? "CI · " + ci.path + " (" + ci.template + ")" : made && "reason" in made ? "No CI file: " + made.reason : "No CI file",
           "git init on main · first commit by " + input.author.name + " <" + input.author.email + ">",
           message,
           ...(repositoryText ? [repositoryText] : ["No repository on a forge"]),

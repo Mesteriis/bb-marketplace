@@ -76,7 +76,8 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
   const built = useMemo(() => {
     try {
       const {files} = buildScaffold(entry.scaffold, values, suggested, entry.common);
-      const ci = scaffoldCi(files, entry.scaffold, forge || null, {name: String(values.name), branch: "main"});
+      const made = scaffoldCi(files, entry.scaffold, forge || null, {name: String(values.name), branch: "main"});
+      const ci = made && "text" in made ? made : null;
       const all = ci ? [...files.filter(file => file.path !== ci.path), {path: ci.path, text: ci.text, executable: false}].sort((a, b) => a.path < b.path ? -1 : 1) : files;
       return {ok: true as const, files: all, ci};
     } catch (cause) { return {ok: false as const, problem: cause instanceof CodedError ? t("np.check-values", {detail: cause.detail ?? ""}) : message(cause)}; }

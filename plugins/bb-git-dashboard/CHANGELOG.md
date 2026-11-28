@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.2 — 2026-11-28
+
+The CI a new project gets, for web templates.
+
+- A frontend alone in `src/frontend/` is the project's stack: Node.js CI installs it there and runs `make check` at the root. Since 0.16.0 `src/frontend/` was always taken for a Go service's web UI, so such a project got no CI file. It is a web UI checked by `make web-check` only beside another application in `src/`.
+- The Python CI templates have the web option the Go ones have: Node.js set up beside Python (`setup-node`, Azure's `NodeTool`) and `make web-check` when there is no `make check`; on GitLab a job of its own on the `node` image, the Python job running `make check WEB=0`. What `web-check` runs is the project's Makefile's business. The Go CI files and the Python ones without the option render byte for byte as before (fixtures of 0.16.1's output).
+- `src/` with more than one application besides the frontend gets no CI file from a scaffold; the preview says why and names them, and the CLI prints it.
+
 ## 0.16.1 — 2026-11-28
 
 Scaffolds from a templates repository, second of two slices: the repository on GitHub is the source, and the plugin holds no templates of its own.

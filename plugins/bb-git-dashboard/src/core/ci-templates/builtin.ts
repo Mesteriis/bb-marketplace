@@ -33,6 +33,8 @@ const params: Record<StackId, CiParam[]> = {
     {name: "lockfile", label: "Install from the committed uv.lock (uv)", kind: "flag", default: true},
     make,
     {name: "test", label: "Run pytest", kind: "flag", default: true},
+    {name: "web", label: "Also check the web UI with Node.js (make web-check)", kind: "flag", default: false},
+    {name: "webNode", label: "Node.js version for the web UI", kind: "text", default: "24"},
     ...app,
   ],
   go: [{name: "goVersion", label: "Go version", kind: "text", default: "1.23"}, make,
@@ -93,17 +95,19 @@ const checks: Record<Exclude<StackId, "docker">, Step[]> = {
   ],
 };
 /**
- * Installation, then the stack's checks, or `make check` when the project's Makefile has that target (ADR-011). A Go
- * project with web/ checks it with `make web-check`; on GitLab, where a job has one image, that runs in a job of its own
- * and the Go job leaves it out (`WEB=0`).
+ * Installation, then the stack's checks, or `make check` when the project's Makefile has that target (ADR-011). A Go or
+ * Python project with a web UI (web/ or src/frontend/) checks it with `make web-check`; on GitLab, where a job has one
+ * image, that runs in a job of its own and the stack's job leaves it out (`WEB=0`). What web-check runs is the
+ * project's Makefile's business.
  */
+const withWeb = (stack: StackId) => stack === "go" || stack === "python";
 const steps = (stack: Exclude<StackId, "docker">, separateWeb = false): Step[] => [...install[stack],
   {section: "^make"}, ...checks[stack], {end: "make"},
-  ...(stack === "go" && !separateWeb ? [{section: "^make"}, {section: "#web"}, {name: "Web", run: "make web-check", root: true as const}, {end: "web"}, {end: "make"}] : []),
+  ...(withWeb(stack) && !separateWeb ? [{section: "^make"}, {section: "#web"}, {name: "Web", run: "make web-check", root: true as const}, {end: "web"}, {end: "make"}] : []),
   {section: "#make"},
-  ...(stack === "go" && separateWeb ? [{section: "#web"}, {name: "Check", run: "make check WEB=0", root: true as const}, {end: "web"}, {section: "^web"}] : []),
+  ...(withWeb(stack) && separateWeb ? [{section: "#web"}, {name: "Check", run: "make check WEB=0", root: true as const}, {end: "web"}, {section: "^web"}] : []),
   {name: "Check", run: "make check", root: true},
-  ...(stack === "go" && separateWeb ? [{end: "web"}] : []),
+  ...(withWeb(stack) && separateWeb ? [{end: "web"}] : []),
   {end: "make"}];
 const dockerSteps: Step[] = [{name: "Build image", run: "docker build -t {{image}}:ci .", root: true}];
 
@@ -118,7 +122,8 @@ function actionsSetup(stack: StackId) {
   const step = (uses: string, input?: [string, string]) => "      - uses: " + uses + "\n" + (input ? "        with:\n          " + input[0] + ": \"" + input[1] + "\"\n" : "");
   if (stack === "node") return step("actions/setup-node@v4", ["node-version", "{{nodeVersion}}"]) +
     "      {{#packageManager=bun}}\n      - uses: oven-sh/setup-bun@v2\n      {{/packageManager}}\n";
-  if (stack === "python") return step("actions/setup-python@v5", ["python-version", "{{pythonVersion}}"]);
+  if (stack === "python") return step("actions/setup-python@v5", ["python-version", "{{pythonVersion}}"]) +
+    "      {{#web}}\n" + step("actions/setup-node@v4", ["node-version", "{{webNode}}"]) + "      {{/web}}\n";
   if (stack === "go") return step("actions/setup-go@v5", ["go-version", "{{goVersion}}"]) +
     "      {{#web}}\n" + step("actions/setup-node@v4", ["node-version", "{{webNode}}"]) + "      {{/web}}\n";
   return "";
@@ -144,7 +149,7 @@ function gitlab(stack: StackId): CiTemplate {
     // One shell runs a job's lines: a step in the application folder goes in a subshell, so make check stays at the root.
     render(list, "    ", step => step.root ? "    - " + step.run + "\n"
       : "    {{#inApp}}\n    - (cd {{appDir}} && " + step.run + ")\n    {{/inApp}}\n    {{^inApp}}\n    - " + step.run + "\n    {{/inApp}}\n") +
-    (stack === "go" ? "{{#web}}\nweb:\n  image: node:{{webNode}}\n  script:\n    - make web-check\n{{/web}}\n" : "");
+    (withWeb(stack) ? "{{#web}}\nweb:\n  image: node:{{webNode}}\n  script:\n    - make web-check\n{{/web}}\n" : "");
   return {id: stack + "-gitlab", title: titles[stack] + " · " + forges.gitlab, stacks: [stack], forge: "gitlab", path: ".gitlab-ci.yml",
     params: [branch, ...params[stack]], body};
 }
@@ -152,7 +157,7 @@ function gitlab(stack: StackId): CiTemplate {
 function azureSetup(stack: StackId) {
   const task = (name: string, key: string, value: string) => "  - task: " + name + "\n    inputs:\n      " + key + ": \"" + value + "\"\n";
   if (stack === "node") return task("NodeTool@0", "versionSpec", "{{nodeVersion}}.x") + "  {{#packageManager=bun}}\n  - script: npm install -g bun\n    displayName: Install bun\n  {{/packageManager}}\n";
-  if (stack === "python") return task("UsePythonVersion@0", "versionSpec", "{{pythonVersion}}");
+  if (stack === "python") return task("UsePythonVersion@0", "versionSpec", "{{pythonVersion}}") + "  {{#web}}\n" + task("NodeTool@0", "versionSpec", "{{webNode}}.x") + "  {{/web}}\n";
   if (stack === "go") return task("GoTool@0", "version", "{{goVersion}}") + "  {{#web}}\n" + task("NodeTool@0", "versionSpec", "{{webNode}}.x") + "  {{/web}}\n";
   return "";
 }
