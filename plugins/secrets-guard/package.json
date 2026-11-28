@@ -1,0 +1,57 @@
+{
+  "name": "bb-plugin-makosh-secrets-guard",
+  "version": "0.1.0",
+  "description": "Кнопка у поля ввода открывает охрану секретов Claude Code на 10, 30 или 60 минут: для чата, чата с субтредами или глобально.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Mesteriis",
+  "homepage": "https://github.com/Mesteriis/bb-marketplace/tree/main/plugins/secrets-guard#readme",
+  "bugs": {
+    "url": "https://github.com/Mesteriis/bb-marketplace/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mesteriis/bb-marketplace.git",
+    "directory": "plugins/secrets-guard"
+  },
+  "keywords": [
+    "bb-plugin",
+    "makosh",
+    "secrets",
+    "claude-code"
+  ],
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Охрана секретов [Experimental]",
+    "description": "Кнопка у поля ввода открывает охрану секретов Claude Code на 10, 30 или 60 минут: для чата, чата с субтредами или глобально.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./src/adapters/bb/server.ts",
+    "app": "./src/adapters/bb/app.tsx",
+    "skills": []
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.7.0",
+    "vitest": "^5.1.0"
+  }
+}
