@@ -8,6 +8,7 @@
 //   a second channel_closed is connection_failed;
 // - outcome_unknown from Remote Hub, or any other failure of a mutation after it was sent: never repeated;
 // - a cancelled read is cancelled.
+import { sftpFastMethods } from "./sftp-fast-wire.ts";
 import { ZodError } from "zod";
 import { CommanderError, type ErrorCode } from "../../core/errors.ts";
 import { Entry, type Capability, type Endpoint, type Fingerprint } from "../../core/model.ts";
@@ -16,7 +17,6 @@ import { LIST_PAGE_MAX, READ_CHUNK_MAX, type FileProvider, type WriteSession } f
 import {
   SFTP_LIMITS,
   SftpRefusal,
-  sftpMethods,
   type RemoteHubPort,
   type SftpAttrs,
   type SftpInput,
@@ -262,7 +262,7 @@ export function createSftpProvider(options: SftpProviderOptions): SftpProvider {
   let opening: Promise<string> | null = null;
 
   function callPort<M extends SftpMethodName>(method: M, input: SftpInput<M>, signal: AbortSignal): Promise<SftpOutput<M>> {
-    return port.call(method, input, signal).then((raw) => sftpMethods[method].output.parse(raw) as SftpOutput<M>);
+    return port.call(method, input, signal).then((raw) => sftpFastMethods[method].output.parse(raw) as SftpOutput<M>);
   }
 
   /** Losing a channel also withdraws what was declared on it: atomicReplace belongs to a channel. */

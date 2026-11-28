@@ -6,7 +6,8 @@ import { EndpointId, type Endpoint } from "../../core/model.ts";
 import { NameSegment, ResourcePath } from "../../core/path.ts";
 import type { FileProvider } from "../../core/provider.ts";
 import { HostFsContract } from "../../core/wire/host-fs.ts";
-import { SFTP_REFUSALS, SftpRefusal, sftpMethods, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
+import { sftpFastMethods } from "./sftp-fast-wire.ts";
+import { SFTP_REFUSALS, SftpRefusal, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
 import type { EndpointView } from "../../core/wire/rpc.ts";
 import { createLocalProvider, translateHostFsError } from "./local-provider.ts";
 import { createSftpProvider, type SftpProvider } from "./sftp-provider.ts";
@@ -15,7 +16,7 @@ import { z } from "zod";
 
 const remoteId = "makosh-remote-hub";
 const bounded = (label: string) => label.slice(0, 200).toWellFormed();
-const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpMethods;
+const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpFastMethods;
 
 /**
  * The Remote Hub refusal code inside a failed `callRpc`, or null for a transport failure.
