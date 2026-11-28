@@ -112,6 +112,14 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
         made.set(input.name, {private: input.private === true});
         return json(res, 201, madeRepo(input.name));
       }
+      // Deleting a branch (the ci-templates live script's clean-up, run against this stand-in).
+      const gone = /^\/api\/v1\/repos\/stand\/beta\/branches\/(.+)$/.exec(path);
+      if (req.method === "DELETE" && gone) {
+        const name = decodeURIComponent(gone[1]);
+        if (!branches[name] || name === "main") return json(res, 404, {message: "not found"});
+        delete branches[name];
+        return json(res, 204);
+      }
       // Deleting one's own discussion comment (pr-parity.mjs).
       if (req.method === "DELETE" && /^\/api\/v1\/repos\/stand\/beta\/issues\/comments\/\d+$/.test(path)) return json(res, 204);
       // Pull request and issue writes of the review probe.

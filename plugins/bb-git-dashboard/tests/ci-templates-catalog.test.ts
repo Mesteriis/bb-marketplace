@@ -74,7 +74,7 @@ workflow:
 ci:
   image: python:3.13
   script:
-    - pip install uv && uv sync --locked
+    - pip install uv==0.13.10 && uv sync --locked
     - uv run pytest
 `});
 });
@@ -139,7 +139,7 @@ test("a template's suggested values are those of its own stacks, then the reposi
 test("without a committed uv.lock, uv syncs without --locked", () => {
   const template = byId("python-github");
   const {text} = renderTemplate(template, resolveValues(template, {}, {pythonTool: "uv", lockfile: false}));
-  assert.match(text, /run: pip install uv && uv sync\n/);
+  assert.match(text, /run: pip install uv==0\.13\.10 && uv sync\n/);
   assert.doesNotMatch(text, /--locked/);
 });
 

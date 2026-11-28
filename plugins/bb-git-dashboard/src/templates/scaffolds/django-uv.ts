@@ -76,7 +76,7 @@ dev = [
 {{#tool=uv}}
 [tool.uv]
 package = false
-required-version = ">=${v.uv}"
+required-version = ">=${v.uvMinimum}"
 {{/tool}}
 {{#tool=poetry}}
 [tool.poetry]

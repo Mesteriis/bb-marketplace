@@ -1,5 +1,6 @@
 import type { CiForge, CiParam, CiTemplate } from "./render.ts";
 import type { StackId } from "./stack.ts";
+import { versions } from "../scaffolds/versions.ts";
 
 /*
  * The plugin's own CI templates: one per stack and forge. They hold only the pipeline's skeleton and its parameters,
@@ -52,10 +53,11 @@ const install: Record<Exclude<StackId, "docker">, Step[]> = {
   ],
   python: [
     {section: "#pythonTool=uv"},
-    {section: "#lockfile"}, {name: "Install", run: "pip install uv && uv sync --locked"}, {end: "lockfile"},
-    {section: "^lockfile"}, {name: "Install", run: "pip install uv && uv sync"}, {end: "lockfile"},
+    // uv and Poetry at the versions checked with, as the actions are pinned: a new project's CI is reproducible.
+    {section: "#lockfile"}, {name: "Install", run: "pip install uv==" + versions.uv + " && uv sync --locked"}, {end: "lockfile"},
+    {section: "^lockfile"}, {name: "Install", run: "pip install uv==" + versions.uv + " && uv sync"}, {end: "lockfile"},
     {end: "pythonTool"},
-    {section: "#pythonTool=poetry"}, {name: "Install", run: "pip install poetry && poetry install --no-interaction"}, {end: "pythonTool"},
+    {section: "#pythonTool=poetry"}, {name: "Install", run: "pip install poetry==" + versions.poetry + " && poetry install --no-interaction"}, {end: "pythonTool"},
     {section: "#pythonTool=pip"}, {name: "Install", run: "pip install -r requirements.txt"}, {end: "pythonTool"},
     {section: "#pythonTool=pyproject"}, {name: "Install", run: "pip install ."}, {end: "pythonTool"},
   ],

@@ -52,7 +52,7 @@ try {
     && git("branch", "--show-current") === "main" && git("log", "--format=%an <%ae>|%s") === "Stand Author <author@example.invalid>|Initial commit from the Python service (uv) scaffold"
     && git("status", "--porcelain") === "");
   const workflow = readFileSync(project + "/.github/workflows/ci.yml", "utf8");
-  check("the CI file installs with uv and runs make check", /run: pip install uv && uv sync\n/.test(workflow) && /run: make check\n$/.test(workflow), workflow.slice(-200));
+  check("the CI file installs with uv and runs make check", /run: pip install uv==0\.13\.10 && uv sync\n/.test(workflow) && /run: make check\n$/.test(workflow), workflow.slice(-200));
   check("the new project is listed in the catalog", await visible(catalog.getByRole("table", { name: "Local" }).getByText("notes-service", { exact: true }), 60000));
 
   await catalog.getByRole("button", { name: "New project…" }).click();

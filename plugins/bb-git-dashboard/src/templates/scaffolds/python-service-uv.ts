@@ -71,7 +71,7 @@ dev = [
 ]
 
 [tool.uv]
-required-version = ">=${v.uv}"
+required-version = ">=${v.uvMinimum}"
 
 [tool.ruff]
 line-length = 120

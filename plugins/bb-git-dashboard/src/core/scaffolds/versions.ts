@@ -5,7 +5,10 @@
  */
 export const versions = {
   // Python
-  python: "3.13", uv: "0.13.10", ruff: "0.17.6", mypy: "2.4.1", pytest: "9.2.0", hatchling: "1.33.0",
+  // uv: the version CI installs and checks are made with (newest on PyPI 2026-11-28); uvMinimum, the lowest uv that has
+  // everything the scaffolds' pyproject uses — [dependency-groups] (0.4.27), [tool.uv] package (0.4.0) and
+  // required-version (0.5.14), per uv's changelog — and the lower bound their required-version states.
+  python: "3.13", uv: "0.13.10", uvMinimum: "0.5.14", ruff: "0.17.6", mypy: "2.4.1", pytest: "9.2.0", hatchling: "1.33.0",
   // Starlette's TestClient now asks for httpx2 instead of httpx.
   fastapi: "0.165.0", uvicorn: "0.54.0", httpx2: "2.16.2",
   // PyPI, 2026-11-28. aiogram's testing toolkit (the [test] extra) needs an async runner: pytest-asyncio.

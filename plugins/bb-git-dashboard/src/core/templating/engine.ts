@@ -81,6 +81,9 @@ export function renderText(text: string, list: TemplateParam[], values: Template
   const params = new Map(list.map(param => [param.name, param]));
   const stack: {name: string; keep: boolean}[] = [];
   const out: string[] = [];
+  // Prose: a line that is only a value, left empty (an empty description), goes with the blank line after it, so no
+  // empty paragraph stays behind.
+  let dropBlank = false;
   for (const current of text.split("\n")) {
     const tag = current.trim();
     const opening = open.exec(tag);
@@ -96,7 +99,11 @@ export function renderText(text: string, list: TemplateParam[], values: Template
       if (stack.pop()?.name !== closing[1]) throw invalid("section " + closing[1] + " closes no open section");
     } else {
       const done = substitute(current, params, values, raw);
-      if (stack.every(section => section.keep)) out.push(done);
+      if (!stack.every(section => section.keep)) continue;
+      if (raw && /^\{\{[a-z][A-Za-z0-9]*\}\}$/.test(tag) && done.trim() === "") { dropBlank = true; continue; }
+      if (dropBlank && done.trim() === "" && out.at(-1)?.trim() === "") { dropBlank = false; continue; }
+      dropBlank = false;
+      out.push(done);
     }
   }
   if (stack.length) throw invalid("section " + stack.at(-1)!.name + " is not closed");

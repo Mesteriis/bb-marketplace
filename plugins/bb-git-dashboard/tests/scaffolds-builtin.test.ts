@@ -35,6 +35,7 @@ test("python-service-uv: FastAPI with Docker, MIT, the description escaped in py
   assert.match(pyproject, /^description = "Notes \\"API\\""$/m);
   assert.match(pyproject, /^requires-python = ">=3\.13"$/m);
   assert.match(pyproject, /^license = "MIT"\nlicense-files = \["LICENSE"\]$/m);
+  assert.match(pyproject, /^\[tool\.uv\]\nrequired-version = ">=0\.5\.14"$/m);
   assert.match(pyproject, /^ {4}"fastapi==0\.165\.0",\n {4}"uvicorn==0\.54\.0",\n\]$/m);
   assert.match(pyproject, /^"notes-api" = "notes\.__main__:main"$/m);
   assert.match(pyproject, /^packages = \["src\/notes"\]$/m);
@@ -101,7 +102,8 @@ test("django-uv: Django 6.1 on uv with Ruff, mypy and django-stubs, pytest-djang
   assert.match(pyproject, /^dependencies = \[\n {4}"django==6\.1\.3",\n\]$/m);
   assert.match(pyproject, /^ {4}"django-stubs\[compatible-mypy\]==6\.1\.2",$/m);
   assert.match(pyproject, /^ {4}"pytest-django==4\.14\.0",$/m);
-  assert.match(pyproject, /^\[tool\.uv\]\npackage = false\nrequired-version = ">=0\.13\.10"$/m);
+  // The lowest uv with everything the file uses: [tool.uv] required-version came in uv 0.5.14.
+  assert.match(pyproject, /^\[tool\.uv\]\npackage = false\nrequired-version = ">=0\.5\.14"$/m);
   assert.match(pyproject, /^\[tool\.mypy\]\nstrict = true\nwarn_unreachable = true\nplugins = \["mypy_django_plugin\.main"\]$/m);
   assert.match(pyproject, /^\[tool\.django-stubs\]\ndjango_settings_module = "config\.test_settings"$/m);
   assert.match(pyproject, /^DJANGO_SETTINGS_MODULE = "config\.test_settings"$/m);
@@ -147,4 +149,16 @@ test("django-uv on Poetry: the same project with Poetry's package-mode, its comm
   assert.match(file(files, "Makefile")!, /^RUN := poetry run$/m);
   assert.match(file(files, "Makefile")!, /^bootstrap:\n\tpoetry install$/m);
   assert.doesNotMatch(file(files, ".pre-commit-config.yaml")!, /uv-pre-commit/);
+});
+
+test("an empty description leaves no empty paragraph in the prose files; a given one stands as its own paragraph", () => {
+  for (const scaffold of builtinScaffolds) {
+    const empty = buildScaffold(scaffold, {name: "tool", description: ""}, {}).files;
+    for (const item of empty.filter(entry => entry.path.endsWith(".md")))
+      assert.doesNotMatch(item.text, /\n\n\n/, scaffold.id + " " + item.path);
+    const given = buildScaffold(scaffold, {name: "tool", description: "Keeps notes."}, {}).files;
+    assert.match(file(given, "README.md")!, /^# [^\n]+\n\nKeeps notes\.\n\n## /, scaffold.id);
+  }
+  assert.match(file(buildScaffold(byId("django-uv"), {name: "shop", description: ""}, {}).files, "README.md")!, /^# shop\n\n## Development\n/);
+  assert.match(file(buildScaffold(byId("django-uv"), {name: "shop", description: ""}, {}).files, "README.ru.md")!, /^# shop\n\n## Разработка\n/);
 });

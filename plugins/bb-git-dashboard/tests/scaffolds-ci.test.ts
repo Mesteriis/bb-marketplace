@@ -15,7 +15,7 @@ test("the created project's CI comes from the CI template of its stack, with the
   assert.equal(python.path, ".github/workflows/ci.yml");
   assert.equal(python.template, "python-github");
   assert.match(python.text, /python-version: "3\.13"/);
-  assert.match(python.text, /run: pip install uv && uv sync\n/);
+  assert.match(python.text, /run: pip install uv==0\.13\.10 && uv sync\n/);
   assert.match(python.text, /run: make check\n$/);
 
   const go = ci("go-service-with-web", "gitlab", {web: false})!;
@@ -45,4 +45,15 @@ test("a Go project with web/ gets Node.js for it: in the same job on Actions and
   assert.match(github, /- uses: actions\/setup-node@v4\n {8}with:\n {10}node-version: "24"\n/);
   assert.match(github, /run: make check\n$/);
   assert.match(ci("go-service-with-web", "azure")!.text, /- task: NodeTool@0\n {4}inputs:\n {6}versionSpec: "24\.x"\n/);
+});
+
+test("the CI templates install uv and Poetry at the versions they were checked with, as the actions are pinned", async () => {
+  const {builtinTemplates} = await import("../src/core/ci-templates/builtin.ts");
+  const {renderTemplate, resolveValues} = await import("../src/core/ci-templates/render.ts");
+  const python = builtinTemplates.find(item => item.id === "python-github")!;
+  const poetry = renderTemplate(python, resolveValues(python, {pythonTool: "poetry"}, {})).text;
+  assert.match(poetry, /run: pip install poetry==2\.5\.2 && poetry install --no-interaction\n/);
+  const gitlab = builtinTemplates.find(item => item.id === "python-gitlab")!;
+  assert.match(renderTemplate(gitlab, resolveValues(gitlab, {pythonTool: "uv", lockfile: false}, {})).text, /- pip install uv==0\.13\.10 && uv sync\n/);
+  for (const template of builtinTemplates) assert.doesNotMatch(template.body, /pip install (uv|poetry)(?!==)/, template.id);
 });

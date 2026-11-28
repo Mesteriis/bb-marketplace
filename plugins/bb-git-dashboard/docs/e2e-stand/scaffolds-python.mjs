@@ -68,7 +68,7 @@ try {
         existsSync(root + "/manage.py") && (statSync(root + "/manage.py").mode & 0o111) !== 0 && existsSync(root + "/config/celery.py")
         && git(root, "branch", "--show-current") === "main" && git(root, "log", "--format=%an <%ae>|%s") === "Stand Author <author@example.invalid>|Initial commit from the Django site (uv or Poetry) scaffold"
         && git(root, "status", "--porcelain") === "", existsSync(root) ? git(root, "log", "--format=%an|%s") : "no folder");
-      check("its CI file is Poetry's on GitLab", /pip install poetry && poetry install --no-interaction/.test(readFileSync(root + "/.gitlab-ci.yml", "utf8")));
+      check("its CI file is Poetry's on GitLab", /pip install poetry==2\.5\.2 && poetry install --no-interaction/.test(readFileSync(root + "/.gitlab-ci.yml", "utf8")));
 
       // python-service-uv's aiogram bot.
       const bot = await newProject(page, "Python service (uv)");
