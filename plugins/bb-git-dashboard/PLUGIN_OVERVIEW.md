@@ -8,7 +8,7 @@ Each working copy is matched to its forge from its `origin` remote (SSH aliases 
 
 ## Projects folder and catalog
 
-The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Catalog** lists them in two tables with branch and state beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a scaffold and its private repository.
+The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Catalog** lists them in two tables with branch and state beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a GitHub or local template, with its repository.
 
 ## History
 

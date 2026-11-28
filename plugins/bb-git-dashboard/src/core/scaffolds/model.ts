@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CodedError } from "../workspace.ts";
 import { invalid, renderText, resolveParams, secretIssues, substitute, templateParam, type TemplateParam, type TemplateValues } from "../templating/engine.ts";
-import { commonParams, derivedParams, overlayFiles } from "./overlay.ts";
+import { commonParams, derivedParams } from "./common-params.ts";
 
 const condition = z.string().regex(/^!?[a-z][A-Za-z0-9]*(?:!?=[A-Za-z0-9._\/@+-]+)?$/);
 export const scaffoldFile = z.object({
@@ -104,13 +104,13 @@ export function buildScaffold(source: Scaffold, given: TemplateValues, suggested
     }
     return out;
   };
-  const files = new Map([...render(common ? commonFiles(common, source) : overlayFiles(source)), ...render(source.files)]);
+  const files = new Map([...render(common ? commonFiles(common, source) : []), ...render(source.files)]);
   const size = [...files.values()].reduce((sum, file) => sum + (file.base64 ? Math.floor(file.text.length * 3 / 4) : file.text.length), 0);
   if (size > 2 * 1024 * 1024) throw invalid("the project's files are over 2 MB together");
   return {values, files: [...files.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)};
 }
 
-/** A repository's common files, with the template's own .gitignore lines and .editorconfig sections appended (as overlayFiles). */
+/** A repository's common files, with the template's own .gitignore lines and .editorconfig sections appended . */
 function commonFiles(common: CommonLayer, {ignore = [], editorconfig: extra = ""}: Scaffold): ScaffoldFile[] {
   return common.files.map(file => file.path === ".gitignore" && ignore.length ? {...file, body: file.body + "\n" + ignore.join("\n") + "\n"}
     : file.path === ".editorconfig" && extra ? {...file, body: file.body + "\n" + extra.replace(/\n*$/, "\n")} : file);

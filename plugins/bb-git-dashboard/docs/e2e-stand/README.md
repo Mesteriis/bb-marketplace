@@ -6,10 +6,11 @@ maintainer's BB. Same approach as GitWand's stand (`gitwand/v0.2.0`) and `plugin
 Needs `git`, `node`, `npm`, `curl`, access to `registry.npmjs.org`, BB at
 `/Applications/dev/bb.app` (or `BB_APP=<bb-app package>`) and `chrome-headless-shell` in
 `~/Library/Caches/ms-playwright` (or `CHROME=<path>`). Chromium does not start inside agent sandboxes: run
-`run.sh` outside them.
+`run.sh` outside them. `SCAFFOLDS_REPO` must name a clone of the templates repository: the stand-in GitHub serves its
+HEAD as `stand/templates`, and New project reads its templates from there.
 
 ```sh
-S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs" "$PWD/docs/e2e-stand/scaffolds.mjs" "$PWD/docs/e2e-stand/ci-templates.mjs"
+S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e2e-stand/smoke.mjs" "$PWD/docs/e2e-stand/ci.mjs" "$PWD/docs/e2e-stand/code-review.mjs" "$PWD/docs/e2e-stand/code-review-runs.mjs" "$PWD/docs/e2e-stand/code-review-more.mjs" "$PWD/docs/e2e-stand/history.mjs" "$PWD/docs/e2e-stand/gitlab.mjs" "$PWD/docs/e2e-stand/inbox.mjs" "$PWD/docs/e2e-stand/review.mjs" "$PWD/docs/e2e-stand/code-review-drafts.mjs" "$PWD/docs/e2e-stand/scaffolds.mjs" "$PWD/docs/e2e-stand/scaffolds-github.mjs" "$PWD/docs/e2e-stand/ci-templates.mjs"
 ```
 
 - `prepare.sh` copies this package into a new `$TMPDIR/git-dashboard-stand.*`, runs `npm ci` and
@@ -30,9 +31,15 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   the confirmation dialog and reach the stand-in exactly once (`$S/forge/writes.log`); Ask agent opens a thread;
   layout at 768 px.
 
-- `scaffolds.mjs` — New project in the Catalog: a Python scaffold with free text, GitHub Actions CI and an author; a
-  name that is no folder name refused in the form; the preview before anything is written; the folder in the projects
-  folder with its files, git on main and one commit by the author, listed in the catalog; the same name again refused.
+- `scaffolds.mjs` — New project in the Catalog: the templates repository's Python service with free text, GitHub Actions
+  CI and an author; a name that is no folder name refused in the form; the preview before anything is written; the
+  folder in the projects folder with its files in `src/api/`, git on main and one commit by the author, its common files
+  byte for byte those of the repository's `common/files`, listed in the catalog; the same name again refused.
+- `scaffolds-github.mjs` — after `scaffolds.mjs`: the stand-in GitHub (`fake-github.mjs`: api.github.com and
+  codeload.github.com behind a proxy BB is pointed at with `NODE_USE_ENV_PROXY`, other hosts passed through). The
+  form shows `stand/templates@<sha>`; Refresh asks with the ETag; a new head is read on Refresh; a preview made on the
+  old revision is not created; a broken archive, no network and GitHub's limit keep the revision and say why; no
+  request carries a token and the templates were read from those two hosts only.
 - `panel.mjs` — after `ci.mjs`, last: the thread header's Review opens the one Git tab on its Review; back gives the
   summary; CI's Log, History and Changes open their screens in the panel and fit it; the panel's width as BB gives it and
   no sideways scroll at 420, 520 and 640 px; a new file chosen in the summary shown in Code as a numbered diff and counted
@@ -48,7 +55,7 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
 - `scaffolds-python.mjs` — after `scaffolds.mjs`: New project offers django-uv; on Poetry with Celery and GitLab CI its files
   and pyproject are shown, the preview comes before anything is written, and the folder gets an executable `manage.py`,
   Poetry's `.gitlab-ci.yml` and one commit by the author; python-service-uv's aiogram bot is made the same way; in
-  Russian the scaffolds' own parameters are labelled in Russian; shots light, dark and Russian.
+  Russian the templates' titles and parameters come from their Russian labels; shots light, dark and Russian.
 - `catalog-shots.mjs` — after `catalog.mjs` and `scaffolds.mjs`: the Catalog's two tables (the branch read on opening),
   the clone dialog (closed, nothing cloned), New project, Connections with Check of the Gitea account, the connection
   wizard's first and last step (the check only reads; nothing is saved) and the plugin's settings section, where the

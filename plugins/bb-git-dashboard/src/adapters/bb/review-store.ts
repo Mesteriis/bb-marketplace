@@ -18,6 +18,7 @@ export interface ReviewDb {
   transaction<T>(work: () => T): () => T;
 }
 
+/** Closed at 18 statements: the host numbers migrations across the plugin's list (migrations.ts), where new ones go. */
 export const REVIEW_MIGRATIONS: string[] = [
   `CREATE TABLE review_sessions (
      id TEXT PRIMARY KEY,

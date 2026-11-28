@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { offerScaffolds, ownScaffolds } from "../src/core/scaffolds/catalog.ts";
-import { buildScaffold, scaffoldIssues, type Scaffold } from "../src/core/scaffolds/model.ts";
+import { buildScaffold, scaffoldIssues, type CommonLayer, type Scaffold } from "../src/core/scaffolds/model.ts";
 
 const tiny: Scaffold = {
   id: "tiny", title: "Tiny", description: "A tiny project.",
@@ -17,39 +16,45 @@ const tiny: Scaffold = {
   ],
   ignore: ["/dist/"], editorconfig: "[*.py]\nindent_size = 4\n",
 };
-const paths = (scaffold: Scaffold, given = {}) => buildScaffold(scaffold, given, {}).files.map(file => file.path);
+/** A templates repository's common layer, as its common/ folder gives it. */
+const common: CommonLayer = {files: [
+  {path: ".gitignore", body: ".env\n.env.*\n!.env.example\n"},
+  {path: ".editorconfig", body: "root = true\n"},
+  {path: "AGENTS.md", body: "# {{name}}\n"},
+  {path: "LICENSE", body: "MIT License\n\nCopyright (c) {{year}} {{holder}}\n", when: "license=MIT"},
+  {path: "CONTRIBUTING.md", body: "Contributions welcome.\n", when: "contributing"},
+]};
+const paths = (scaffold: Scaffold, given = {}) => buildScaffold(scaffold, given, {}, common).files.map(file => file.path);
 
 test("the common files come with every scaffold; a scaffold's own file of the same path replaces the common one", () => {
-  const built = buildScaffold(tiny, {name: "notes", description: "Notes \"app\""}, {year: "2026"});
-  assert.deepEqual(built.files.map(file => file.path), [
-    ".editorconfig", ".gitattributes", ".gitignore", "AGENTS.md", "CHANGELOG.md", "CLAUDE.md", "LICENSE", "README.md", "README.ru.md",
-    "SECURITY.md", "THIRD_PARTY_NOTICES.md", "pyproject.toml", "scripts/run.sh", "src/notes/cli.py",
-  ]);
+  const built = buildScaffold(tiny, {name: "notes", description: "Notes \"app\""}, {year: "2026"}, common);
+  assert.deepEqual(built.files.map(file => file.path),
+    [".editorconfig", ".gitignore", "AGENTS.md", "LICENSE", "README.md", "pyproject.toml", "scripts/run.sh", "src/notes/cli.py"]);
   const file = (path: string) => built.files.find(item => item.path === path)!;
   assert.equal(file(".gitignore").text, "own\n");
   assert.equal(file("pyproject.toml").text, "[project]\nname = \"notes\"\ndescription = \"Notes \\\"app\\\"\"\n");
   assert.equal(file("README.md").text, "# notes\n\nNotes \"app\"\n");
-  assert.equal(file("CLAUDE.md").text, "@AGENTS.md\n");
+  assert.equal(file("AGENTS.md").text, "# notes\n");
   assert.equal(file("scripts/run.sh").executable, true);
   assert.equal(file("README.md").executable, false);
-  assert.match(file("LICENSE").text, /^MIT License\n\nCopyright \(c\) 2026 notes contributors\n/);
+  assert.equal(file("LICENSE").text, "MIT License\n\nCopyright (c) 2026 notes contributors\n");
+});
+
+test("without a common layer a scaffold writes its own files only: the plugin holds none of its own", () => {
+  assert.deepEqual(buildScaffold(tiny, {name: "notes"}, {}).files.map(file => file.path), [".gitignore", "README.md", "pyproject.toml", "scripts/run.sh", "src/notes/cli.py"]);
 });
 
 test("files follow their flag or choice, and the optional common files follow theirs", () => {
   assert.ok(paths(tiny, {docker: true}).includes("Dockerfile"));
   assert.ok(paths(tiny, {flavor: "web"}).includes("src/my-project/web.py") && !paths(tiny, {flavor: "web"}).includes("src/my-project/cli.py"));
-  const all = paths(tiny, {contributing: true, codeOfConduct: true, license: "Apache-2.0"});
-  assert.ok(all.includes("CONTRIBUTING.md") && all.includes("CODE_OF_CONDUCT.md") && all.includes("LICENSE"));
+  assert.ok(paths(tiny, {contributing: true}).includes("CONTRIBUTING.md"));
   assert.ok(!paths(tiny, {license: "none"}).includes("LICENSE"));
 });
 
-test("the common .gitignore closes .env files but .env.example, and .zed; a scaffold adds its own lines and editor sections", () => {
+test("a scaffold adds its own lines to the common .gitignore and its sections to .editorconfig", () => {
   const plain: Scaffold = {...tiny, files: tiny.files.filter(file => file.path !== ".gitignore")};
-  const built = buildScaffold(plain, {}, {});
-  const ignore = built.files.find(file => file.path === ".gitignore")!.text;
-  assert.match(ignore, /^\.env\n\.env\.\*\n!\.env\.example\n/m);
-  assert.match(ignore, /^\.zed\/$/m);
-  assert.match(ignore, /^\/dist\/$/m);
+  const built = buildScaffold(plain, {}, {}, common);
+  assert.equal(built.files.find(file => file.path === ".gitignore")!.text, ".env\n.env.*\n!.env.example\n\n/dist/\n");
   assert.match(built.files.find(file => file.path === ".editorconfig")!.text, /^root = true\n[\s\S]*\[\*\.py\]\nindent_size = 4\n$/);
 });
 
@@ -77,23 +82,6 @@ test("a scaffold is checked as a whole: it renders with every choice and flag, a
   assert.deepEqual(scaffoldIssues(tiny), []);
   assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "x.md", body: "{{#docker}}\n{{nope}}\n{{/docker}}\n"}]}), ["The scaffold does not render: x.md: unknown name nope."]);
   assert.deepEqual(scaffoldIssues({...tiny, files: [{path: "deploy.md", body: "ssh admin@10.1.2.3\n"}]}), ["deploy.md has an IP address."]);
-});
-
-test("offered scaffolds: built-in ones, then own ones from the settings list and the folder; broken ones named with the reason", () => {
-  const own = {...tiny, id: "own"};
-  const {offered, rejected} = offerScaffolds([tiny], [
-    {source: "settings", name: "own", raw: own},
-    {source: "folder", name: "bad.json", raw: {...tiny, id: "bad", files: [{path: "x.md", body: "{{nope}}\n"}]}},
-    {source: "folder", name: "broken.json", raw: null, error: "The file is not JSON."},
-    {source: "folder", name: "again.json", raw: own},
-  ]);
-  assert.deepEqual(offered.map(entry => [entry.key, entry.source]), [["builtin:tiny", "builtin"], ["settings:own", "settings"], ["folder:own", "folder"]]);
-  assert.deepEqual(rejected, [
-    {source: "folder", name: "bad.json", issues: ["The scaffold does not render: x.md: unknown name nope."]},
-    {source: "folder", name: "broken.json", issues: ["The file is not JSON."]},
-  ]);
-  assert.deepEqual(ownScaffolds("settings", "[1"), [{source: "settings", name: "settings", raw: null, error: "The scaffolds setting is not a JSON list."}]);
-  assert.deepEqual(ownScaffolds("settings", ""), []);
 });
 
 test("no file goes into a .git folder of any case, at any depth, and paths that differ only in case are one path", () => {

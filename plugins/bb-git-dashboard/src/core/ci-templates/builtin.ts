@@ -1,6 +1,6 @@
 import type { CiForge, CiParam, CiTemplate } from "./render.ts";
 import type { StackId } from "./stack.ts";
-import { versions } from "../scaffolds/versions.ts";
+import { versions } from "./versions.ts";
 
 /*
  * The plugin's own CI templates: one per stack and forge. They hold only the pipeline's skeleton and its parameters,

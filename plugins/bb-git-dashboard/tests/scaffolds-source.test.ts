@@ -19,7 +19,7 @@ test("a templates folder is read as text, binary files as base64, with the execu
   assert.equal(byPath.get("templates/demo/files/run.sh")!.executable, true);
   assert.deepEqual(byPath.get("templates/demo/files/src/service/icon.png"), {path: "templates/demo/files/src/service/icon.png",
     text: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]).toString("base64"), base64: true, executable: false});
-  assert.equal(tree.files.length, 16);
+  assert.equal(tree.files.length, 17);
 });
 
 test("a link, a file over 256 KB or too many files refuse the whole folder with the reason", async () => {
@@ -41,7 +41,7 @@ test("the loader gives each template as a scaffold: labels in both languages, co
   assert.deepEqual([demo.title, demo.i18n?.ru?.title, demo.params[0]!.label, demo.i18n?.ru?.labels?.variant], ["Demo service", "Демо-сервис", "Kind", "Вид"]);
   const docker = buildScaffold(demo, {name: "shop", variant: "web", docker: true, license: "MIT", year: "2026", author: "Ann"}, {}, common!);
   const out = new Map(docker.files.map(file => [file.path, file]));
-  assert.equal(out.get("LICENSE")!.text, "MIT License\n\nCopyright (c) 2026 Ann\n");
+  assert.equal(out.get("LICENSE")!.text, "MIT License\n\nCopyright (c) 2026 Ann\n\nFixture line: only the repository's common layer has it.\n");
   assert.ok(!out.has("LICENSE.MIT") && !out.has("LICENSE.Apache-2.0") && !out.has("CONTRIBUTING.md"));
   assert.equal(out.get("src/service/shop.py")!.text, "print(\"shop\")\n");
   assert.ok(out.has("src/service/web.py") && out.has("docker/Dockerfile"));
@@ -72,29 +72,49 @@ test("a newer format, a missing manifest and an id that is not its folder are re
   ]);
 });
 
-test("the local templates folder setting offers its templates after the built-in ones, and the preview renders with its common layer", async () => {
+test("the local templates folder setting offers its templates after the repository's, and the preview renders with its common layer", async () => {
   const {scaffoldHandlers} = await import("../src/adapters/bb/scaffold-rpc.ts");
+  const {offline, scaffoldBb} = await import("./scaffold-bb.ts");
   const asked: unknown[] = [];
-  const bb = {
-    settings: {define: () => ({get: async () => ({scaffolds: "", scaffoldsFolder: "/somewhere/templates"})})},
-    hosts: {experimental_client: () => ({call: async (name: string, input: unknown) => {
-      asked.push([name, input]);
-      if (name === "scaffoldTree") return {ok: true, ...await readScaffoldTree(fixture)};
-      if (name === "credentialHelper") return {ok: true, keychain: true};
-      throw new Error("not expected: " + name);
-    }})},
-    onDispose: () => {}, realtime: {publish: () => {}},
-  } as never;
-  const handlers = scaffoldHandlers(bb, {rules: async () => ({root: "/home/owner/projects"}), saveCopy: async () => ({}) as never,
+  const {bb} = scaffoldBb({settings: {scaffoldsFolder: "/somewhere/templates"}, call: async (name: string, input: unknown) => {
+    asked.push([name, input]);
+    if (name === "scaffoldTree") return {ok: true, ...await readScaffoldTree(fixture)};
+    if (name === "credentialHelper") return {ok: true, keychain: true};
+    throw new Error("not expected: " + name);
+  }});
+  const handlers = scaffoldHandlers(bb, {send: offline, rules: async () => ({root: "/home/owner/projects"}), saveCopy: async () => ({}) as never,
     accounts: async () => [], api: async () => { throw new Error("no"); }, link: async () => {}, record: async () => {}});
   const client = {experimental_caller: {kind: "client"}} as never;
   const view = await handlers.scaffoldsView({hostId: "host-1"}, client) as {ok: true; offered: {key: string}[]; rejected: {name: string}[]};
-  assert.deepEqual(view.offered.map(item => item.key).filter(key => key.startsWith("folder:")), ["folder:demo"]);
-  assert.ok(view.offered[0]!.key.startsWith("builtin:"));
-  assert.deepEqual(view.rejected.map(item => item.name), ["broken"]);
+  assert.deepEqual(view.offered.map(item => item.key), ["github:demo", "folder:demo"]);
+  assert.deepEqual(view.rejected.map(item => item.name), ["broken", "broken"]);
   assert.deepEqual(asked[0], ["scaffoldTree", {folder: "/somewhere/templates"}]);
   const preview = await handlers.scaffoldPrepare({hostId: "host-1", key: "folder:demo", values: {name: "shop", docker: true}, category: "", ciForge: null,
     author: {name: "Ann", email: "ann@example.invalid"}, repository: null}, client) as {ok: true; preview: {files: {path: string}[]}};
   const paths = preview.preview.files.map(file => file.path);
+  // docs/adr/README.md is a file only the folder's common/ has: the preview cannot have it without that layer.
+  assert.ok(paths.includes("docs/adr/README.md") && paths.includes(".editorconfig"), paths.join(","));
   assert.ok(paths.includes("LICENSE") && paths.includes("docker/Dockerfile") && paths.includes("src/service/shop.py") && !paths.includes("LICENSE.MIT"), paths.join(","));
+});
+
+test("every template offered carries its repository's common layer, so the CLI and the preview render with common/", () => {
+  const files = [
+    {path: "common/template.json", text: "{\"format\": 1, \"when\": {\"CONTRIBUTING.md\": \"contributing\"}}\n", executable: false},
+    {path: "common/files/AGENTS.md", text: "# {{name}}\n", executable: false},
+    {path: "common/files/CONTRIBUTING.md", text: "Welcome.\n", executable: false},
+    {path: "templates/one/template.json", text: JSON.stringify({format: 1, id: "one", title: {en: "One"}, description: {en: ""}, params: []}), executable: false},
+    {path: "templates/one/files/README.md", text: "# {{name}}\n", executable: false},
+  ];
+  const {offered} = loadRepository(files, "github");
+  assert.deepEqual(offered[0]!.common?.files.map(file => file.path), ["AGENTS.md", "CONTRIBUTING.md"]);
+  const built = buildScaffold(offered[0]!.scaffold, {name: "x", contributing: true}, {}, offered[0]!.common);
+  assert.deepEqual(built.files.map(file => file.path), ["AGENTS.md", "CONTRIBUTING.md", "README.md"]);
+});
+
+test("the fixture's templates render with its own common files: a file only common/ has, and its LICENSE text", async () => {
+  const {offered} = loadRepository((await readScaffoldTree(fixture)).files, "folder");
+  const built = buildScaffold(offered[0]!.scaffold, {name: "shop", author: "Ann"}, {year: "2026"}, offered[0]!.common);
+  const text = (path: string) => built.files.find(file => file.path === path)?.text;
+  assert.equal(text("docs/adr/README.md"), "# Decisions of the fixture repository\n\nOnly the common layer of this repository writes this file.\n");
+  assert.match(text("LICENSE") ?? "", /^MIT License\n\nCopyright \(c\) 2026 Ann\n\nFixture line: only the repository's common layer has it\.\n/);
 });

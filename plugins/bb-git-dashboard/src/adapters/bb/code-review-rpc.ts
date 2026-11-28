@@ -7,7 +7,8 @@ import { codeReviewService, type DiffOptions } from "./code-review-service.ts";
 import { hostContract, hostSignals } from "./host-contract.ts";
 import { RunStore } from "./review-run-store.ts";
 import { MAX_PATTERNS, patternLines } from "./review-ignore.ts";
-import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts";
+import { PLUGIN_MIGRATIONS } from "./migrations.ts";
+import { ReviewStore, type ReviewDb } from "./review-store.ts";
 import type { SettingsRegistry } from "./settings-rpc.ts";
 
 type Caller = {experimental_caller: {kind: string}};
@@ -37,7 +38,7 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
     for (const copyId of watched.get(watchKey(hostId, payload.root)) ?? []) bb.realtime.publish(codeReviewSignal, {copyId});
   });
   const db = bb.storage.database() as unknown as ReviewDb & Parameters<typeof bb.storage.migrate>[0];
-  bb.storage.migrate(db, REVIEW_MIGRATIONS);
+  bb.storage.migrate(db, PLUGIN_MIGRATIONS);
   const store = new ReviewStore(db);
   const runStore = new RunStore(db);
   /** The ignore patterns of every diff a Review reads, from the settings as they are now. */

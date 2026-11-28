@@ -210,6 +210,7 @@ function Dashboard({subPath}: {subPath: string}) {
     bulk: async (hostId,roots,action) => okValue(await client.call("catalogBulk",{hostId,roots,action})).results,
     pulls: async repos => okValue(await client.call("catalogPulls",{repos})).results,
     scaffolds: async hostId => okValue(await client.call("scaffoldsView", {hostId})),
+    refreshScaffolds: async hostId => okValue(await client.call("scaffoldsRefresh", {hostId})),
     prepareScaffold: async request => okValue(await client.call("scaffoldPrepare", request)).preview,
     createScaffold: async previewId => okValue(await client.call("scaffoldCreate", {previewId})),
     prepareClone: async (repo,hostId,destination) => {
