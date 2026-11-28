@@ -11,7 +11,6 @@ import { EDIT_SNAPSHOT_ENDPOINT, type WriteBackRequest } from "../../core/edit-s
 import { parsePosix } from "../../core/path.ts";
 import { OperationJob } from "../../core/model.ts";
 import { editRpcSchemas } from "../../core/wire/edit.ts";
-import { EDIT_MIGRATION } from "./edit-store.ts";
 import { EDIT_DIRECTORY } from "./edit-files.ts";
 import { RemoteHubMock } from "./testing/remote-hub-mock.ts";
 import { SFTP_REFUSALS, SftpRefusal, type SftpMethodName } from "../../core/wire/remote-hub-sftp.ts";
@@ -57,7 +56,6 @@ async function start(remote = new RemoteHubMock(), primaryHostId: string | null 
       migrate: (_db: unknown, migrations: string[]) => {
         if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'jobs'").get()) {
           for (const migration of migrations) db.exec(migration);
-          if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'edit_sessions'").get()) db.exec(EDIT_MIGRATION);
         }
       },
       kv: { get: async (key: string) => kv.get(key), set: async (key: string, value: unknown) => { kv.set(key, value); } },
