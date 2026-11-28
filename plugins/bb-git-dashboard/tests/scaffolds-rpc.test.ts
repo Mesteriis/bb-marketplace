@@ -9,7 +9,7 @@ const request = {hostId: "host-1", key: "builtin:python-service-uv", values: {na
 
 /** A server with one machine; `answer` is what the host's scaffoldCreate returns, or throws for a lost answer. */
 function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<unknown>; create?: () => Promise<unknown>; account?: () => typeof account;
-  credential?: () => Promise<unknown>} = {}) {
+  credential?: () => Promise<unknown>; helper?: () => Promise<unknown>} = {}) {
   const calls: {name: string; input: unknown}[] = [];
   const created: unknown[] = [];
   const linked: unknown[] = [];
@@ -19,6 +19,8 @@ function server(answer: () => Promise<unknown>, more: {publish?: () => Promise<u
   const bb = {
     settings: {define: () => ({get: async () => ({scaffolds: "", scaffoldsFolder: ""})})},
     hosts: {experimental_client: () => ({call: async (name: string, input: unknown) => {
+      // Whether the machine has a Keychain is asked by the preview; the writes are what the tests count.
+      if (name === "credentialHelper") return (more.helper ?? (async () => ({ok: true, keychain: true})))();
       calls.push({name, input});
       return name === "scaffoldPublish" ? (more.publish ?? (async () => ({ok: true})))()
         : name === "scaffoldCredential" ? (more.credential ?? (async () => ({ok: true})))() : answer();
@@ -197,4 +199,20 @@ test("a Keychain entry that is not saved leaves the repository empty and says wh
     assert.deepEqual(run.linked, [["acc-1", "octo/notes"]]);
     for (const text of [JSON.stringify(done), JSON.stringify(run.log)]) assert.doesNotMatch(text, new RegExp(token));
   }
+});
+
+test("off macOS the preview promises no Keychain: the repository is made empty and main is pushed by hand", async () => {
+  const repository = {accountId: "acc-1", owner: null, visibility: "private" as const};
+  const linux = server(made, {helper: async () => ({ok: true, keychain: false})});
+  const off = await linux.handlers.scaffoldPrepare({...request, repository}, client);
+  assert.ok(off.ok);
+  if (!off.ok) return;
+  assert.equal(off.preview.lines.at(-1), "New repository · Stand (gitea) · octo/notes · private · this machine has no Keychain for the token:"
+    + " the repository is created empty; add the HTTPS credential of octo by hand, then push main from Git");
+  // A machine that does not answer is not promised a Keychain either.
+  const silent = server(made, {helper: async () => { throw new Error("gone"); }});
+  const unknown = await silent.handlers.scaffoldPrepare({...request, repository}, client);
+  assert.ok(unknown.ok);
+  if (!unknown.ok) return;
+  assert.match(unknown.preview.lines.at(-1) ?? "", /this machine has no Keychain for the token/);
 });

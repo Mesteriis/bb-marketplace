@@ -15,6 +15,7 @@ import { catalogContract } from "../../core/catalog/contract.ts";
 import { ciTemplatesContract } from "../../core/ci-templates/contract.ts";
 import { scaffoldsContract } from "../../core/scaffolds/contract.ts";
 import { interfaceContract } from "../../core/i18n/contract.ts";
+import { mainSettings } from "../../core/settings/main.ts";
 import { scanPreview } from "../../core/catalog/project-scan.ts";
 import { projectNode } from "../../core/catalog/project-tree.ts";
 import { forgeStatus, linkTarget } from "../../core/forge/contract.ts";
@@ -33,7 +34,13 @@ export const rpc = defineRpcContract({
   ...ciTemplatesContract,
   ...scaffoldsContract,
   ...interfaceContract,
+  /** The plugin's settings section: the main settings only, each written by its owner. */
+  settingsSet: {input: mainSettings, output: z.discriminatedUnion("ok", [failure, z.object({ok: z.literal(true)})])},
   checkConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:connectionCheck})])},
+  /** A stored account checked with its own token (`refresh`), or its last check (null when it never was). */
+  accountCheck: {input:z.object({accountId:id,refresh:z.boolean()}),output:z.discriminatedUnion("ok",[failure,success.extend({value:z.object({
+    ok:z.literal(true),login:z.string(),repositories:z.number().int(),more:z.boolean(),scopes:z.array(z.string()).nullable(),expiresAt:z.string().nullable(),
+    version:z.string().nullable(),checkedAt:z.string()}).or(z.object({ok:z.literal(false),code:z.string()})).nullable()})])},
   saveConnection: {input:connectionInput,output:z.discriminatedUnion("ok",[failure,success.extend({value:account})])},
   accounts: {input:z.null(),output:z.discriminatedUnion("ok",[failure,success.extend({items:z.array(account)})])},
   repositories: {input:z.object({accountId:id,page,refresh:z.boolean()}),output:z.discriminatedUnion("ok",[failure,success.extend({value:catalogPage})])},

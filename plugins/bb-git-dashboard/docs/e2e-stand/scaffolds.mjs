@@ -25,23 +25,23 @@ try {
   const section = page.getByRole("region", { name: "New project" });
   const form = section.getByRole("form", { name: "New Python service (uv)" });
   check("the scaffolds are offered, the Python service first", await visible(form));
-  await form.getByLabel("Project name (folder and package)").fill("My App");
-  check("a name that is no folder name is refused before anything is sent", await visible(form.getByText(/the project name must be a folder name/))
-    && await form.getByRole("button", { name: "Review project…" }).isDisabled());
-  await form.getByLabel("Project name (folder and package)").fill("notes-service");
+  await form.getByLabel("Folder name").fill("My App");
+  check("a name that is no folder name is refused before anything is sent", await visible(section.getByText(/the project name must be a folder name/))
+    && await section.getByRole("button", { name: "Check project…" }).isDisabled());
+  await form.getByLabel("Folder name").fill("notes-service");
   await form.getByLabel("Python package (import name)").fill("notes");
   await form.getByLabel("One-line description").fill("Notes \"service\" for: everyone");
-  await form.getByLabel("Kind of service").selectOption("fastapi");
-  await form.getByLabel("Commit author").fill("Stand Author");
+  await form.getByRole("group", { name: "Kind of service" }).getByRole("button", { name: "fastapi" }).click();
+  await form.getByLabel("Name", { exact: true }).fill("Stand Author");
   await form.getByLabel("Email").fill("author@example.invalid");
-  const files = form.getByRole("list", { name: "Files" });
+  const files = section.getByRole("list", { name: "Files" });
   check("the files include the common ones, the service and the CI file", await visible(files.getByRole("button", { name: ".github/workflows/ci.yml" }))
     && await visible(files.getByRole("button", { name: "LICENSE" })) && await visible(files.getByRole("button", { name: "src/notes/app.py" })));
   await files.getByRole("button", { name: "pyproject.toml" }).click();
-  check("free text is escaped in pyproject.toml", (await form.getByLabel("Content of pyproject.toml").innerText()).includes("description = \"Notes \\\"service\\\" for: everyone\""));
+  check("free text is escaped in pyproject.toml", (await section.getByLabel("Content of pyproject.toml").innerText()).includes("description = \"Notes \\\"service\\\" for: everyone\""));
   await page.screenshot({ path: out + "/scaffolds-form.png", fullPage: true });
 
-  await form.getByRole("button", { name: "Review project…" }).click();
+  await section.getByRole("button", { name: "Check project…" }).click();
   const dialog = page.getByRole("dialog");
   check("the project is previewed before anything is written", await visible(dialog.getByText(/^Python service \(uv\) · \d+ files$/))
     && await visible(dialog.getByText("CI · .github/workflows/ci.yml (python-github)")) && await visible(dialog.getByText(/first commit by Stand Author <author@example\.invalid>/))
@@ -53,41 +53,42 @@ try {
     && git("status", "--porcelain") === "");
   const workflow = readFileSync(project + "/.github/workflows/ci.yml", "utf8");
   check("the CI file installs with uv and runs make check", /run: pip install uv && uv sync\n/.test(workflow) && /run: make check\n$/.test(workflow), workflow.slice(-200));
-  check("the new project is listed in the catalog", await visible(catalog.getByRole("list", { name: "Local projects" }).getByText("notes-service", { exact: true }), 60000));
+  check("the new project is listed in the catalog", await visible(catalog.getByRole("table", { name: "Local" }).getByText("notes-service", { exact: true }), 60000));
 
   await catalog.getByRole("button", { name: "New project…" }).click();
   const again = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
-  await again.getByLabel("Project name (folder and package)").fill("notes-service");
-  await again.getByLabel("Commit author").fill("Stand Author");
+  await again.getByLabel("Folder name").fill("notes-service");
+  await again.getByLabel("Name", { exact: true }).fill("Stand Author");
   await again.getByLabel("Email").fill("author@example.invalid");
-  await again.getByRole("button", { name: "Review project…" }).click();
+  await page.getByRole("region", { name: "New project" }).getByRole("button", { name: "Check project…" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Confirm" }).click();
-  check("the same name again is refused in the form and nothing is overwritten", await visible(again.getByRole("alert").filter({hasText: "DESTINATION_EXISTS"}))
+  check("the same name again is refused in the form and nothing is overwritten", await visible(page.getByRole("region", { name: "New project" }).getByRole("alert").filter({hasText: "DESTINATION_EXISTS"}))
     && await page.getByRole("dialog").count() === 0 && git("log", "--format=%s").split("\n").length === 1);
 
   // 0.13.1: a repository on the Gitea stand-in, private by default, and the first push to it.
   await page.getByRole("button", { name: "Back to the catalog" }).click();
   await catalog.getByRole("button", { name: "New project…" }).click();
   const pushedForm = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
-  await pushedForm.getByLabel("Project name (folder and package)").fill("pushed-service");
+  await pushedForm.getByLabel("Folder name").fill("pushed-service");
   await pushedForm.getByLabel("Python package (import name)").fill("pushed");
-  await pushedForm.getByLabel("Commit author").fill("Stand Author");
+  await pushedForm.getByLabel("Name", { exact: true }).fill("Stand Author");
   await pushedForm.getByLabel("Email").fill("author@example.invalid");
   await pushedForm.getByLabel("Create a repository on a forge and push main").check();
   await pushedForm.getByLabel("Account").selectOption({ label: "stand (gitea)" });
-  check("a new repository is private unless chosen otherwise, and public is warned about", await pushedForm.getByLabel("Visibility").inputValue() === "private"
+  const visibility = pushedForm.getByRole("group", { name: "Visibility" });
+  check("a new repository is private unless chosen otherwise, and public is warned about", await visibility.getByRole("button", { name: "Private" }).getAttribute("aria-pressed") === "true"
     && await pushedForm.getByText("Public: anyone can read").count() === 0);
-  await pushedForm.getByLabel("Visibility").selectOption("public");
+  await visibility.getByRole("button", { name: "Public" }).click();
   check("public is spelled out before anything is sent", await visible(pushedForm.getByText("Public: anyone can read the repository and its history.")));
-  await pushedForm.getByLabel("Visibility").selectOption("private");
+  await visibility.getByRole("button", { name: "Private" }).click();
   const writesBefore = readFileSync(process.env.STAND + "/forge/writes.log", "utf8").split("\n").filter(Boolean).length;
-  await pushedForm.getByRole("button", { name: "Review project…" }).click();
+  await page.getByRole("region", { name: "New project" }).getByRole("button", { name: "Check project…" }).click();
   const pushDialog = page.getByRole("dialog");
   check("the preview names the account, the repository and its visibility, and says the token goes into the Keychain for its address",
     await visible(pushDialog.getByText(/^New repository · stand \(gitea\) · stand\/pushed-service · private · the token of stand is saved in the Keychain for the new repository's address only, then main is pushed/)));
   await pushDialog.getByRole("button", { name: "Confirm" }).click();
   check("the repository was made and main pushed, with nothing left to do", await visible(page.getByText(/Repository stand\/pushed-service has main\./), 60000)
-    && await catalog.locator(".git-error").count() === 0, await catalog.locator(".git-error").allInnerTexts());
+    && await catalog.locator(".g-banner.warn, .g-banner.bad").count() === 0, await catalog.locator(".g-banner.warn, .g-banner.bad").allInnerTexts());
   const pushedRoot = process.env.STAND + "/home/projects/pushed-service";
   const pushedGit = (...args) => execFileSync("git", ["-C", pushedRoot, ...args], {encoding: "utf8"}).trim();
   const bare = process.env.STAND + "/forge/git/stand/pushed-service.git";

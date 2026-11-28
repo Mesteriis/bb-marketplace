@@ -1,39 +1,53 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useModal } from "../system/dialog.tsx";
-import { clonePath } from "../../core/catalog/catalog.ts";
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { categoryOf, localState } from "../../core/catalog/rows.ts";
+import { PageHead } from "../shell/page-head.tsx";
+import { Icon } from "../system/icon.tsx";
+import { useT } from "../i18n/use-t.tsx";
 import { NewProject } from "./new-project.tsx";
+import { CloneDialog, type Host } from "./clone-dialog.tsx";
 import { ConfirmDialog } from "../ci/confirm-dialog.tsx";
-import type { BulkResult, CatalogApi, CatalogView, PullsResult, RemoteRow } from "./catalog-api.ts";
+import type { BulkResult, CatalogApi, CatalogView, LocalRow, PullsResult, RemoteRow } from "./catalog-api.ts";
 import "./catalog.css";
 
-type Host = {id: string; name: string};
 type Tab = "local" | "remote";
 type Bulk = "status" | "fetch" | "pull";
-const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
-const forgeName = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "Azure DevOps"} as const;
-const relative = (root: string, path: string) => path.startsWith(root + "/") ? path.slice(root.length + 1) : path;
+type T = ReturnType<typeof useT>;
+export const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
+export const forgeName = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "Azure DevOps"} as const;
+export const relative = (root: string, path: string) => path.startsWith(root.replace(/\/+$/, "") + "/") ? path.slice(root.replace(/\/+$/, "").length + 1) : path;
+/** The status of the first projects is read on its own when the catalog opens; the rest on Status. */
+const autoStatus = 50;
+const bulkLimit = 50;
+const pullsLimit = 20;
 
-/** One project's last status, fetch or pull, in a few words. */
-function bulkText(result: BulkResult | undefined): string {
-  if (!result) return "";
-  if (!result.ok) return result.code ?? "Failed";
-  const value = result.value!;
-  const sync = value.upstream ? (value.ahead || value.behind ? "↑" + (value.ahead ?? 0) + " ↓" + (value.behind ?? 0) : "in sync") : "no upstream";
-  return [value.branch ?? "detached", sync, value.files?.length ? value.files.length + " changed" : "clean"].join(" · ");
+/** A local project's state: changed files and ahead, behind, clean, or the failure's code. */
+function State({result, t}: {result: BulkResult | undefined; t: T}) {
+  const state = localState(result);
+  if (state.kind === "unknown") return <span className="g-muted">—</span>;
+  if (state.kind === "failed") return <span className="g-chip bad" title={state.code}><Icon name="CircleX" small/>{state.code}</span>;
+  const parts = [];
+  if (state.files) parts.push(<span key="f">{t("ct.files", {n: state.files})}</span>);
+  if (state.ahead) parts.push(<strong key="a" className="g-num">↑{state.ahead}</strong>);
+  if (state.behind) parts.push(<span key="b" className="g-warn"><strong className="g-num">↓{state.behind}</strong> {t("ct.behind")}</span>);
+  if (!parts.length) return <span className="g-muted">{state.upstream ? t("ct.clean") : t("ct.clean-no-upstream")}</span>;
+  return <span className="git-catalog-state">{parts.flatMap((part, index) => index ? [<span key={"s" + index} className="g-muted"> · </span>, part] : [part])}</span>;
 }
 
 /**
- * The catalog: the projects of a machine's projects folder and every connected account's repositories. Local
- * projects get status, fetch and pull together; a remote repository shows where it is cloned or is cloned on click
- * into a category of the projects folder; the open pull requests of chosen repositories are listed together.
+ * The catalog: the projects of a machine's projects folder and every connected account's repositories, as two tables.
+ * Local projects get status (read on its own for the first ones), fetch and pull together; a remote repository shows
+ * where it is cloned or is cloned on click into a category of the projects folder; the open pull requests of chosen
+ * repositories are listed under the table.
  */
 export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
+  const t = useT();
   const [hostId, setHostId] = useState(hosts[0]?.id ?? "");
   const [view, setView] = useState<CatalogView | null>(null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [tab, setTab] = useState<Tab>("local");
   const [query, setQuery] = useState("");
+  const [account, setAccount] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<Map<string, BulkResult>>(new Map());
   const [asked, setAsked] = useState<Bulk | null>(null);
@@ -48,146 +62,176 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
     setPending(true); setError("");
     try { setView(await api.catalog(hostId, refresh)); } catch (failure) { setError(message(failure)); } finally { setPending(false); }
   }, [api, hostId]);
-  useEffect(() => { setPicked(new Set()); setResults(new Map()); setPulls(null); void load(false); }, [load]);
+  useEffect(() => { setPicked(new Set()); setResults(new Map()); setPulls(null); setView(null); void load(false); }, [load]);
   useEffect(() => { if (!hostId && hosts[0]) setHostId(hosts[0].id); }, [hosts, hostId]);
+  const merge = (answers: BulkResult[]) => setResults(previous => { const next = new Map(previous); for (const answer of answers) next.set(answer.root, answer); return next; });
+  // The first projects' status is read when the catalog shows them, so the table says branch and state without a click.
+  useEffect(() => {
+    const roots = view?.local.slice(0, autoStatus).map(row => row.path) ?? [];
+    if (!roots.length) return;
+    let active = true;
+    api.bulk(hostId, roots, "status").then(answers => { if (active) merge(answers); }, () => {});
+    return () => { active = false; };
+  }, [api, hostId, view]);
 
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matches = (text: string) => words.every(word => text.toLowerCase().includes(word));
+  const byKey = useMemo(() => new Map((view?.remote ?? []).map(row => [row.key, row])), [view]);
   const local = useMemo(() => (view?.local ?? []).filter(row => matches(row.path + " " + (row.key ?? ""))), [view, query]);
-  const remote = useMemo(() => (view?.remote ?? []).filter(row => matches(row.key + " " + (row.localPath ?? ""))), [view, query]);
+  const remote = useMemo(() => (view?.remote ?? []).filter(row => (!account || row.accounts.includes(account)) && matches(row.key + " " + (row.localPath ?? ""))),
+    [view, query, account]);
   const toggle = (key: string) => setPicked(previous => { const next = new Set(previous); if (next.has(key)) next.delete(key); else next.add(key); return next; });
   const shown = tab === "local" ? local.map(row => row.path) : remote.map(row => row.key);
   const chosen = shown.filter(key => picked.has(key));
+  const all = shown.length > 0 && chosen.length === shown.length;
   const run = async (action: Bulk) => {
     setBusy(true);
-    try {
-      const answers = await api.bulk(hostId, chosen, action);
-      setResults(previous => { const next = new Map(previous); for (const answer of answers) next.set(answer.root, answer); return next; });
-    } finally { setBusy(false); }
+    try { merge(await api.bulk(hostId, chosen, action)); } finally { setBusy(false); }
   };
-  const tooMany = chosen.length > 50 ? "At most 50 projects at a time" : undefined;
+  const tooMany = chosen.length > bulkLimit ? t("ct.bulk-limit") : undefined;
   const failedSources = view?.sources.filter(source => !source.ok) ?? [];
+  const open = (path: string) => void api.open(hostId, path).catch(failure => setError(message(failure)));
+  const showPulls = () => {
+    const repos = remote.filter(row => picked.has(row.key)).map(row => ({accountId: row.repo.accountId, repoId: row.repo.id}));
+    api.pulls(repos).then(setPulls, failure => setError(message(failure)));
+  };
+  const tabKeys = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    const next: Tab = tab === "local" ? "remote" : "local";
+    setTab(next);
+    (event.currentTarget.parentElement?.querySelector("[data-tab=\"" + next + "\"]") as HTMLElement | null)?.focus();
+  };
 
   if (creating && view) return <NewProject api={api} hostId={hostId} root={view.root} categories={view.categories} onClose={() => setCreating(false)}
     onCreated={made => { setCreating(false); setCreated(made); void load(false); }}/>;
-  return <section className="git-catalog" aria-label="Catalog">
-    <div className="git-row git-catalog-toolbar">
-      <h2>Catalog</h2>
-      {hosts.length > 1 && <select aria-label="Machine" value={hostId} onChange={event => setHostId(event.target.value)}>
-        {hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select>}
-      <input type="search" aria-label="Search the catalog" placeholder="Name, path or remote" value={query} onChange={event => setQuery(event.target.value)}/>
-      <button type="button" disabled={pending} onClick={() => void load(true)}>Refresh</button>
-      <button type="button" disabled={!view} onClick={() => { setCreated(null); setCreating(true); }}>New project…</button>
-    </div>
-    {created && <div role="status">
-      <p>Created <span className="git-path">{created.root}</span> with its first commit; it is attached in Git.
-        {created.repository && <> Repository <span className="git-path">{created.repository.path}</span>{created.repository.pushed ? " has main." : " was created."}</>}
-        <button type="button" className="git-link" onClick={() => void api.open(hostId, created.root).catch(failure => setError(message(failure)))}>Open</button></p>
-      {created.notes.map(note => <p key={note} className="git-error">{note}</p>)}
-    </div>}
-    {view && <p className="git-muted">Projects folder: <span className="git-path">{view.root}</span>{view.truncated ? " · the walk stopped early: some projects are missing" : ""}</p>}
-    {failedSources.map(source => <p key={source.id} className="git-error" role="alert">{source.label} ({forgeName[source.kind]}) did not answer: {source.error}
-      {source.count ? " · showing the " + source.count + " repositories it listed before" : ""}</p>)}
-    {error && <p className="git-error" role="alert">{error}</p>}
-    {!view && !error && <p className="git-muted" role="status">Reading the projects folder and the accounts…</p>}
+  return <div className="g-page git-catalog" aria-label={t("section.catalog")} role="region">
+    <PageHead title={t("section.catalog")} sub={view ? <><span title={view.root}>{t("ct.root")} <span className="g-mono">{view.root}</span></span> · {t("ct.accounts", {n: view.sources.length})}</> : undefined}
+      actions={<>
+        {hosts.length > 1 && <select className="g-inp" aria-label={t("ct.machine")} value={hostId} onChange={event => setHostId(event.target.value)}>
+          {hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}</select>}
+        <input type="search" className="g-inp git-catalog-search" aria-label={t("ct.search")} placeholder={t("ct.search")} value={query} onChange={event => setQuery(event.target.value)}/>
+        <button type="button" className="g-btn" disabled={!view} onClick={() => { setCreated(null); setCreating(true); }}><Icon name="Plus" small/>{t("ct.new")}</button>
+        <button type="button" className="g-btn" disabled={pending} onClick={() => void load(true)}><Icon name="RotateCcw" small/>{t("ov.refresh")}</button>
+      </>}/>
+    {created && <div className="g-banner" role="status"><span>{t("ct.created", {root: created.root})}
+      {created.repository && <> {t(created.repository.pushed ? "ct.created-pushed" : "ct.created-repo", {path: created.repository.path})}</>}</span>
+      <button type="button" className="g-btn sm" onClick={() => open(created.root)}>{t("ct.open")}</button></div>}
+    {created?.notes.map(note => <div key={note} className="g-banner warn" role="status">{note}</div>)}
+    {view?.truncated && <div className="g-banner warn" role="status">{t("ct.truncated")}</div>}
+    {failedSources.map(source => <div key={source.id} className="g-banner bad" role="alert">
+      {t("ct.source-failed", {label: source.label, forge: forgeName[source.kind], error: source.error ?? ""})}
+      {source.count ? " " + t("ct.source-kept", {n: source.count}) : ""}</div>)}
+    {error && <div className="g-banner bad" role="alert">{error}</div>}
+    {!view && !error && <p className="g-state-page" role="status">{t("ct.loading")}</p>}
     {view && <>
-      <nav className="git-inbox-tabs" aria-label="Catalog tabs">
-        <button type="button" aria-current={tab === "local" ? "page" : undefined} onClick={() => setTab("local")}>Local <span className="git-inbox-count">{view.local.length}</span></button>
-        <button type="button" aria-current={tab === "remote" ? "page" : undefined} onClick={() => setTab("remote")}>Remote <span className="git-inbox-count">{view.remote.length}</span></button>
-      </nav>
-      <div className="git-row git-catalog-bulk">
-        <label className="git-review-check"><input type="checkbox" checked={shown.length > 0 && chosen.length === shown.length}
-          onChange={event => setPicked(previous => { const next = new Set(previous); for (const key of shown) if (event.target.checked) next.add(key); else next.delete(key); return next; })}/> All shown</label>
-        <span className="git-muted">{chosen.length} chosen</span>
-        {tab === "local" ? <>
-          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => void run("status").catch(failure => setError(message(failure)))}>Status</button>
-          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("fetch")}>Fetch</button>
-          <button type="button" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("pull")}>Pull</button>
-          {busy && <span className="git-muted" role="status">Working…</span>}
-        </> : <button type="button" disabled={!chosen.length || chosen.length > 20} title={chosen.length > 20 ? "At most 20 repositories at a time" : undefined}
-          onClick={() => {
-            const repos = remote.filter(row => picked.has(row.key)).map(row => ({accountId: row.repo.accountId, repoId: row.repo.id}));
-            api.pulls(repos).then(setPulls, failure => setError(message(failure)));
-          }}>Open pull requests</button>}
+      <div className="g-views git-catalog-bar">
+        <div role="tablist" aria-label={t("ct.tabs")} className="git-catalog-tabs">
+          {(["local", "remote"] as const).map(option => <button key={option} id={"git-catalog-" + option} data-tab={option} type="button" role="tab"
+            aria-selected={tab === option} aria-controls="git-catalog-panel" tabIndex={tab === option ? 0 : -1} onClick={() => setTab(option)} onKeyDown={tabKeys}>
+            {t(option === "local" ? "ct.local" : "ct.remote")} <span className="g-num git-catalog-count">{option === "local" ? view.local.length : view.remote.length}</span>
+          </button>)}
+        </div>
+        <div className="git-catalog-bulk" role="group" aria-label={t("pj.selected", {n: chosen.length})}>
+          {chosen.length > 0 && <span>{t("pj.selected", {n: chosen.length})}</span>}
+          {tab === "local" ? <>
+            <button type="button" className="g-btn sm" disabled={!chosen.length || !!tooMany || busy} title={tooMany}
+              onClick={() => void run("status").catch(failure => setError(message(failure)))}><Icon name="RotateCcw" small/>{t("ct.status")}</button>
+            <button type="button" className="g-btn sm" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("fetch")}>
+              <Icon name="RotateCcw" small/>{t("pj.fetch")}</button>
+            <button type="button" className="g-btn sm" disabled={!chosen.length || !!tooMany || busy} title={tooMany} onClick={() => setAsked("pull")}>
+              <Icon name="ArrowDown" small/>{t("pj.pull")}</button>
+            {busy && <span className="g-muted" role="status">{t("ct.working")}</span>}
+          </> : <>
+            <button type="button" className="g-btn sm" disabled={!chosen.length || chosen.length > pullsLimit}
+              title={chosen.length > pullsLimit ? t("ct.pulls-limit") : undefined} onClick={showPulls}><Icon name="GitPullRequest" small/>{t("ct.pulls")}</button>
+            {view.sources.length > 1 && <select className="g-inp git-catalog-account" aria-label={t("ct.account")} value={account} onChange={event => setAccount(event.target.value)}>
+              <option value="">{t("ct.account-all")}</option>
+              {view.sources.map(source => <option key={source.id} value={source.id}>{t("ct.account-one", {label: source.label})}</option>)}</select>}
+          </>}
+        </div>
       </div>
-      {tab === "local" ? <ul className="git-catalog-list" aria-label="Local projects">
-        {local.map(row => <li key={row.path} className="git-row">
-          <input type="checkbox" aria-label={"Choose " + relative(view.root, row.path)} checked={picked.has(row.path)} onChange={() => toggle(row.path)}/>
-          <span className="git-catalog-name"><strong>{row.name}</strong> <span className="git-muted git-path">{relative(view.root, row.path)}</span></span>
-          <span className="git-muted git-path">{row.key ?? "no forge remote"}</span>
-          {results.get(row.path) && <span className="git-catalog-result" data-ok={results.get(row.path)!.ok || undefined}>{bulkText(results.get(row.path))}</span>}
-          <span className="git-ci-spacer"/>
-          <button type="button" onClick={() => void api.open(hostId, row.path).catch(failure => setError(message(failure)))}>Open</button>
-        </li>)}
-        {!local.length && <li className="git-muted">{query ? "Nothing matches the search." : "No projects in the projects folder."}</li>}
-      </ul> : <ul className="git-catalog-list" aria-label="Remote repositories">
-        {remote.map(row => <li key={row.key} className="git-row">
-          <input type="checkbox" aria-label={"Choose " + row.repo.path} checked={picked.has(row.key)} onChange={() => toggle(row.key)}/>
-          <span className="git-catalog-name"><strong>{row.repo.path}</strong> <span className="git-muted">{forgeName[row.kind]} · {row.accounts.map(id => view.sources.find(source => source.id === id)?.label ?? id).join(", ")}</span></span>
-          <span className="git-ci-spacer"/>
-          {row.localPath ? <><span className="git-review-tag">cloned</span><span className="git-muted git-path">{relative(view.root, row.localPath)}</span>
-            <button type="button" onClick={() => void api.open(hostId, row.localPath!).catch(failure => setError(message(failure)))}>Open</button></>
-            : <button type="button" onClick={() => setCloning(row)}>Clone…</button>}
-        </li>)}
-        {!remote.length && <li className="git-muted">{query ? "Nothing matches the search." : view.sources.length ? "No repositories on the connected accounts." : "No accounts connected."}</li>}
-      </ul>}
-      {pulls && tab === "remote" && <section className="git-catalog-pulls" aria-label="Open pull requests of the chosen repositories">
-        <div className="git-row"><h3>Open pull requests</h3><button type="button" className="git-link" onClick={() => setPulls(null)}>Close</button></div>
-        {pulls.map(result => {
+      <div className="g-scroll git-catalog-scroll" role="tabpanel" id="git-catalog-panel" aria-labelledby={"git-catalog-" + tab}>
+        {tab === "local"
+          ? <LocalTable rows={local} view={view} byKey={byKey} results={results} picked={picked} all={all} t={t} query={query}
+            onAll={() => setPicked(previous => { const next = new Set(previous); for (const key of shown) if (all) next.delete(key); else next.add(key); return next; })}
+            onPick={toggle} onOpen={open}/>
+          : <RemoteTable rows={remote} view={view} picked={picked} all={all} t={t} query={query}
+            onAll={() => setPicked(previous => { const next = new Set(previous); for (const key of shown) if (all) next.delete(key); else next.add(key); return next; })}
+            onPick={toggle} onOpen={open} onClone={setCloning}/>}
+      </div>
+      {tab === "local" && local.length > 0 && <p className="git-catalog-foot g-muted">{t("ct.foot")}</p>}
+      {pulls && tab === "remote" && <section className="git-catalog-pulls" aria-labelledby="git-catalog-pulls-title">
+        <div className="git-catalog-pulls-head"><h2 id="git-catalog-pulls-title">{t("ct.pulls-title")} <span className="g-num g-muted">{pulls.reduce((sum, result) => sum + result.pulls.length, 0)}</span></h2>
+          <button type="button" className="g-btn ghost sm" onClick={() => setPulls(null)}>{t("ct.hide")}</button></div>
+        <ul className="git-catalog-pull-list">{pulls.flatMap(result => {
           const row = view.remote.find(entry => entry.repo.id === result.repoId && entry.repo.accountId === result.accountId);
-          return <div key={result.accountId + result.repoId} className="git-stack">
-            <strong className="git-path">{row?.repo.path ?? result.repoId}</strong>
-            {!result.ok ? <p className="git-error">{result.code}</p> : !result.pulls.length ? <p className="git-muted">No open pull requests.</p>
-              : <ul>{result.pulls.map(pull => <li key={pull.number}><button type="button" className="git-link"
-                onClick={() => api.openPull(result.accountId, row?.repo.path ?? "", pull.number)}>#{pull.number} {pull.title}</button>
-                <span className="git-muted"> · {pull.head.branch} → {pull.base.branch}</span></li>)}</ul>}
-          </div>;
-        })}
+          const path = row?.repo.path ?? result.repoId;
+          if (!result.ok) return [<li key={result.accountId + result.repoId} className="git-catalog-pull-note"><span className="g-mono">{path}</span> <span className="g-chip bad">{result.code}</span></li>];
+          if (!result.pulls.length) return [<li key={result.accountId + result.repoId} className="git-catalog-pull-note g-muted"><span className="g-mono">{path}</span> · {t("ct.no-pulls")}</li>];
+          return result.pulls.map(pull => <li key={result.accountId + result.repoId + pull.number}>
+            <button type="button" className="git-catalog-pull" onClick={() => api.openPull(result.accountId, path, pull.number)}>
+              <span className="git-catalog-pull-text"><strong>{pull.title}</strong>
+                <span className="g-muted">{path} #{pull.number} · {pull.head.branch} → {pull.base.branch}</span></span>
+              <Icon name="ChevronRight" small/></button></li>);
+        })}</ul>
       </section>}
     </>}
-    {asked && view && <ConfirmDialog title={(asked === "fetch" ? "Fetch " : "Pull ") + chosen.length + (chosen.length === 1 ? " project" : " projects")}
-      lines={[asked === "fetch" ? "Fetch each project's origin: its branches, no tags; branches deleted there leave their origin/… copies." :
-        "Fetch each project's origin (branches deleted there leave their origin/… copies), then fast-forward the branch where it follows origin, is clean and is behind.",
-        "SSH remotes use your SSH keys; HTTPS remotes the connected account of their server.", ...chosen.slice(0, 15).map(path => relative(view.root, path)),
-        ...(chosen.length > 15 ? ["and " + (chosen.length - 15) + " more"] : [])]}
+    {asked && view && <ConfirmDialog title={t(asked === "fetch" ? "ct.fetch-title" : "ct.pull-title", {n: chosen.length})}
+      lines={[t(asked === "fetch" ? "ct.fetch-what" : "ct.pull-what"), t("ct.keys"), ...chosen.slice(0, 15).map(path => relative(view.root, path)),
+        ...(chosen.length > 15 ? [t("ct.and-more", {n: chosen.length - 15})] : [])]}
       onConfirm={() => run(asked)} onClose={() => setAsked(null)}/>}
-    {cloning && view && <CloneDialog row={cloning} root={view.root} categories={view.categories} hostId={hostId} api={api}
+    {cloning && view && <CloneDialog row={cloning} view={view} hosts={hosts} hostId={hostId} api={api}
       onClose={() => setCloning(null)} onDone={() => { setCloning(null); void load(false); }}/>}
-  </section>;
+  </div>;
 }
 
-/** Where to clone: a category of the projects folder and a name, asked every time; then the clone's preview to confirm. */
-function CloneDialog({row, root, categories, hostId, api, onClose, onDone}: {row: RemoteRow; root: string; categories: string[]; hostId: string;
-  api: CatalogApi; onClose(): void; onDone(): void}) {
-  const [category, setCategory] = useState(categories.includes("") ? "" : categories[0] ?? "");
-  const [name, setName] = useState(row.repo.name);
-  const [preview, setPreview] = useState<{id: string; lines: string[]} | null>(null);
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-  const dialog = useRef<HTMLDialogElement>(null);
-  useModal(dialog, !preview);
-  const destination = clonePath(root, category, name.trim());
-  if (preview) return <ConfirmDialog key="clone" title={"Clone " + row.repo.path} lines={preview.lines} onConfirm={async () => { await api.clone(preview.id); }}
-    onClose={done => done ? onDone() : onClose()}/>;
-  return <dialog ref={dialog} className="git-ci-dialog" aria-labelledby="git-clone-title" onCancel={event => { event.preventDefault(); if (!pending) onClose(); }}>
-    <form className="git-stack" onSubmit={event => {
-      event.preventDefault();
-      if (!destination) return;
-      setPending(true); setError("");
-      api.prepareClone(row.repo, hostId, destination).then(setPreview, failure => setError(message(failure))).finally(() => setPending(false));
-    }}>
-      <h2 id="git-clone-title">Clone {row.repo.path}</h2>
-      <label className="git-stack">Category
-        <select aria-label="Category" value={category} onChange={event => setCategory(event.target.value)}>
-          {categories.map(value => <option key={value} value={value}>{value || "(the projects folder itself)"}</option>)}</select></label>
-      <label className="git-stack">Folder name
-        <input aria-label="Folder name" value={name} onChange={event => setName(event.target.value)}/></label>
-      <p className="git-muted git-path">{destination ?? "Use letters, digits and . _ - for the name."}</p>
-      {error && <p className="git-error" role="alert">{error}</p>}
-      <div className="git-row git-ci-dialog-actions">
-        <button type="button" disabled={pending} onClick={onClose}>Cancel</button>
-        <button type="submit" className="git-primary" disabled={pending || !destination}>{pending ? "Working…" : "Review clone"}</button>
-      </div>
-    </form>
-  </dialog>;
+function Pick({label, checked, onChange}: {label: string; checked: boolean; onChange(): void}) {
+  return <td className="git-catalog-pick"><input type="checkbox" aria-label={label} checked={checked} onChange={onChange}/></td>;
+}
+
+function LocalTable({rows, view, byKey, results, picked, all, t, query, onAll, onPick, onOpen}: {rows: LocalRow[]; view: CatalogView; byKey: Map<string, RemoteRow>;
+  results: Map<string, BulkResult>; picked: Set<string>; all: boolean; t: T; query: string; onAll(): void; onPick(key: string): void; onOpen(path: string): void}) {
+  if (!rows.length) return <p className="g-state-page" role="status">{query ? t("ct.none") : t("ct.no-local")}</p>;
+  return <table className="g-table two git-catalog-table" aria-label={t("ct.local")}>
+    <thead><tr>
+      <th className="git-catalog-pick"><input type="checkbox" aria-label={t("pj.select-all")} checked={all} onChange={onAll}/></th>
+      <th>{t("ct.col.project")}</th><th>{t("ct.col.category")}</th><th>{t("ct.col.branch")}</th><th>{t("ct.col.state")}</th><th>{t("ct.col.remote")}</th><th><span className="g-sr">{t("ct.col.actions")}</span></th>
+    </tr></thead>
+    <tbody>{rows.map(row => {
+      const path = relative(view.root, row.path);
+      const category = categoryOf(view.root, row.path, view.categories);
+      const result = results.get(row.path);
+      const state = localState(result);
+      const forge = row.key ? byKey.get(row.key) : undefined;
+      return <tr key={row.path} data-picked={picked.has(row.path) || undefined}>
+        <Pick label={t("ct.choose", {name: path})} checked={picked.has(row.path)} onChange={() => onPick(row.path)}/>
+        <td><div className="git-catalog-two"><strong>{row.name}</strong><span className="g-mono g-muted">{path}</span></div></td>
+        <td>{category ? <span className="g-chip line">{category}</span> : <span className="g-muted">—</span>}</td>
+        <td>{state.kind === "ok" ? <code className="git-catalog-branch" title={state.branch ?? undefined}>{state.branch ?? t("ct.detached")}</code> : <span className="g-muted">—</span>}</td>
+        <td><State result={result} t={t}/></td>
+        <td className="git-catalog-remote">{forge ? <>{forgeName[forge.kind]} · {forge.repo.path}</> : row.key ? <span className="g-mono">{row.key}</span> : <span className="g-muted">{t("ct.no-remote")}</span>}</td>
+        <td className="git-catalog-act"><button type="button" className="g-btn sm" onClick={() => onOpen(row.path)}>{t("ct.open")}</button></td>
+      </tr>;
+    })}</tbody>
+  </table>;
+}
+
+function RemoteTable({rows, view, picked, all, t, query, onAll, onPick, onOpen, onClone}: {rows: RemoteRow[]; view: CatalogView; picked: Set<string>; all: boolean;
+  t: T; query: string; onAll(): void; onPick(key: string): void; onOpen(path: string): void; onClone(row: RemoteRow): void}) {
+  if (!rows.length) return <p className="g-state-page" role="status">{query ? t("ct.none") : view.sources.length ? t("ct.no-remote-repos") : t("ct.no-accounts")}</p>;
+  const label = (id: string) => view.sources.find(source => source.id === id)?.label ?? id;
+  return <table className="g-table two git-catalog-table" aria-label={t("ct.remote")}>
+    <thead><tr>
+      <th className="git-catalog-pick"><input type="checkbox" aria-label={t("pj.select-all")} checked={all} onChange={onAll}/></th>
+      <th>{t("ct.col.repository")}</th><th>{t("ct.col.here")}</th><th><span className="g-sr">{t("ct.col.actions")}</span></th>
+    </tr></thead>
+    <tbody>{rows.map(row => <tr key={row.key} data-picked={picked.has(row.key) || undefined}>
+      <Pick label={t("ct.choose", {name: row.repo.path})} checked={picked.has(row.key)} onChange={() => onPick(row.key)}/>
+      <td><div className="git-catalog-two"><strong>{row.repo.path}</strong><span className="g-muted">{forgeName[row.kind]} · {row.accounts.map(label).join(", ")}</span></div></td>
+      <td>{row.localPath ? <span className="git-catalog-here"><span className="g-chip good">{t("ct.cloned")}</span><span className="g-mono">{relative(view.root, row.localPath)}</span></span>
+        : <span className="g-muted">—</span>}</td>
+      <td className="git-catalog-act">{row.localPath ? <button type="button" className="g-btn sm" onClick={() => onOpen(row.localPath!)}>{t("ct.open")}</button>
+        : <button type="button" className="g-btn sm" onClick={() => onClone(row)}><Icon name="Download" small/>{t("ct.clone")}</button>}</td>
+    </tr>)}</tbody>
+  </table>;
 }

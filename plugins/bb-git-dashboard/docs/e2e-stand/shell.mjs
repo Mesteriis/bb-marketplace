@@ -56,7 +56,7 @@ try {
     }
     if (theme === "light") {
       // A dialog keeps the focus inside, closes on Escape and gives the focus back to the button that opened it.
-      const add = page.getByRole("button", { name: "+ Add connection" });
+      const add = page.getByRole("button", { name: "Connect account" });
       await add.click();
       const dialog = page.getByRole("dialog");
       await dialog.waitFor({ timeout: 10000 });
@@ -69,7 +69,7 @@ try {
       await page.keyboard.press("Escape");
       await page.waitForTimeout(300);
       check("Escape closes the dialog and the focus is back on its button", await dialog.count() === 0
-        && await page.evaluate(() => document.activeElement?.textContent?.trim()) === "+ Add connection",
+        && await page.evaluate(() => document.activeElement?.textContent?.trim()) === "Connect account",
         await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120)));
       await page.setViewportSize({ width: 768, height: 1024 });
       for (const [label] of sections) {

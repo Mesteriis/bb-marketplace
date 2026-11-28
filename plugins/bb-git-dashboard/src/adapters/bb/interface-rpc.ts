@@ -1,10 +1,11 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { failureFor } from "../../core/workspace.ts";
+import type { SettingsRegistry } from "./settings-rpc.ts";
 
 type Caller = {experimental_caller: {kind: string}};
 
 /** Interface settings: the language (the side column's switch) and the overview's view, declared for BB's settings page too. */
-export function interfaceHandlers(bb: BbPluginApi) {
+export function interfaceHandlers(bb: BbPluginApi, registry?: SettingsRegistry) {
   const settings = bb.settings.define({
     uiLanguage: {type: "select", label: "Interface language", options: ["auto", "ru", "en"], default: "auto",
       experimental_optionLabels: {auto: "As in BB", ru: "Русский", en: "English"},
@@ -12,6 +13,8 @@ export function interfaceHandlers(bb: BbPluginApi) {
     overviewView: {type: "select", label: "Overview opens as", options: ["list", "board"], default: "list",
       experimental_optionLabels: {list: "List", board: "Board"}, description: "The overview's view when it opens: a list of what needs you, or a board by stage."},
   });
+  // The plugin's settings section writes this module's main settings through its own handle.
+  registry?.add("interface", ["uiLanguage", "overviewView"], values => settings.experimental_set(values as never));
   return {
     interfaceSet: async (input: {uiLanguage?: "auto" | "ru" | "en" | undefined; overviewView?: "list" | "board" | undefined}, context: Caller) => {
       if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");

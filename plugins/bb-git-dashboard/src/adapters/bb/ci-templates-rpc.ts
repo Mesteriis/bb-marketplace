@@ -8,6 +8,7 @@ import type { Account, Repo } from "../../core/providers.ts";
 import type { Preview, RemoteAction } from "../../core/publication.ts";
 import { CodedError, failureFor, type Copy, type Failure } from "../../core/workspace.ts";
 import { hostContract } from "./host-contract.ts";
+import type { SettingsRegistry } from "./settings-rpc.ts";
 
 type Caller = {experimental_caller: {kind: string}};
 type Deps = {
@@ -19,13 +20,15 @@ type Deps = {
 const ciPaths = /^(?:\.github\/workflows\/|\.gitea\/workflows\/|\.gitlab\/ci\/|\.azure-pipelines\/)[^/]+$|^\.gitlab-ci\.yml$|^azure-pipelines[^/]*\.ya?ml$/;
 
 /** CI templates of a copy's forge: the stack at HEAD, the built-in and own templates, and the render into a new branch. */
-export function ciTemplateHandlers(bb: BbPluginApi, deps: Deps) {
+export function ciTemplateHandlers(bb: BbPluginApi, deps: Deps, registry?: SettingsRegistry) {
   const settings = bb.settings.define({
     ciTemplates: {type: "string", label: "CI templates: own templates (JSON list)", default: "", experimental_multiline: true,
       description: "Templates in the plugin's template format, offered next to the built-in ones. Only the skeleton and parameters: no secrets, hosts or addresses."},
     ciTemplatesFolder: {type: "string", label: "CI templates: folder of own templates", default: "",
       description: "An absolute folder on the working copy's machine (or ~/…) with one template per .json file."},
   });
+  // The plugin's settings section writes this module's main settings through its own handle.
+  registry?.add("templates", ["ciTemplatesFolder"], values => settings.experimental_set(values as never));
   const host = bb.hosts.experimental_client({contract: hostContract});
 
   async function own(copy: Copy): Promise<OwnEntry[]> {

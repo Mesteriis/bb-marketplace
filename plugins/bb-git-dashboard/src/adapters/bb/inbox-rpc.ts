@@ -5,6 +5,7 @@ import { pushText } from "../../core/pulls/watch.ts";
 import type { Account } from "../../core/providers.ts";
 import { failureFor } from "../../core/workspace.ts";
 import { inboxService, watchRound, type InboxAlert } from "./inbox-service.ts";
+import type { SettingsRegistry } from "./settings-rpc.ts";
 
 type Caller = {experimental_caller: {kind: string}};
 type Deps = {accounts(): Promise<Account[]>; credential(id: string): Promise<{account: Account; token: string}>};
@@ -14,7 +15,7 @@ export const inboxChannel = "inbox-alerts";
 const pushSent = z.object({ok: z.literal(true), channels: z.array(z.string())});
 
 /** Incoming pull requests of every account, their watcher and its alerts; only the app calls the RPC. */
-export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
+export function inboxHandlers(bb: BbPluginApi, deps: Deps, registry?: SettingsRegistry) {
   const settings = bb.settings.define({
     inboxNotifyCi: {type: "boolean", label: "My PRs: alert when CI starts failing", default: true},
     inboxNotifyComments: {type: "boolean", label: "My PRs: alert on new comments and reviews (GitHub)", default: true},
@@ -24,6 +25,8 @@ export function inboxHandlers(bb: BbPluginApi, deps: Deps) {
     inboxIgnore: {type: "string", label: "My PRs: never alert for comments from (comma-separated logins)", default: ""},
     inboxEveryMinutes: {type: "number", label: "My PRs: check every (minutes)", experimental_schema: z.number().int().min(2).max(60), default: 5},
   });
+  // The plugin's settings section writes this module's main settings through its own handle.
+  registry?.add("inbox", ["inboxNotifyCi", "inboxNotifyComments"], values => settings.experimental_set(values as never));
   // Turning toasts or the unread count off or on takes effect at once: the app reads the alert summary again.
   settings.onChange((next, prev) => {
     if (next.inboxToasts !== prev.inboxToasts || next.inboxBadge !== prev.inboxBadge) bb.realtime.publish(inboxChannel, {settings: true});

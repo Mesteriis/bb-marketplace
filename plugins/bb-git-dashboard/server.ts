@@ -19,6 +19,7 @@ import { interfaceHandlers } from "./src/adapters/bb/interface-rpc.ts";
 import { codeReviewHandlers } from "./src/adapters/bb/code-review-rpc.ts";
 import { codeReviewRunTools, codeReviewTools, namesRun, registerCodeReviewTools } from "./src/adapters/bb/code-review-tools.ts";
 import { inboxHandlers } from "./src/adapters/bb/inbox-rpc.ts";
+import { settingsHandlers, settingsRegistry } from "./src/adapters/bb/settings-rpc.ts";
 import { reviewHandlers } from "./src/adapters/bb/review-rpc.ts";
 import { grammarRoute } from "./src/adapters/bb/grammar-route.ts";
 import { pullMutation } from "./src/core/providers.ts";
@@ -114,7 +115,8 @@ export default function plugin(bb: BbPluginApi) {
   const linkKey = (copy:Copy) => "repository-link/" + repositoryKey(copy);
   const forge = forgeLinking(bb,linkKey,() => remote);
   const remote = remoteService(bb,loadCopy,saveCopy,forge.originMatches);
-  const catalog = projectCatalog(bb);
+  const settingsWriters = settingsRegistry();
+  const catalog = projectCatalog(bb, settingsWriters);
   const ci = ciHandlers(bb, {
     copy: linkedCopy,
     threadCopy: threadId => threadContext(threadId).then(context => context.copy.id, () => null),
@@ -137,7 +139,7 @@ export default function plugin(bb: BbPluginApi) {
       return remote.linked(target, copy);
     },
     prepare: request => remote.prepare(request),
-  });
+  }, settingsWriters);
   const scaffolds = scaffoldHandlers(bb, {
     rules: catalog.rules,
     saveCopy: (hostId, root, identity, metadata) => saveCopy(hostId, root, identity, metadata),
@@ -190,7 +192,7 @@ export default function plugin(bb: BbPluginApi) {
     return result.filter((location,index) => result.findIndex(other =>
       other.projectId === location.projectId && other.hostId === location.hostId && other.path === location.path) === index);
   }
-  const codeReview = codeReviewHandlers(bb, linkedCopy, threadId => threadContext(threadId).then(context => context.copy.id, () => null));
+  const codeReview = codeReviewHandlers(bb, linkedCopy, threadId => threadContext(threadId).then(context => context.copy.id, () => null), settingsWriters);
   // The diff highlighter's grammars, one language per request.
   bb.http.route("GET", "/grammar", grammarRoute());
   bb.rpc.register(rpc, {
@@ -199,11 +201,13 @@ export default function plugin(bb: BbPluginApi) {
     ...scaffolds,
     ...codeReview.handlers,
     ...historyHandlers(bb, linkedCopy),
-    ...interfaceHandlers(bb),
-    ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}),
+    ...interfaceHandlers(bb, settingsWriters),
+    ...settingsHandlers(settingsWriters),
+    ...inboxHandlers(bb, {accounts: remote.accountList, credential: remote.credential}, settingsWriters),
     ...catalogHandlers(bb, {rules: catalog.rules, accounts: remote.accountList, repositories: remote.repositories, pulls: remote.pulls}),
     ...reviewHandlers(bb, {credential: remote.credential, mirror: codeReview.service}),
     checkConnection: (input,context) => clientOnly(context) ? remote.checkConnection(input) : denied(),
+    accountCheck: (input,context) => clientOnly(context) ? remote.accountCheck(input) : denied(),
     saveConnection: (input,context) => clientOnly(context) ? remote.saveConnection(input) : denied(),
     accounts: (_,context) => clientOnly(context) ? remote.accounts() : denied(),
     repositories: (input,context) => clientOnly(context) ? remote.repositories(input) : denied(),

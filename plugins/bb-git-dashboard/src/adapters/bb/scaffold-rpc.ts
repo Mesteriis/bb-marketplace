@@ -88,8 +88,12 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
         }
         const choice = {...input.repository, owner};
         repository = {...choice, stamp: JSON.stringify(account)};
-        repositoryText = repositoryLine(account, choice, name) + " · the token of " + account.username + " is saved in the Keychain" +
-          " for the new repository's address only, then main is pushed over HTTPS with it";
+        // The token goes into the Keychain only on macOS: elsewhere (or when the machine does not say) nothing is promised.
+        const keychain = await host.call("credentialHelper", {}, {hostId: input.hostId}).then(answer => answer.keychain, () => false);
+        repositoryText = repositoryLine(account, choice, name) + (keychain
+          ? " · the token of " + account.username + " is saved in the Keychain for the new repository's address only, then main is pushed over HTTPS with it"
+          : " · this machine has no Keychain for the token: the repository is created empty; add the HTTPS credential of " + account.username
+            + " by hand, then push main from Git");
       }
       const now = Date.now();
       // A new preview of the same place replaces the earlier one; expired ones go.

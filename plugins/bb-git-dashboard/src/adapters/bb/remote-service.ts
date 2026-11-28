@@ -1,7 +1,8 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { checkConnection } from "./connection.ts";
+import { accountCheck, checkConnection } from "./connection.ts";
+import type { AccountCheck } from "../../core/connections/health.ts";
 import type { ConnectionInput } from "../../core/connection.ts";
 import { account, type CatalogPage } from "../../core/providers.ts";
 import { remoteRequest, type Preview, type RemoteOutcome } from "../../core/publication.ts";
@@ -142,6 +143,24 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
       return {username,repositories,hasMore};
     }),
     saveConnection: (input:ConnectionInput) => run(() => saveConnection(input)),
+    /** The last check of an account, or a new one with its stored token; kept for the account as it is configured now. */
+    accountCheck: ({accountId,refresh}:{accountId:string;refresh:boolean}) => run(async () => {
+      const current = accounts((await settings.get()).accounts).find(row => row.id === accountId);
+      if (!current) throw new Error("ACCOUNT_UNCONFIGURED");
+      const key = "account-check/" + accountId;
+      const stamp = JSON.stringify(current);
+      if (!refresh) {
+        const saved = await kv.get<{stamp:string;value:AccountCheck}>(key);
+        return saved?.stamp === stamp ? saved.value : null;
+      }
+      let value: AccountCheck;
+      try {
+        const {selected,token} = await context(accountId);
+        value = await accountCheck(selected,token);
+      } catch (error) { value = {ok:false,code:failureFor(error,"ACCOUNT_UNCONFIGURED").code}; }
+      await kv.set(key,{stamp,value});
+      return value;
+    }),
     matches: async (target:Target,copy:Copy) => assertOrigin((await repository(target)).repo,copy),
     features: (target:Target,copy:Copy,section:RepositorySection) => run(async () => {
       const {repo, selected, token} = await repository(target);

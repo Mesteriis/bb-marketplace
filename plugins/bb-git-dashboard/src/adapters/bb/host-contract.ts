@@ -67,6 +67,8 @@ export const hostContract = defineRpcContract({
     output:rootResponse},
   /** The first push of a project made from a scaffold to its new forge repository (HTTPS, the system credential helper). */
   scaffoldPublish: {input:z.object({root:path,identity,clone,username}),output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},
+  /** Whether this machine's Git can keep an account's token in the Keychain (macOS only), asked before a preview promises it. */
+  credentialHelper: {input:z.object({}),output:z.object({ok:z.literal(true),keychain:z.boolean()})},
   /** The account's token saved in the Keychain for the address of a repository the plugin has just made (stdin to Git only). */
   scaffoldCredential: {input:z.object({root:path,identity,clone,username,secret:z.string().min(1).max(4096)}),
     output:z.discriminatedUnion("ok",[failure,z.object({ok:z.literal(true)})])},

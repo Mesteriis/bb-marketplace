@@ -24,7 +24,7 @@ import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue } from "./src/app/apis.tsx";
 import { ciTab, historyTab, reviewTab, ThreadCi, ThreadHistory, ThreadReview, registerHistoryShortcut, registerReviewSurfaces } from "./src/app/thread-tabs.tsx";
 import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
-import { ConnectionsPage } from "./src/ui/connections-page.tsx";
+import { ConnectionsPage, type ConnectionsApi } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
 import { useOverviewApi } from "./src/app/overview-data.tsx";
 import { ProjectsRoute, useCopyCategories } from "./src/app/projects-route.tsx";
@@ -35,7 +35,7 @@ import "./src/ui/system/tokens.css";
 import "./src/ui/system/system.css";
 import "./src/ui/git.css";
 import { withCodeTheme } from "./src/app/code-theme.tsx";
-import { NotificationSettings } from "./src/app/notification-settings.tsx";
+import { MainSettingsSection } from "./src/app/main-settings.tsx";
 import { PrLinkOverlay } from "./src/app/pr-links.tsx";
 import { AlertToastsOverlay, useInboxBadge } from "./src/app/alerts.tsx";
 import { CatalogPage } from "./src/ui/catalog/catalog-page.tsx";
@@ -166,7 +166,7 @@ function Dashboard({subPath}: {subPath: string}) {
   const groups = useMemo(() => new Map(copies.map(copy => [copy.id, repositoryKey(copy)])), [copies]);
   const reviewRevisions = useReviewRevisions();
   const reviewRevision = reviewRevisions.any;
-  const api = useMemo<RemoteApi & RepositoryApi & ConnectionApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
+  const api = useMemo<RemoteApi & RepositoryApi & ConnectionsApi & {trees(id:string):Promise<import("./src/core/git.ts").GitResult>}>(() => ({
     checkConnection: async input => {
       const result = await client.call("checkConnection",input);
       if (!result.ok) throw new Error(result.code);
@@ -178,6 +178,7 @@ function Dashboard({subPath}: {subPath: string}) {
       return result.value;
     },
     accounts: async () => {const result=await client.call("accounts");return result.ok ? result.items : failed(result);},
+    accountCheck: async (accountId,refresh) => {const result=await client.call("accountCheck",{accountId,refresh});return result.ok ? result.value : failed(result);},
     repositories: async (accountId,page,refresh) => {const result=await client.call("repositories",{accountId,page,refresh});return result.ok ? result.value : failed(result);},
     pulls: async (repo,page) => {const result=await client.call("pulls",{accountId:repo.accountId,repoId:repo.id,page});return result.ok ? result : failed(result);},
     pull: async (repo,number) => {const result=await client.call("pull",{accountId:repo.accountId,repoId:repo.id,number});return result.ok ? result.value : failed(result);},
@@ -279,6 +280,7 @@ function Dashboard({subPath}: {subPath: string}) {
     },
     openPull: (accountId,repo,number) => open(refPath("pr",{accountId,repo,number})),
   }), [client]);
+  const localKeys = useCallback((hostId: string) => catalogApi.catalog(hostId, false).then(view => view.local.map(row => row.key)), [catalogApi]);
   const reviewsApi = useMemo<ReviewsApi>(() => ({
     summaries: async () => okValue(await client.call("reviewSummaries",{})).reviews,
     deleteOrphans: async sessionIds => okValue(await client.call("reviewDeleteOrphans",{sessionIds})),
@@ -310,7 +312,7 @@ function Dashboard({subPath}: {subPath: string}) {
     </> : subPath === "" ? <>
       <OverviewPage api={overview} ready={loaded} categories={categories} groups={groups} initialView={settingValues?.overviewView === "board" ? "board" : "list"}/>
     </> : subPath === "connections" ? <>
-      <ConnectionsPage api={api} title={t("section.connections")} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
+      <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
       <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
         if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,number},title:repo.name+" #"+number})) {
@@ -435,7 +437,7 @@ function Approval({interaction,submit,cancel}:PluginPendingInteractionProps) {
 export default definePluginApp(app => {
   app.slots.experimental_tab({...pullTab,title:"Pinned pull request",icon:"GitPullRequest",layout:"flush",component:withCodeTheme(PinnedPull)});
   app.slots.pendingInteraction({id:"git-confirm",component:Approval});
-  app.slots.settingsSection({id:"notifications", title:"Notifications", description:"How My PRs tells you that CI started failing or someone commented on your pull requests.", component:NotificationSettings});
+  app.slots.settingsSection({id:"main", component:withInterface(MainSettingsSection)});
   app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(withInterface(Dashboard)), experimental_useBadge:useInboxBadge, experimental_sidebar:withInterface(ProjectsSidebar)});
   app.slots.experimental_tab({id:"git-thread", title:"Git", icon:"GitBranch", context:{kind:"thread"}, availability:"fixed", layout:"flush", component:withCodeTheme(ThreadGit)});
   app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"GitBranch", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(PinnedGit)});

@@ -1,0 +1,39 @@
+/* Connections: the accounts with their check, the servers of the projects folder's remotes, and the connection wizard.
+   Only BB tokens and --git-*. */
+.git-ws .git-connection-list { list-style: none; margin: 0; padding: 0 8px 0 0; border-top: 1px solid var(--border); }
+.git-ws .git-connection-row { display: flex; align-items: center; gap: 14px; padding: 14px 16px 14px 24px; border-bottom: 1px solid var(--border); min-width: 0; }
+.git-ws .git-connection-text { flex: 1 1 auto; display: grid; gap: 3px; min-width: 0; }
+.git-ws .git-connection-text > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-ws .git-connection-text > .g-muted { font-size: 12px; }
+.git-ws .git-connection-hosts { padding: 28px 0 0; }
+.git-ws .git-connection-group { margin: 0 24px 8px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted-foreground); }
+@container (max-width: 760px) { .git-ws .git-connection-row { flex-wrap: wrap; } }
+
+/* The wizard. */
+.git-ws .git-connect { display: grid; gap: 12px; min-width: 0; }
+.git-ws .git-connect-steps { list-style: none; margin: 0 0 4px; padding: 0; display: flex; gap: 22px; flex-wrap: wrap; color: var(--muted-foreground); }
+.git-ws .git-connect-steps li { display: inline-flex; align-items: center; gap: 8px; }
+.git-ws .git-connect-mark { width: 22px; height: 22px; border-radius: 99px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600;
+  background: var(--accent); color: var(--muted-foreground); }
+.git-ws .git-connect-steps [aria-current="step"] { color: var(--foreground); font-weight: 600; }
+.git-ws .git-connect-steps [aria-current="step"] .git-connect-mark { background: var(--primary); color: var(--primary-foreground); }
+.git-ws .git-connect-steps [data-done] .git-connect-mark { background: var(--git-good-bg); color: var(--git-success); }
+.git-ws .git-connect-lead { margin: 0; }
+.git-ws .git-connect .git-connect-field { display: grid; gap: 6px; color: var(--foreground); font-size: 13px; font-weight: 500; }
+.git-ws .git-connect-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.git-ws .git-connect-found { margin: 0; display: flex; align-items: flex-start; gap: 8px; }
+.git-ws .git-connect-found > svg, .git-ws .git-connect-checks svg { flex: none; margin-top: 2px; }
+.git-ws .git-connect-found:not(.g-muted) > svg { color: var(--git-success); }
+.git-ws .git-connect-group { margin: 6px 0 0; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted-foreground); }
+.git-ws .git-connect-types { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.git-ws .git-connect-type { display: grid; gap: 2px; text-align: start; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--background);
+  color: inherit; font: inherit; cursor: pointer; }
+.git-ws .git-connect-type:hover { background: var(--git-subtle); }
+.git-ws .git-connect-type[aria-checked="true"] { border: 2px solid var(--foreground); padding: 11px 13px; }
+.git-ws .git-connect-type:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.git-ws .git-connect-checks { list-style: none; margin: 0; padding: 0; display: grid; }
+.git-ws .git-connect-checks li { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--git-hairline); }
+.git-ws .git-connect-checks li:last-child { border-bottom: 0; }
+.git-ws .git-connect-checks li > svg { color: var(--git-success); }
+.git-ws .git-connect-checks li > span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.git-ws .git-connect-error { margin: 0; }

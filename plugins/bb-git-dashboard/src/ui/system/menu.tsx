@@ -10,8 +10,10 @@ export type MenuEntry =
  * A button with a ▾ that opens a menu of actions and switches. Arrow keys move, Escape and a choice close it and give
  * the focus back to the button; a click or Tab elsewhere closes it. A switch keeps the menu open.
  */
-export function MenuButton({label, icon, entries, busy = false, className = "g-btn", children}: {
+export function MenuButton({label, icon, entries, busy = false, className = "g-btn", chevron = true, children}: {
   label: string; icon?: string; entries: MenuEntry[]; busy?: boolean; className?: string;
+  /** The ▾ after the button's text; off for a button that is only an icon (⋯). */
+  chevron?: boolean;
   /** What the button shows, when not its label. */
   children?: ReactNode;
 }) {
@@ -42,8 +44,8 @@ export function MenuButton({label, icon, entries, busy = false, className = "g-b
   // Tab, or a click, taking the focus out closes it.
   const leave = (event: FocusEvent<HTMLSpanElement>) => { if (open && !box.current?.contains(event.relatedTarget as Node | null)) setOpen(false); };
   return <span className="g-menu" ref={box} onKeyDown={keys} onBlur={leave}>
-    <button ref={trigger} type="button" className={className} aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(value => !value)}>
-      {icon && <Icon name={icon} small/>}{children ?? label}<Icon name="ChevronDown" small/></button>
+    <button ref={trigger} type="button" className={className} aria-label={children ? label : undefined} aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen(value => !value)}>
+      {icon && <Icon name={icon} small/>}{children ?? label}{chevron && <Icon name="ChevronDown" small/>}</button>
     {open && <span className="g-menu-list" role="menu" aria-label={label}>{entries.map((entry, index) => entry.kind === "separator"
       ? <span key={index} role="separator" className="g-menu-sep"/>
       : entry.kind === "check"

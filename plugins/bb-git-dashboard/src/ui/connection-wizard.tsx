@@ -1,35 +1,47 @@
 import { useEffect, useRef, useState } from "react";
-import { useModal } from "./system/dialog.tsx";
-import { limitation } from "../core/forge/capabilities.ts";
 import { connectionInput, detectProvider, type ConnectionCheck, type ConnectionInput } from "../core/connection.ts";
+import { limitation } from "../core/forge/capabilities.ts";
+import type { MessageKey } from "../core/i18n/dictionary.ts";
 import type { Account } from "../core/providers.ts";
-import "./connection-wizard.css";
+import { useT } from "./i18n/use-t.tsx";
+import { Dialog } from "./system/dialog.tsx";
+import { Icon } from "./system/icon.tsx";
+import "./connections.css";
 
 export type ConnectionApi = {
   checkConnection(input:ConnectionInput):Promise<ConnectionCheck>;
   saveConnection(input:ConnectionInput):Promise<Account>;
 };
-const providerLabels = {github:"GitHub",azure:"Azure DevOps",gitea:"Gitea",gitlab:"GitLab"};
-const steps = ["Provider","Token","Review"];
-const errors:Record<string,string> = {
-  INVALID_INPUT:"Check the provider address and required fields.",
-  PROVIDER_DENIED:"The provider rejected the token or denied repository access.",
-  PROVIDER_UNAVAILABLE:"Could not reach the provider. Check the address and try again.",
-  CREDENTIAL_VAULT_UNAVAILABLE:"Credential Vault is enabled but unavailable. Check its status in BB Settings and retry.",
-  CREDENTIAL_VAULT_MISSING:"This connection’s Credential Vault entry is missing.",
-  CREDENTIAL_BINDING_CHANGED:"The saved credential belongs to a different provider account or server.",
-  ACCOUNT_EXISTS:"This account is already connected.",
-  REPO_LIMIT:"The workspace has reached its account limit.",
-};
+type Kind = ConnectionInput["kind"];
+const providerLabels: Record<Kind, string> = {github:"GitHub",azure:"Azure DevOps",gitea:"Gitea",gitlab:"GitLab"};
+const steps = ["cw.step.type","cw.step.access","cw.step.check"] as const;
+const known = ["INVALID_INPUT","PROVIDER_DENIED","PROVIDER_UNAVAILABLE","CREDENTIAL_VAULT_UNAVAILABLE","CREDENTIAL_VAULT_MISSING",
+  "CREDENTIAL_BINDING_CHANGED","ACCOUNT_EXISTS","REPO_LIMIT"];
+/**
+ * The server types to choose from. A hosted one fills its address; a server of one's own takes the type for the address
+ * typed above (a hosted address already says its type).
+ */
+const types: {id: string; kind: Kind; title: string; note: MessageKey | null; origin: string | null}[] = [
+  {id:"github",kind:"github",title:"GitHub",note:null,origin:"https://github.com"},
+  {id:"github-own",kind:"github",title:"GitHub Enterprise",note:"cw.own",origin:null},
+  {id:"gitlab",kind:"gitlab",title:"GitLab",note:null,origin:"https://gitlab.com"},
+  {id:"gitlab-own",kind:"gitlab",title:"GitLab self-managed",note:"cw.own",origin:null},
+  {id:"gitea",kind:"gitea",title:"Gitea",note:"cw.own",origin:null},
+  {id:"azure",kind:"azure",title:"Azure DevOps",note:"cw.org",origin:"https://dev.azure.com/"},
+];
 
-export function ConnectionWizard({api,onClose,onSaved}:{
-  api:ConnectionApi;onClose():void;onSaved(account:Account):void;
+/**
+ * Connecting a forge account in three steps: the server type (from a repository address, or a chosen type), access
+ * (the token), and the check — the login and repositories the token opens — before the connection is saved.
+ */
+export function ConnectionWizard({api,onClose,onSaved,initialAddress = ""}:{
+  api:ConnectionApi;onClose():void;onSaved(account:Account):void;initialAddress?:string;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null);
+  const t = useT();
   const heading = useRef<HTMLHeadingElement>(null);
   const [step,setStep] = useState(0);
-  const [address,setAddress] = useState("");
-  const [kind,setKind] = useState<ConnectionInput["kind"]| "">("");
+  const [address,setAddress] = useState(initialAddress);
+  const [kind,setKind] = useState<Kind | "">("");
   const [organization,setOrganization] = useState<string|null>(null);
   const [name,setName] = useState("");
   const [username,setUsername] = useState("");
@@ -41,41 +53,40 @@ export function ConnectionWizard({api,onClose,onSaved}:{
   const provider = detection?.kind ?? kind;
   const org = organization ?? detection?.organization ?? "";
   const active = useRef(true);
-
-  useModal(dialog);
   useEffect(() => {
     active.current = true;
     return () => {active.current = false;};
   },[]);
-  useEffect(() => {heading.current?.focus();},[step]);
+  useEffect(() => {if (step) heading.current?.focus();},[step]);
+  const failed = (cause: unknown) => {
+    const code = cause instanceof Error ? cause.message : "";
+    return known.includes(code) ? t(("cw.e." + code) as MessageKey) : t("cw.e.other");
+  };
+  const choose = (type: typeof types[number]) => {
+    setError("");
+    if (type.origin) { setAddress(type.origin); setKind(""); setOrganization(null); setToken(""); return; }
+    // A server of one's own: its address is typed above; a hosted address keeps its own type.
+    if (detection?.kind && detection.kind !== type.kind) setAddress("");
+    setKind(type.kind);
+  };
+  const chosen = (type: typeof types[number]) => provider === type.kind && (type.origin
+    ? detection?.origin === type.origin.replace(/\/$/, "") || (type.kind === "azure" && detection?.kind === "azure")
+    : !detection?.kind && kind === type.kind);
+  const label = name.trim() || (provider ? providerLabels[provider] : "");
 
   const submit = async () => {
     setError("");
-    if (!detection || !provider) {
-      setError("Enter a Git URL and select a provider.");
-      return;
-    }
+    if (!detection || !provider) { setError(t("cw.e.address")); return; }
     const unsupported = limitation(provider,"repositories");
-    if (unsupported) {
-      setError(unsupported);
-      return;
-    }
+    if (unsupported) { setError(unsupported); return; }
     if (step === 0) {
-      const draft = connectionInput.safeParse({kind:provider,origin:detection.origin,
-        organization:provider === "azure" ? org : "",label:name || providerLabels[provider],username,token:"pending"});
-      if (!draft.success || (provider === "azure" && (!org || !username.trim()))) {
-        setError("Check the connection name, organization and Git username.");
-        return;
-      }
+      const draft = connectionInput.safeParse({kind:provider,origin:detection.origin,organization:provider === "azure" ? org : "",label,username,token:"pending"});
+      if (!draft.success || (provider === "azure" && (!org || !username.trim()))) { setError(t("cw.e.fields")); return; }
       setStep(1);
       return;
     }
-    const input = connectionInput.safeParse({kind:provider,origin:detection.origin,
-      organization:provider === "azure" ? org : "",label:name || providerLabels[provider],username,token:token.trim()});
-    if (!input.success) {
-      setError("Enter a token without spaces or line breaks.");
-      return;
-    }
+    const input = connectionInput.safeParse({kind:provider,origin:detection.origin,organization:provider === "azure" ? org : "",label,username,token:token.trim()});
+    if (!input.success) { setError(step === 2 ? t("cw.e.name") : t("cw.e.token")); return; }
     setBusy(true);
     try {
       if (step === 1) {
@@ -90,76 +101,63 @@ export function ConnectionWizard({api,onClose,onSaved}:{
         onSaved(result);
       }
     } catch (cause) {
-      const code = cause instanceof Error ? cause.message : "";
-      if (active.current) setError(errors[code] ?? "Could not complete the connection. Try again.");
+      if (active.current) setError(failed(cause));
     } finally {if (active.current) setBusy(false);}
   };
+  const back = () => { setError(""); setChecked(undefined); if (step === 1) setToken(""); setStep(step - 1); };
 
-  return <dialog ref={dialog} className="git-connection-dialog" aria-labelledby="git-connect-title"
-    onCancel={event => {event.preventDefault(); if (!busy) onClose();}}>
-    <form onSubmit={event => {event.preventDefault(); if (!busy) void submit();}}>
-      <header className="git-connection-heading">
-        <div><h2 id="git-connect-title">Connect a Git provider</h2>
-          <p className="git-muted">Give Git Workspace access to your repositories.</p></div>
-        <button type="button" aria-label="Close connection wizard" disabled={busy} onClick={onClose}>×</button>
-      </header>
-      <ol className="git-connection-steps" aria-label="Connection steps">
-        {steps.map((label,index) => <li key={label} aria-current={index === step ? "step" : undefined} data-complete={index < step}>
-          <span aria-hidden="true">{index < step ? "✓" : index+1}</span>{label}
+  return <Dialog wide title={t("cw.title")} busy={busy} onClose={onClose} actions={<>
+    {step === 0 ? <button type="button" className="g-btn" disabled={busy} onClick={onClose}>{t("common.cancel")}</button>
+      : <button type="button" className="g-btn" disabled={busy} onClick={back}><Icon name="ChevronLeft" small/>{t("cw.back")}</button>}
+    <button type="submit" form="git-connect-form" className="g-btn pri" disabled={busy}>
+      {step === 0 ? <>{t("cw.next")}<Icon name="ChevronRight" small/></> : step === 1 ? t("cw.check") : t("cw.save")}</button>
+  </>}>
+    <form id="git-connect-form" className="git-connect" onSubmit={event => {event.preventDefault(); if (!busy) void submit();}}>
+      <ol className="git-connect-steps" aria-label={t("cw.steps")}>
+        {steps.map((key,index) => <li key={key} aria-current={index === step ? "step" : undefined} data-done={index < step || undefined}>
+          <span className="git-connect-mark" aria-hidden="true">{index < step ? <Icon name="Check" small/> : index + 1}</span>{t(key)}
+          {index < step && <span className="g-sr"> — {t("cw.done")}</span>}
         </li>)}
       </ol>
-      <div className="git-connection-body">
-        <h3 ref={heading} tabIndex={-1}>{step === 0 ? "Where is your repository?" : step === 1 ? "Verify access" : "Review connection"}</h3>
-        {step === 0 && <>
-          <label>Git server or repository URL
-            <input value={address} onChange={event => {setAddress(event.target.value); setKind("");setOrganization(null);setToken("");}}
-              placeholder="https://github.com/owner/repo" autoComplete="off" required maxLength={1000}/>
-          </label>
-          {detection?.kind ? <p className="git-connection-context">Detected <strong>{providerLabels[detection.kind]}</strong> · {detection.origin}</p> :
-            detection && <label>Provider type
-              <select value={kind} onChange={event => setKind(event.target.value as typeof kind)} required>
-                <option value="">Choose the server type</option>
-                <option value="github">GitHub Enterprise</option><option value="gitlab">GitLab self-managed</option><option value="gitea">Gitea</option>
-              </select>
-            </label>}
-          {provider === "azure" && <>
-            <label>Azure DevOps organization<input required maxLength={100} value={org} onChange={event => setOrganization(event.target.value)} placeholder="Organization name"/></label>
-            <label>Git username<input value={username} onChange={event => setUsername(event.target.value)} required maxLength={128} autoComplete="off"/></label>
-          </>}
-          <label>Connection name <span className="git-muted">Optional</span>
-            <input value={name} onChange={event => setName(event.target.value)} maxLength={80}
-              placeholder={provider ? providerLabels[provider] : "Team or account name"}/>
-          </label>
-        </>}
-        {step === 1 && <>
-          <p>Git Workspace will use a read request to check the token and list repositories you can access.</p>
-          <p className="git-connection-context">Token destination <strong>{detection?.origin === "https://github.com" ? "https://api.github.com" : detection?.origin}</strong></p>
-          <label>Personal access token
-            <input type="password" value={token} onChange={event => setToken(event.target.value)} autoComplete="off"
-              spellCheck={false} required maxLength={4096} aria-describedby="git-token-note"/>
-          </label>
-          <p id="git-token-note" className="git-muted">Use a token with repository read access. Saving uses Credential Vault when enabled and keeps a backup in BB’s secret settings.</p>
-        </>}
-        {step === 2 && checked && <>
-          <p className="git-connection-context">{provider === "azure"
-            ? <>Repository access verified for <strong>{org}</strong> · Azure DevOps</>
-            : <>Access verified for <strong>{checked.username}</strong> · {provider && providerLabels[provider]}</>}</p>
-          <p className="git-muted">{checked.repositories.length ? "Accessible repositories on the first page" : "The provider returned no accessible repositories."}</p>
-          {!!checked.repositories.length && <ul className="git-connection-repositories">{checked.repositories.map((repo,index) => <li key={index}>{repo}</li>)}</ul>}
-          {checked.hasMore && <p className="git-muted">More repositories are available in the catalog.</p>}
-        </>}
-        {error && <p className="git-error" role="alert">{error}</p>}
-        {busy && <p className="git-muted" role="status">{step === 2 ? "Saving connection…" : "Checking provider access…"}</p>}
-      </div>
-      <footer className="git-connection-actions">
-        <button type="button" disabled={busy} onClick={() => {
-          if (!step) onClose();
-          else {setError("");setChecked(undefined);if (step === 1) setToken("");setStep(step-1);}
-        }}>{step === 0 ? "Cancel" : "Back"}</button>
-        <button type="submit" className="git-primary" disabled={busy}>
-          {step === 0 ? "Continue" : step === 1 ? "Check access" : "Save connection"}
-        </button>
-      </footer>
+      <h3 ref={heading} tabIndex={-1} className="g-sr">{t(steps[step]!)}</h3>
+      {step === 0 && <>
+        <p className="git-connect-lead">{t("cw.lead")}</p>
+        <label className="git-connect-field"><span>{t("cw.address")}</span>
+          <input className="g-inp" value={address} autoFocus onChange={event => {setAddress(event.target.value); setKind(""); setOrganization(null); setToken("");}}
+            placeholder="https://github.com/owner/repo" autoComplete="off" maxLength={1000}/></label>
+        {detection?.kind ? <p className="git-connect-found"><Icon name="CircleCheck" small/><span>{t("cw.detected")} <strong>{providerLabels[detection.kind]}</strong> · <span className="g-mono">{detection.origin}</span></span></p>
+          : detection && <p className="git-connect-found g-muted"><Icon name="Info" small/><span>{t("cw.choose-own", {origin: detection.origin})}</span></p>}
+        <h4 className="git-connect-group" id="git-connect-types">{t("cw.or-type")}</h4>
+        <div className="git-connect-types" role="radiogroup" aria-labelledby="git-connect-types">
+          {types.map(type => <button key={type.id} type="button" role="radio" aria-checked={chosen(type)} className="git-connect-type" onClick={() => choose(type)}>
+            <strong>{type.title}</strong><span className="g-muted">{type.note ? t(type.note) : type.origin!.replace(/^https:\/\//, "").replace(/\/$/, "")}</span></button>)}
+        </div>
+        {provider === "azure" && <div className="git-connect-pair">
+          <label className="git-connect-field"><span>{t("cw.azure-org")}</span><input className="g-inp" maxLength={100} value={org} onChange={event => setOrganization(event.target.value)}/></label>
+          <label className="git-connect-field"><span>{t("cw.git-user")}</span><input className="g-inp" value={username} onChange={event => setUsername(event.target.value)} maxLength={128} autoComplete="off"/></label>
+        </div>}
+      </>}
+      {step === 1 && <>
+        <p className="git-connect-lead">{t("cw.access-lead")}</p>
+        <p className="git-connect-found"><Icon name="Info" small/><span>{t("cw.destination")} <span className="g-mono">{detection?.origin === "https://github.com" ? "https://api.github.com" : detection?.origin}</span></span></p>
+        <label className="git-connect-field"><span>{t("cw.token")}</span>
+          <input className="g-inp" type="password" value={token} autoFocus onChange={event => setToken(event.target.value)} autoComplete="off"
+            spellCheck={false} maxLength={4096} aria-describedby="git-token-note"/></label>
+        <p id="git-token-note" className="git-connect-found g-muted"><Icon name="Info" small/><span>{t("cw.token-note")}</span></p>
+      </>}
+      {step === 2 && checked && <>
+        <label className="git-connect-field"><span>{t("cw.name")}</span>
+          <input className="g-inp" value={name} autoFocus onChange={event => setName(event.target.value)} maxLength={80} placeholder={provider ? providerLabels[provider] : ""}/></label>
+        <ul className="git-connect-checks">
+          <li><Icon name="CircleCheck" small/><span><strong>{t("cw.access-ok")}</strong>
+            <span className="g-muted">{provider === "azure" ? t("cw.azure-ok", {org}) : t("cw.as", {login: checked.username})}</span></span></li>
+          <li><Icon name={checked.repositories.length ? "CircleCheck" : "Info"} small/><span><strong>{checked.repositories.length ? t("cw.repos-ok") : t("cw.repos-none")}</strong>
+            {checked.repositories.length > 0 && <span className="g-muted">{checked.repositories.slice(0, 3).join(", ")}
+              {checked.repositories.length > 3 || checked.hasMore ? " · " + t(checked.hasMore ? "cw.more-catalog" : "cw.more", {n: checked.repositories.length - 3}) : ""}</span>}</span></li>
+        </ul>
+      </>}
+      {error && <div className="g-banner bad git-connect-error" role="alert">{error}</div>}
+      {busy && <p className="g-muted" role="status">{step === 2 ? t("cw.saving") : t("cw.checking")}</p>}
     </form>
-  </dialog>;
+  </Dialog>;
 }

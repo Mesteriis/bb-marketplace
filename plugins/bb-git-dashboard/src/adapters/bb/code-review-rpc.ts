@@ -8,6 +8,7 @@ import { hostContract, hostSignals } from "./host-contract.ts";
 import { RunStore } from "./review-run-store.ts";
 import { MAX_PATTERNS, patternLines } from "./review-ignore.ts";
 import { REVIEW_MIGRATIONS, ReviewStore, type ReviewDb } from "./review-store.ts";
+import type { SettingsRegistry } from "./settings-rpc.ts";
 
 type Caller = {experimental_caller: {kind: string}};
 export const codeReviewSignal = "code-review-changed";
@@ -27,7 +28,7 @@ function value<T extends {ok: boolean}>(result: T): Extract<T, {ok: true}> {
  * `threadCopy` is the copy a thread's environment holds, or null.
  */
 export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => Promise<Copy | undefined>,
-  threadCopy: (threadId: string) => Promise<string | null>) {
+  threadCopy: (threadId: string) => Promise<string | null>, registry?: SettingsRegistry) {
   const host = bb.hosts.experimental_client({contract: hostContract, experimental_signals: hostSignals});
   /** The copies whose open Review watches them, by host and root: a change there reloads their Review. */
   const watched = new Map<string, Set<string>>();
@@ -59,6 +60,8 @@ export function codeReviewHandlers(bb: BbPluginApi, copyOf: (copyId: string) => 
       experimental_optionLabels: {auto: "Approve for me", "accept-edits": "Accept edits"},
       description: "How AI runs start. A provider without the chosen mode runs in full mode instead. A review is asked not to edit either way, and the review lists any file that changed while it ran."},
   });
+  // The plugin's settings section writes this module's main settings through its own handle.
+  registry?.add("review", ["aiPermissionMode"], values => settings.experimental_set(values as never));
   const at = (copy: Copy) => ({hostId: copy.hostId});
   const providerName = async (threadId: string) => {
     const {providerId} = await bb.sdk.threads.get({threadId}) as {providerId: string};

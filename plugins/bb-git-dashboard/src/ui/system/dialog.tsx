@@ -52,12 +52,14 @@ export function useModal(dialog: RefObject<HTMLDialogElement | null>, open = tru
  * `modal` false keeps it out of the browser's top layer, under a backdrop of its own, so a popover BB portals out of
  * one of its controls (the model picker) can open over it.
  */
-export function Dialog({title, busy = false, onClose, actions, children, modal = true}: {title: string; busy?: boolean; onClose(): void;
-  actions: ReactNode; children?: ReactNode; modal?: boolean}) {
+export function Dialog({title, busy = false, onClose, actions, children, modal = true, wide = false}: {title: string; busy?: boolean; onClose(): void;
+  actions: ReactNode; children?: ReactNode; modal?: boolean;
+  /** A form with long paths or a grid of choices: 640px instead of 480px. */
+  wide?: boolean}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const id = useId();
   useModal(dialog, true, {modal, onEscape: () => { if (!busy) onClose(); }});
-  const box = <dialog ref={dialog} className="g-dialog" data-modal={modal ? undefined : "own"} aria-modal={modal ? undefined : true} aria-labelledby={id}
+  const box = <dialog ref={dialog} className={"g-dialog" + (wide ? " wide" : "")} data-modal={modal ? undefined : "own"} aria-modal={modal ? undefined : true} aria-labelledby={id}
     onCancel={event => { event.preventDefault(); if (!busy) onClose(); }} onClose={onClose}>
     <h2 id={id}>{title}</h2>
     <div className="g-dialog-body">{children}</div>

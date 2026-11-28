@@ -135,6 +135,7 @@ export default experimental_defineHostEntry({
       try { const found = await ciTemplateFolder(folder); return {ok:true as const, files:found.files, skipped:found.skipped.slice(0, 1000)}; }
       catch (error) { return failureFor(error,"INVALID_PATH"); }
     },
+    async credentialHelper() { return {ok:true as const, keychain:process.platform === "darwin"}; },
     async scaffoldCredential({root, identity, clone, username, secret}, {signal}) {
       try { await saveCredential(root, identity, clone, username, secret, signal); return {ok:true as const}; }
       catch (error) { return failureFor(error,"GIT_REJECTED"); }
