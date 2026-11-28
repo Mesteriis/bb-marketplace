@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { base64Bytes, sftpOpOutputSchema } from "../../core/wire/remote-hub-sftp.ts";
+import { base64Bytes, SFTP_REFUSALS, sftpOpOutputSchema } from "../../core/wire/remote-hub-sftp.ts";
 import { fastBase64Bytes, sftpFastMethods } from "./sftp-fast-wire.ts";
 
 const literals = [
@@ -37,16 +38,38 @@ describe("the adapter's fast base64 check", () => {
   });
 });
 
+// Pinned from plugins/remote-hub/src/core/sftp-contract.ts on main (git blob fafdb9ad, remote-hub@271406d0), so the
+// check needs nothing outside this package.
+const MAIN_BASE64_BYTES_SHA256 = "bb800af39effbf277683ee971024a4e819385c9ccfbc42a39369b6c318b2bca7";
+const MAIN_BASE64_SCHEMA_SHA256 = "15f5fcf77f0445b6c6edaa3761fe0f1dd073b1535b0805cbd0f3da4150160176";
+const MAIN_REFUSALS = {
+  caller_not_plugin: "forbidden", consent_required: "forbidden", consent_revoked: "forbidden", host_key_unknown: "forbidden",
+  host_key_changed: "forbidden", permission_denied: "forbidden", profile_not_found: "not_found", channel_closed: "not_found",
+  no_such_file: "not_found", profile_not_sftp: "invalid", limit_exceeded: "invalid", invalid_path: "invalid",
+  profile_needs_config: "conflict", agent_unavailable: "conflict", keychain_locked: "conflict", keychain_unavailable: "conflict",
+  keychain_needs_approval: "conflict", credential_missing: "conflict", auth_failed: "conflict", unreachable: "conflict",
+  exists: "conflict", not_empty: "conflict", unsupported: "conflict", outcome_unknown: "conflict", failure: "conflict",
+};
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+const functionText = (text: string) => /export function base64Bytes[\s\S]*?\n}\n/.exec(text)?.[0];
+const schemaText = (text: string) => /const base64Schema =[\s\S]*?\}, "[^"]*"\);\n/.exec(text)?.[0];
+const here = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+
 describe("the Remote Hub contract mirror", () => {
-  const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-  const functionText = (text: string) => /export function base64Bytes[\s\S]*?\n}\n/.exec(text)?.[0];
-  it("keeps base64Bytes and the base64 schema byte for byte as in plugins/remote-hub", () => {
-    const mirror = source("../../core/wire/remote-hub-sftp.ts");
-    const hub = source("../../../../remote-hub/src/core/sftp-contract.ts");
-    expect(functionText(mirror)).toBeDefined();
-    expect(functionText(mirror)).toBe(functionText(hub));
-    const schemaText = (text: string) => /const base64Schema =[\s\S]*?\}, "[^"]*"\);\n/.exec(text)?.[0];
-    expect(schemaText(mirror)).toBeDefined();
-    expect(schemaText(mirror)).toBe(schemaText(hub));
+  const mirror = () => here("../../core/wire/remote-hub-sftp.ts");
+  it("keeps base64Bytes and the base64 schema byte for byte as on main", () => {
+    expect(sha256(functionText(mirror()) ?? "")).toBe(MAIN_BASE64_BYTES_SHA256);
+    expect(sha256(schemaText(mirror()) ?? "")).toBe(MAIN_BASE64_SCHEMA_SHA256);
+  });
+  it("carries the refusal table of main, class for class", () => {
+    expect({ ...SFTP_REFUSALS }).toEqual(MAIN_REFUSALS);
+  });
+  // A cross-check against the neighbouring plugin's working tree; an isolated copy of Commander has no such file.
+  const neighbour = new URL("../../../../remote-hub/src/core/sftp-contract.ts", import.meta.url);
+  it.skipIf(!existsSync(neighbour))("matches plugins/remote-hub in this checkout where that plugin is present", () => {
+    const hub = readFileSync(neighbour, "utf8");
+    expect(functionText(mirror())).toBe(functionText(hub));
+    expect(schemaText(mirror())).toBe(schemaText(hub));
   });
 });

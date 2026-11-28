@@ -152,6 +152,9 @@ function useWorkspaceState(rpc: Rpc, sdk: Sdk, threadId: string | undefined, env
   return { state, update, endpoints, problem, refreshEndpoints };
 }
 
+const PAGES_PER_SHOW = 10;
+const SHOW_MS = 100;
+
 function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number): Directory | undefined {
   const key = ref ? JSON.stringify(ref) : null;
   const [view, setView] = useState<{ key: string; directory: Directory } | null>(null);
@@ -159,33 +162,47 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
     if (!key) return;
     let active = true;
     const snapshot = JSON.parse(key) as ResourceRef;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const read = async () => {
       const entries: Entry[] = [];
       const cursors = new Set<string>();
       let cursor: string | null = null;
+      let pending = 0;
+      // The panel merges what it is given into its sorted rows, so pages are handed over in batches: the first
+      // page at once, then every PAGES_PER_SHOW pages or SHOW_MS after the first unshown one, whichever is sooner,
+      // and the last page without waiting. A refresh keeps the complete old listing until the new one is whole.
+      const show = () => {
+        clearTimeout(timer);
+        timer = undefined;
+        pending = 0;
+        if (!active) return;
+        const partial = entries.slice();
+        setView((previous) => previous?.key === key && !previous.directory.partial && !previous.directory.loading && !previous.directory.error
+          ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
+      };
+      let shown = false;
       do {
         const page: { entries: Entry[]; cursor: string | null } = await rpc.call("dir_list", { ref: snapshot, cursor, limit: LIST_PAGE_MAX });
         if (!active) return;
-        entries.push(...page.entries);
+        for (const item of page.entries) entries.push(item);
         cursor = page.cursor;
         if (cursor !== null) {
           if (cursors.has(cursor) || entries.length >= 100_000 || cursors.size >= 1_000) {
             throw new CommanderError("limit_exceeded", ru.unknownError);
           }
           cursors.add(cursor);
-          // Every page is shown as it arrives; the panel merges it into the sorted rows. A refresh keeps the
-          // complete old listing until the new one is whole.
-          const partial = entries.slice();
-          setView((previous) => previous?.key === key && !previous.directory.partial && !previous.directory.loading && !previous.directory.error
-            ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
+          if (!shown) { shown = true; show(); }
+          else if (++pending >= PAGES_PER_SHOW) show();
+          else timer ??= setTimeout(show, SHOW_MS);
         }
       } while (cursor !== null);
+      clearTimeout(timer);
       if (active) setView({ key, directory: { entries, loading: false, error: null } });
     };
     void read().catch((error) => {
       if (active) setView({ key, directory: { entries: [], loading: false, error: problemOf(error) } });
     });
-    return () => { active = false; };
+    return () => { active = false; clearTimeout(timer); };
   }, [rpc, key, revision]);
   return key === null ? undefined : view?.key === key ? view.directory : unloaded;
 }

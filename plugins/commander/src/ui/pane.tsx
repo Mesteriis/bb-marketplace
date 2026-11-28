@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
@@ -120,24 +120,24 @@ export function Pane(props: PaneProps) {
   }, [grid, location, directory?.loading]);
   // While pages of a long listing are merged into the rows, the anchor row (the cursor, else the row at the top of
   // the view) keeps its place on screen: rows that arrive above it move the scroll position by their height.
-  const shownRows = useRef({ entries, location, partial: !!directory?.partial });
+  const indexByKey = useMemo(() => new Map(entries.map((entry, index) => [keyOf(entry.name), index])), [entries]);
+  const shownRows = useRef({ entries, indexByKey, location, partial: !!directory?.partial });
   useLayoutEffect(() => {
     const before = shownRows.current;
-    shownRows.current = { entries, location, partial: !!directory?.partial };
+    shownRows.current = { entries, indexByKey, location, partial: !!directory?.partial };
     const node = grid.current;
     if (!node || before.location !== location || before.entries === entries || before.entries.length === 0) return;
     if (!before.partial && !directory?.partial) return;
     const lead = tab && parent(tab.path) ? 1 : 0;
-    const indexOf = (rows: Entry[], key: string) => rows.findIndex((entry) => keyOf(entry.name) === key);
-    let anchor = cursor !== null && cursor !== upKey && indexOf(before.entries, cursor) >= 0 ? cursor : null;
+    let anchor = cursor !== null && cursor !== upKey && before.indexByKey.has(cursor) ? cursor : null;
     if (anchor === null && node.scrollTop > 0) {
       const row = before.entries[Math.floor(node.scrollTop / rowHeight) - lead];
       anchor = row ? keyOf(row.name) : null;
     }
     if (anchor === null) return;
-    const delta = indexOf(entries, anchor) - indexOf(before.entries, anchor);
-    if (delta === 0 || indexOf(entries, anchor) < 0) return;
-    node.scrollTop += delta * rowHeight;
+    const now = indexByKey.get(anchor), was = before.indexByKey.get(anchor);
+    if (now === undefined || was === undefined || now === was) return;
+    node.scrollTop += (now - was) * rowHeight;
     setTop(node.scrollTop);
   }, [entries, location, directory?.partial]);
   useLayoutEffect(() => {
@@ -162,7 +162,7 @@ export function Pane(props: PaneProps) {
   const end = Math.min(total, first + Math.min(199, Math.ceil(height / rowHeight) + overscan * 2));
   const selected = new Set(tab?.selection.map(keyOf));
   const info = selectionInfo(directory?.entries ?? [], tab?.selection ?? []);
-  const cursorIndex = cursor === upKey && above ? 0 : entries.findIndex((entry) => keyOf(entry.name) === cursor) + offset;
+  const cursorIndex = cursor === upKey && above ? 0 : (cursor === null ? -1 : indexByKey.get(cursor) ?? -1) + offset;
   const renderedCursor = cursor !== null && cursorIndex >= first && cursorIndex < end
     && (cursor === upKey || cursorIndex >= offset);
   const sources = props.endpoints.map((source) => <option key={source.id} value={source.id}>{source.label}</option>);

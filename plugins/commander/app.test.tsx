@@ -26,6 +26,13 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   experimental_Icon: ({ name }: { name: string }) => <svg aria-hidden="true" data-test-icon={name} />,
 }));
 
+// Counts how many times the panel merges arriving pages into its sorted rows.
+const merges = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./src/ui/model.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./src/ui/model.ts")>();
+  return { ...original, mergeVisible: (...args: Parameters<typeof original.mergeVisible>) => { merges.count++; return original.mergeVisible(...args); } };
+});
+
 import app from "./app.tsx";
 import { ru } from "./src/ui/strings.ts";
 import type { ComponentType } from "react";
@@ -182,6 +189,39 @@ test("keeps the cursor and the view on the same entry while later pages merge in
   expect(cursorName()).toBe("true");
   expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
   expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(3000);
+});
+
+test("hands 100 arriving pages to the sorted rows in at most 12 batches, with the cursor and order as for one full load", async () => {
+  // 100 pages of 20 entries; later pages sort above earlier ones.
+  const total = 2000;
+  const all = Array.from({ length: total }, (_, index) => entry("файл-" + String(total - 1 - index).padStart(4, "0")));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method !== "dir_list") return call(method, input);
+    if (input.ref.path.segments.at(-1)?.t !== "данные") return { entries: [], cursor: null };
+    const start = Number(input.cursor ?? 0);
+    if (start === 20) await gate;
+    // Each page arrives in its own task, as network replies do, so React cannot fold them into one render.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { entries: all.slice(start, start + 20), cursor: start + 20 < total ? String(start + 20) : null };
+  });
+
+  mount();
+  const first = await leftFile("файл-1980");
+  fireEvent.click(first);
+  merges.count = 0;
+  release();
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  expect(merges.count).toBeLessThanOrEqual(12);
+  expect(merges.count).toBeGreaterThan(0);
+  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(total);
+  expect(within(grid()).getByRole("row", { name: /файл-1980/ }).getAttribute("data-cursor")).toBe("true");
+  // The rendered window starts where the view was anchored to the cursor, and the rows are in name order.
+  const rendered = within(grid()).getAllByRole("row").map((row) => row.textContent ?? "").filter((text) => text.startsWith("файл-"));
+  const names = rendered.map((text) => text.slice(0, 9));
+  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
 });
 
 test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {
