@@ -135,9 +135,9 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
     }
   }
 
-  function endpointOf(id: string, label: string): Endpoint {
+  function endpointOf(id: string, label: string, machine: string): Endpoint {
     return {
-      id: ("archive:" + id) as EndpointId, provider: "archive", label: label.slice(0, 200), machine: "server",
+      id: ("archive:" + id) as EndpointId, provider: "archive", label: label.slice(0, 200), machine: machine.slice(0, 200),
       hostId: null, readOnly: true, caseSensitive: true,
     };
   }
@@ -182,7 +182,7 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
     const name = source.path.segments.at(-1);
     const label = name && "t" in name ? name.t : "archive";
     session.provider = new ArchiveProvider({
-      endpoint: endpointOf(id, label), rpc: makeRpc(session), verifySource: (signal) => verifySource(session, signal),
+      endpoint: endpointOf(id, label, deps.sourceProvider(source.endpoint).endpoint.machine), rpc: makeRpc(session), verifySource: (signal) => verifySource(session, signal),
       ...(owner && deps.askPassword ? { password: () => deps.askPassword!(id) } : {}),
     });
     sessions.set(id, session);

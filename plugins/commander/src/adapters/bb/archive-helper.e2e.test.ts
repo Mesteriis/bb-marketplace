@@ -79,6 +79,23 @@ describe.skipIf(!runnable)("the real helper", () => {
     expect([...await provider.read(parsePosix("/dir/b.bin"), 1n, 2, null, signal)]).toEqual([2, 3]);
   });
 
+  it("keeps two readers of one archive apart: a window read between the chunks of a copy changes nothing", async () => {
+    const client = await start();
+    const a = Uint8Array.from({ length: 5000 }, (_, i) => i % 251);
+    const { opened } = await openZip(client, [{ name: "a.bin", data: a }, { name: "b.txt", data: "window" }]);
+    expect(opened.json).toMatchObject({ entries: 2 });
+    const provider = new ArchiveProvider({ endpoint: ENDPOINT, rpc: client, verifySource: async () => {} });
+    const root = await provider.list(parsePosix("/"), { cursor: null, limit: 10 }, signal);
+    const versionOf = (name: string) => { const e = root.entries.find((x) => "t" in x.name && x.name.t === name)!; return { size: e.size, mtimeNs: e.mtimeNs }; };
+    const copy: number[] = [];
+    copy.push(...await provider.read(parsePosix("/a.bin"), 0n, 2000, versionOf("a.bin"), signal));
+    expect(new TextDecoder().decode(await provider.read(parsePosix("/b.txt"), 0n, 6, versionOf("b.txt"), signal))).toBe("window");
+    expect([...await provider.read(parsePosix("/a.bin"), 100n, 3, versionOf("a.bin"), signal)]).toEqual([100, 101, 102]);
+    copy.push(...await provider.read(parsePosix("/a.bin"), 2000n, 3000, versionOf("a.bin"), signal));
+    expect(copy).toEqual([...a]);
+    await provider.finishRead!(parsePosix("/a.bin"), versionOf("a.bin"), signal);
+  });
+
   it("refuses a ZIP with a repeated name as a whole", async () => {
     const client = await start();
     await expect(openZip(client, [{ name: "x", data: "1" }, { name: "x", data: "2" }]))

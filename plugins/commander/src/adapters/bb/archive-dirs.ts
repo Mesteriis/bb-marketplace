@@ -23,15 +23,20 @@ export interface ArchiveDirs {
 
 export function psStart(pid: number): Promise<ProcessStart> {
   return new Promise((resolve) => {
-    execFile("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 2000 }, (error, stdout) => {
-      if (error) {
-        // ps exits 1 with no output when the process does not exist; anything else is "cannot tell".
-        resolve(Reflect.get(error, "code") === 1 && stdout.trim() === "" ? "gone" : null);
-        return;
-      }
-      const text = stdout.trim();
-      resolve(/^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(text) ? text : null);
-    });
+    try {
+      // A fixed C locale: the day and month names must not depend on the user's language.
+      execFile("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 2000, env: { LC_ALL: "C", PATH: "/usr/bin:/bin" } }, (error, stdout) => {
+        if (error) {
+          // ps exits 1 with no output when the process does not exist; anything else is "cannot tell".
+          resolve(Reflect.get(error, "code") === 1 && stdout.trim() === "" ? "gone" : null);
+          return;
+        }
+        const text = stdout.trim();
+        resolve(/^[A-Za-z]{3} [A-Za-z]{3} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(text) ? text : null);
+      });
+    } catch {
+      resolve(null);
+    }
   });
 }
 

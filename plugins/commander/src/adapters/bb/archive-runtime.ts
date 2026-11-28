@@ -22,7 +22,7 @@ const PURGE_EVERY_MS = 60 * 60 * 1000;
 
 function psRss(pid: number): Promise<number | null> {
   return new Promise((resolve) => {
-    execFile("/bin/ps", ["-o", "rss=", "-p", String(pid)], { timeout: 2000 }, (error, stdout) => {
+    execFile("/bin/ps", ["-o", "rss=", "-p", String(pid)], { timeout: 2000, env: { LC_ALL: "C", PATH: "/usr/bin:/bin" } }, (error, stdout) => {
       const kib = Number(stdout.trim());
       resolve(error || !Number.isFinite(kib) || kib <= 0 ? null : kib * 1024);
     });

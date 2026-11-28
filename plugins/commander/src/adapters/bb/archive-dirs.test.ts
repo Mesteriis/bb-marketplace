@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { createArchiveDirs, type ProcessStart } from "./archive-dirs.ts";
+import { createArchiveDirs, psStart, type ProcessStart } from "./archive-dirs.ts";
 
 let tmp: string;
 beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), "commander-dirs-")); });
@@ -105,4 +105,20 @@ test("a lock written while the process list was unreadable is dead only when its
   await make(starts({ 100: "ME", 300: "ANY" })).init();
   expect(existsSync(live)).toBe(true);
   expect(existsSync(gone)).toBe(false);
+});
+
+test("the process start time is read with a fixed C locale, whatever the user's locale is", async () => {
+  const saved = { LC_ALL: process.env.LC_ALL, LANG: process.env.LANG };
+  process.env.LC_ALL = "ru_RU.UTF-8";
+  process.env.LANG = "ru_RU.UTF-8";
+  try {
+    const start = await psStart(process.pid);
+    // English day and month names, as the lock comparison expects; null only where ps cannot be run at all.
+    if (start !== null) expect(start).toMatch(/^[A-Z][a-z]{2} [A-Z][a-z]{2} +\d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
+    if (start !== null) expect(await psStart(2147483000)).toBe("gone");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 });

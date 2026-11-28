@@ -199,16 +199,20 @@ describe("finishRead (the integrity barrier)", () => {
     await expect(make(rpc).finishRead!(path, { size: "0", mtimeNs: "1732665600000000000" }, signal))
       .rejects.toMatchObject({ code: "invalid_archive", reason: "crc_mismatch" });
   });
-  it("refuses a barrier when the entry was not read completely", async () => {
-    const { rpc } = rpcWith((body) => {
+  it("reads an entry that was read only in part through before it confirms it", async () => {
+    let finished = false;
+    const { rpc, calls } = rpcWith((body) => {
       if (body.t === "stat") return { json: { t: "ok", entry: file(7, "a.bin", 3) } };
       if (body.t === "read_open") return { json: { t: "ok", stream: 3, size: "3" } };
       if (body.t === "read") return { json: { t: "ok", pos: 1 }, data: [Uint8Array.from([1])] };
+      if (body.t === "read_finish") { finished = true; return { json: { t: "ok", size: "3", crc32: 1, aes_auth: null } }; }
       return { json: { t: "ok" } };
     });
     const provider = make(rpc);
     await provider.read(path, 0n, 1, null, signal);
-    await expect(provider.finishRead!(path, { size: "3", mtimeNs: "1732665600000000000" }, signal)).rejects.toMatchObject({ code: "internal" });
+    await provider.finishRead!(path, { size: "3", mtimeNs: "1732665600000000000" }, signal);
+    expect(finished).toBe(true);
+    expect(calls.filter((c) => c.t === "read")).toHaveLength(1 + 3);
   });
 });
 
@@ -223,5 +227,114 @@ describe("a read-only provider", () => {
     await expect(provider.remove(path, { kind: "file" }, signal)).rejects.toMatchObject({ code: "unsupported" });
     expect(provider.copyWithin).toBeUndefined();
     expect(provider.sha256).toBeUndefined();
+  });
+});
+
+describe("two readers of one archive (a viewer window and a copy job)", () => {
+  // A helper that keeps one position per stream, like the real one.
+  function multi(sizes: Record<string, number>) {
+    const streams = new Map<number, { id: number; pos: number; size: number }>();
+    let nextStream = 1;
+    const names = Object.keys(sizes);
+    const finishes: number[] = [];
+    const h = rpcWith((body) => {
+      switch (body.t) {
+        case "stat": {
+          const index = names.indexOf(Buffer.from(body.nameB64 as string, "base64").toString());
+          return { json: { t: "ok", entry: file(index, names[index]!, sizes[names[index]!]!) } };
+        }
+        case "read_open": {
+          const id = body.id as number;
+          const stream = nextStream++;
+          streams.set(stream, { id, pos: 0, size: sizes[names[id]!]! });
+          return { json: { t: "ok", stream, size: String(sizes[names[id]!]) } };
+        }
+        case "read": {
+          const s = streams.get(body.stream as number)!;
+          const n = Math.min(body.length as number, s.size - s.pos);
+          const bytes = Uint8Array.from({ length: n }, (_, i) => (s.pos + i) % 251);
+          s.pos += n;
+          return { json: { t: "ok", pos: s.pos }, data: [bytes] };
+        }
+        case "read_finish": {
+          const s = streams.get(body.stream as number)!;
+          if (s.pos !== s.size) throw new CommanderError("invalid_archive", "short", false, "truncated");
+          finishes.push(body.stream as number);
+          return { json: { t: "ok", size: String(s.size), crc32: 0, aes_auth: null } };
+        }
+        case "read_close": streams.delete(body.stream as number); return { json: { t: "ok" } };
+        default: throw new Error(body.t);
+      }
+    });
+    return { ...h, streams, finishes };
+  }
+  const sameVersion = (size: number) => ({ size: String(size), mtimeNs: "1732665600000000000" });
+
+  it("keeps the bytes right when a window read lands between the chunks of a copy, and the barrier still passes", async () => {
+    const { rpc } = multi({ "a.bin": 20, "b.bin": 10 });
+    const provider = make(rpc);
+    const a = parsePosix("/a.bin"), b = parsePosix("/b.bin");
+    expect([...await provider.read(a, 0n, 8, sameVersion(20), signal)]).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    // The viewer reads another entry and then a window of the same one.
+    expect([...await provider.read(b, 0n, 4, sameVersion(10), signal)]).toEqual([0, 1, 2, 3]);
+    expect([...await provider.read(a, 2n, 3, sameVersion(20), signal)]).toEqual([2, 3, 4]);
+    // The copy continues where it was.
+    expect([...await provider.read(a, 8n, 12, sameVersion(20), signal)]).toEqual([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    await expect(provider.finishRead!(a, sameVersion(20), signal)).resolves.toBeUndefined();
+  });
+
+  it("the barrier of an entry another reader moved is proven by reading it through again, never by guessing", async () => {
+    const h = multi({ "a.bin": 20 });
+    const provider = make(h.rpc);
+    const a = parsePosix("/a.bin");
+    await provider.read(a, 0n, 20, sameVersion(20), signal);
+    await provider.read(a, 5n, 3, sameVersion(20), signal);
+    await expect(provider.finishRead!(a, sameVersion(20), signal)).resolves.toBeUndefined();
+    expect(h.finishes).toHaveLength(1);
+  });
+});
+
+describe("concurrent callers against a helper that keeps one stream", () => {
+  it("runs each read as a whole, so two jobs or a viewer and a job never meet a dropped stream", async () => {
+    let live: { stream: number; id: number; pos: number } | null = null;
+    let next = 1;
+    const sizes = [30, 30];
+    const { rpc } = rpcWith(async (body) => {
+      await new Promise((r) => setTimeout(r, 1));
+      switch (body.t) {
+        case "stat": {
+          const id = Buffer.from(body.nameB64 as string, "base64").toString() === "x.bin" ? 0 : 1;
+          return { json: { t: "ok", entry: file(id, id === 0 ? "x.bin" : "y.bin", sizes[id]!) } };
+        }
+        case "read_open": live = { stream: next++, id: body.id as number, pos: 0 }; return { json: { t: "ok", stream: live.stream, size: "30" } };
+        case "read": {
+          if (!live || live.stream !== body.stream) throw new CommanderError("invalid_path", "No such stream");
+          const n = Math.min(body.length as number, 30 - live.pos);
+          const bytes = Uint8Array.from({ length: n }, (_, i) => (live!.id * 100 + live!.pos + i));
+          live.pos += n;
+          return { json: { t: "ok", pos: live.pos }, data: [bytes] };
+        }
+        case "read_finish": if (!live || live.stream !== body.stream || live.pos !== 30) throw new CommanderError("invalid_archive", "short", false, "truncated"); return { json: { t: "ok", size: "30", crc32: 0, aes_auth: null } };
+        case "read_close": live = null; return { json: { t: "ok" } };
+        default: throw new Error(body.t);
+      }
+    });
+    const provider = make(rpc);
+    const v = { size: "30", mtimeNs: "1732665600000000000" };
+    const x = parsePosix("/x.bin"), y = parsePosix("/y.bin");
+    const job = (async () => {
+      const out: number[] = [];
+      for (let o = 0; o < 30; o += 10) out.push(...await provider.read(x, BigInt(o), 10, v, signal));
+      await provider.finishRead!(x, v, signal);
+      return out;
+    })();
+    const viewer = (async () => {
+      const out: number[][] = [];
+      for (let i = 0; i < 4; i++) out.push([...await provider.read(y, BigInt(i * 5), 5, v, signal)]);
+      return out;
+    })();
+    const [copied, windows] = await Promise.all([job, viewer]);
+    expect(copied).toEqual(Array.from({ length: 30 }, (_, i) => i));
+    expect(windows[2]).toEqual([110, 111, 112, 113, 114]);
   });
 });

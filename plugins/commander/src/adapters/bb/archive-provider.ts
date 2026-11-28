@@ -113,7 +113,18 @@ interface OpenStream {
 export class ArchiveProvider implements FileProvider {
   readonly endpoint: Endpoint;
   readonly capabilities: ReadonlySet<Capability> = new Set<Capability>(["list", "stat", "read"]);
+  /**
+   * The helper keeps one read stream per archive (opening one drops the last), so every stream operation runs
+   * alone, one whole read or barrier at a time; a reader that finds its stream moved reopens and skips.
+   */
   private current: OpenStream | null = null;
+  private turn: Promise<unknown> = Promise.resolve();
+
+  private alone<T>(action: () => Promise<T>): Promise<T> {
+    const run = this.turn.then(action, action);
+    this.turn = run.catch(() => undefined);
+    return run;
+  }
 
   constructor(private readonly options: ArchiveProviderOptions) {
     this.endpoint = options.endpoint;
@@ -164,29 +175,31 @@ export class ArchiveProvider implements FileProvider {
   }
 
   private async openStream(entry: ArchiveEntry, signal: AbortSignal): Promise<OpenStream> {
+    if (entry.id === null) throw new CommanderError("is_a_directory", "Archive entry is a directory");
     const { json } = await this.options.rpc.request(
       { t: "read_open", id: entry.id },
       { signal, ...(this.options.password ? { password: this.options.password } : {}) },
     );
-    if (entry.id === null) throw new CommanderError("is_a_directory", "Archive entry is a directory");
     this.current = { id: entry.id, stream: json.stream as number, pos: 0n, size: BigInt(json.size as string) };
     return this.current;
   }
 
-  async read(path: ResourcePath, offset: bigint, length: number, expect: Fingerprint | null, signal: AbortSignal): Promise<Uint8Array> {
-    const entry = await this.entryForRead(path, expect, signal);
-    const size = BigInt(entry.size);
-    if (offset >= size) return new Uint8Array(0);
-    let stream = this.current;
-    if (!stream || stream.id !== entry.id || stream.pos !== offset) {
-      await this.closeStream(signal);
-      stream = await this.openStream(entry, signal);
-      while (stream.pos < offset) {
-        const skip = Number(offset - stream.pos < 4_194_304n ? offset - stream.pos : 4_194_304n);
-        await this.pull(stream, skip, signal);
+  read(path: ResourcePath, offset: bigint, length: number, expect: Fingerprint | null, signal: AbortSignal): Promise<Uint8Array> {
+    return this.alone(async () => {
+      const entry = await this.entryForRead(path, expect, signal);
+      const size = BigInt(entry.size);
+      if (offset >= size) return new Uint8Array(0);
+      let stream = this.current;
+      if (!stream || stream.id !== entry.id || stream.pos !== offset) {
+        await this.closeStream(signal);
+        stream = await this.openStream(entry, signal);
+        while (stream.pos < offset) {
+          const skip = Number(offset - stream.pos < 4_194_304n ? offset - stream.pos : 4_194_304n);
+          await this.pull(stream, skip, signal);
+        }
       }
-    }
-    return this.pull(stream, Math.min(length, Number(size - stream.pos)), signal);
+      return this.pull(stream, Math.min(length, Number(size - stream.pos)), signal);
+    });
   }
 
   private async pull(stream: OpenStream, length: number, signal: AbortSignal): Promise<Uint8Array> {
@@ -202,25 +215,29 @@ export class ArchiveProvider implements FileProvider {
     return out;
   }
 
-  /** Integrity barrier: the entry's size and checksum are confirmed by the helper before anything is committed. */
-  async finishRead(path: ResourcePath, expect: Fingerprint | null, signal: AbortSignal): Promise<void> {
-    const entry = await this.entryForRead(path, expect, signal);
-    const size = BigInt(entry.size);
-    let stream = this.current;
-    if (!stream || stream.id !== entry.id) {
-      await this.closeStream(signal);
-      if (size !== 0n) throw new CommanderError("internal", "Archive entry was not read completely");
-      stream = await this.openStream(entry, signal);
-    }
-    if (stream.pos !== size) {
-      await this.closeStream(signal);
-      throw new CommanderError("internal", "Archive entry was not read completely");
-    }
-    try {
-      await this.options.rpc.request({ t: "read_finish", stream: stream.stream }, { signal });
-    } finally {
-      await this.closeStream(signal);
-    }
+  /**
+   * Integrity barrier: the entry's size and checksum are confirmed by the helper before anything is committed.
+   * When another reader moved the entry's stream since the copy last read it, the barrier does not guess: it reads
+   * the entry through on a stream of its own and confirms that.
+   */
+  finishRead(path: ResourcePath, expect: Fingerprint | null, signal: AbortSignal): Promise<void> {
+    return this.alone(async () => {
+      const entry = await this.entryForRead(path, expect, signal);
+      const size = BigInt(entry.size);
+      let stream = this.current;
+      if (!stream || stream.id !== entry.id || stream.pos !== size) {
+        await this.closeStream(signal);
+        stream = await this.openStream(entry, signal);
+        while (stream.pos < size) {
+          await this.pull(stream, Number(size - stream.pos < 4_194_304n ? size - stream.pos : 4_194_304n), signal);
+        }
+      }
+      try {
+        await this.options.rpc.request({ t: "read_finish", stream: stream.stream }, { signal });
+      } finally {
+        await this.closeStream(signal);
+      }
+    });
   }
 
   readonly copyWithin = undefined;

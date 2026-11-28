@@ -215,3 +215,10 @@ test("resuming reopens the same archive id from the registry after a confirmed e
   expect(second.provider(ID).endpoint.id).toBe("archive:" + ID);
   await expect(second.resume("323e4567-e89b-42d3-a456-426614174000", signal, { owner: true })).rejects.toMatchObject({ code: "not_found" });
 });
+
+test("the archive's endpoint carries the archive's file name and the machine of its source, not an internal word", async () => {
+  const { manager } = await make();
+  await manager.open(ref, signal);
+  expect(manager.provider(ID).endpoint).toMatchObject({ label: "a.zip", machine: "host:abc", readOnly: true, provider: "archive" });
+  expect(JSON.stringify(manager.views())).not.toContain("server");
+});
