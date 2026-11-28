@@ -3,6 +3,18 @@
 // a merge request's pipeline starts failing (toast, New since you last looked, the badge, Mark as seen).
 // Usage: node inbox.mjs <bbUrl> <toolsDir> <chrome> <outDir> <project> <repo>. Last line is PASS or FAIL.
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { request } from "node:https";
+
+/** Tells the GitLab stand-in that !5's pipeline fails from now on (its certificate is the stand's own). */
+function failMr5() {
+  const facts = readFileSync(process.env.STAND + "/facts.env", "utf8");
+  const gitlab = /^GITLAB=(.+)$/m.exec(facts)[1];
+  return new Promise((resolve, reject) => {
+    const call = request(gitlab + "/__stand/fail-mr5", {method: "POST", ca: readFileSync(process.env.STAND + "/forge/cert.pem")}, answer => { answer.resume(); answer.on("end", resolve); });
+    call.on("error", reject); call.end();
+  });
+}
 
 const [url, tools, chrome, out] = process.argv.slice(2);
 const { chromium } = createRequire(tools + "/")("playwright-core");
@@ -51,9 +63,11 @@ try {
   check("Merged lists the merged PR without blockers", await visible(row("Initial import")) && await row("Initial import").locator(".git-inbox-blocker").count() === 0);
   await tabs.getByRole("tab", { name: /^Open/ }).click();
 
-  const alert = page.getByText("CI failing · stand/gamma#5");
-  check("the watcher alerts when the pipeline starts failing", await visible(alert, 240000));
-  check("the alert arrives as a toast", await page.locator(".git-inbox-toast", { hasText: "CI failing · stand/gamma#5" }).count() === 1);
+  // The pipeline starts failing only now, while My PRs is open: the alert is new to this page, so it comes as a toast
+  // (a toast is shown for 8 s; the probe waits for it, not for a time).
+  await failMr5();
+  const toast = page.locator(".git-inbox-toast", { hasText: "CI failing · stand/gamma#5" });
+  check("the watcher alerts when the pipeline starts failing, as a toast", await visible(toast, 240000));
   check("and in New since you last looked", await visible(page.getByRole("region", { name: "New since you last looked" })));
   await page.screenshot({ path: out + "/inbox-alert.png", fullPage: true });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^Projects\b/ }).click();

@@ -75,8 +75,13 @@ try {
       await now.waitFor({ timeout: 30000 });
       await page.waitForTimeout(1500);
       await page.reload({ waitUntil: "load" });
-      saved = await page.getByRole("button", { name: "Board", exact: true }).waitFor({ timeout: 30000 }).then(async () =>
-        await page.getByRole("button", { name: "Board", exact: true }).getAttribute("aria-pressed") === "true", () => false);
+      // The saved view arrives with BB's settings after the page shows its default: wait for it, not for a time.
+      const board = page.getByRole("button", { name: "Board", exact: true });
+      saved = await board.waitFor({ timeout: 30000 }).then(async () => {
+        const end = Date.now() + 15000;
+        while (Date.now() < end) { if (await board.getAttribute("aria-pressed") === "true") return true; await page.waitForTimeout(250); }
+        return false;
+      }, () => false);
       check("the chosen view is kept after a reload", saved);
       await page.getByRole("region", { name: "CI now" }).waitFor({ timeout: 30000 }).catch(() => {});
       await page.screenshot({ path: out + "/overview-board-light.png" });

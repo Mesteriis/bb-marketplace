@@ -126,7 +126,9 @@ try {
   await page.setViewportSize({ width: 768, height: 900 });
   await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: /^My\ PRs\b/ }).click().catch(() => {});
   await page.locator(".git-inbox-item", { hasText: "Add greeting check" }).locator("a").first().click().catch(() => {});
-  await page.waitForTimeout(800);
+  // The pull request page at 768 px is what is measured: wait for its heading rather than for a time.
+  await page.getByRole("heading", { name: /Add greeting check/ }).first().waitFor({ timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(300);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check("no horizontal overflow at 768 px", overflow <= 0, overflow);
   await page.screenshot({ path: out + "/review-768.png", fullPage: true });

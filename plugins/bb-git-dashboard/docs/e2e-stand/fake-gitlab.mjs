@@ -24,9 +24,11 @@ const config = "spec:\n  inputs: {}\n---\nvariables:\n  DEPLOY_ENV:\n    value: 
   "  INTERNAL:\n    value: x\nunit:\n  stage: test\n  script: [make test]\n";
 const issues = [{iid: 4, title: "Greeting is wrong", state: "opened", labels: ["bug"], updated_at: "2026-11-27T11:00:00Z", web_url: web + "/-/issues/4"}];
 const variables = [{key: "DEPLOY_TOKEN", value: "stand-variable-value", variable_type: "env_var", protected: true, masked: true, environment_scope: "*"}];
-// !5's head pipeline runs on the first read of the merge request (the watcher's baseline) and has failed on every later
-// read, so the next round alerts however long BB took to start.
-let mr5Reads = 0;
+// !5's head pipeline runs until a probe asks it to fail (POST /__stand/fail-mr5): from then it has failed on every read
+// after the watcher has seen it running at least once, so the alert comes while the probe watches, however long the
+// probes before it took.
+let mr5Seen = false;
+let mr5Failing = false;
 const mr = (iid, title, author, extra) => ({id: 700 + iid, iid, project_id: 7, title, state: "opened", draft: false, web_url: web + "/-/merge_requests/" + iid,
   references: {full: "stand/gamma!" + iid}, author: {username: author}, source_branch: "topic-" + iid, target_branch: "main",
   created_at: "2026-11-27T09:00:00Z", updated_at: "2026-11-27T11:0" + iid + ":00Z", merged_at: null, closed_at: null, has_conflicts: false,
@@ -42,6 +44,7 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
   const url = new URL(req.url, origin);
   // The path keeps %2F: GitLab addresses a project by its encoded full path, the same project as id 7.
   const path = req.url.split("?")[0].replace(/^\/api\/v4\/projects\/stand%2Fgamma(?=\/)/, "/api/v4/projects/7");
+  if (req.method === "POST" && path === "/__stand/fail-mr5") { mr5Failing = true; return json(res, 200, {ok: true}); }
   if (path === "/api/v4/version") return req.headers.authorization ? json(res, 200, {version: "17.5.0", revision: "stand"}) : json(res, 401, {message: "401 Unauthorized"});
   if (req.headers.authorization !== "Bearer stand-gitlab-token") return json(res, 401, {message: "401 Unauthorized"});
   let body = "";
@@ -96,7 +99,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (req, res) => {
     const request = /^\/api\/v4\/projects\/7\/merge_requests\/(\d+)$/.exec(path);
     if (request) {
       const found = Object.values(mrs).flat().find(item => item.iid === Number(request[1]));
-      const failed = found?.iid === 5 && ++mr5Reads > 1;
+      let failed = false;
+      if (found?.iid === 5) { failed = mr5Failing && mr5Seen; mr5Seen = true; }
       return found ? json(res, 200, {...found, head_pipeline: {id: 600 + found.iid, status: failed ? "failed" : "running"}}) : json(res, 404, {message: "404 Not found"});
     }
     return json(res, 404, {message: "404 Not found"});
