@@ -109,6 +109,53 @@ describe("a remote archive asks before it is copied", () => {
   });
 });
 
+describe("a cold archive tab (after a restart)", () => {
+  const ID = "123e4567-e89b-42d3-a456-426614174000";
+  const ESTIMATE = "223e4567-e89b-42d3-a456-426614174000";
+  const cold = {
+    left: { tabs: [newTab(ARCHIVE_ENDPOINT, parsePosix("/"))], activeTab: 0 }, right: { tabs: [], activeTab: null },
+    activePane: "left", layout: "horizontal", split: 0.5,
+  } as UiState;
+  const coldDirs = { left: { entries: [], loading: false, error: { code: "consent_required", message: "Требуется разрешение" } }, right: undefined };
+
+  it("asks for a new estimate by itself, once, and refreshes the pane after the owner confirms", async () => {
+    const onResumeArchive = vi.fn(async (_id: string, estimateId?: string) =>
+      estimateId ? { endpoint: ARCHIVE_ENDPOINT } : { estimateId: ESTIMATE, bytesPlanned: "2147483648" });
+    const props = mount({ state: cold, directories: coldDirs, onResumeArchive } as never);
+    expect(await screen.findByText(/2 ГБ/)).toBeTruthy();
+    expect(onResumeArchive).toHaveBeenCalledTimes(1);
+    expect(onResumeArchive).toHaveBeenCalledWith(ID);
+    fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
+    await waitFor(() => expect(onResumeArchive).toHaveBeenLastCalledWith(ID, ESTIMATE));
+    await waitFor(() => expect(props.onRefresh).toHaveBeenCalledWith("left"));
+  });
+
+  it("does not ask again after the owner cancels", async () => {
+    const onResumeArchive = vi.fn(async () => ({ estimateId: ESTIMATE, bytesPlanned: "2147483648" }));
+    mount({ state: cold, directories: coldDirs, onResumeArchive } as never);
+    await screen.findByText(/2 ГБ/);
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onResumeArchive).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing for an ordinary endpoint with the same error", async () => {
+    const onResumeArchive = vi.fn();
+    mount({ directories: coldDirs, onResumeArchive } as never);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(onResumeArchive).not.toHaveBeenCalled();
+  });
+});
+
+describe("a file that changed after the estimate", () => {
+  it("says to estimate again", async () => {
+    const changed = Object.assign(new Error(JSON.stringify({ code: "changed_since_plan", message: "x", retryable: false })), { code: "conflict" });
+    mount({ onOpenArchive: vi.fn(async () => { throw changed; }) } as never);
+    enterOn(/docs\.zip/);
+    expect(await screen.findByText(/Файл изменился — оцените снова/)).toBeTruthy();
+  });
+});
+
 describe("the password dialog", () => {
   it("is a password field; the answer goes to onPassword with the archive id", async () => {
     const onPassword = vi.fn(async () => undefined);

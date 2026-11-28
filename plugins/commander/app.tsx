@@ -417,6 +417,12 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       await refreshEndpoints();
       return { endpoint: reply.endpoint };
     }}
+    onResumeArchive={async (archiveId, estimateId) => {
+      const reply = await rpc.call("archive_resume", estimateId ? { archiveId, estimateId } : { archiveId, estimateOnly: true });
+      if ("estimateId" in reply) return reply;
+      await refreshEndpoints();
+      return { endpoint: reply.endpoint };
+    }}
     passwordFor={passwordFor}
     onPassword={async (archiveId, password) => {
       await rpc.call("archive_password", { archiveId, password });

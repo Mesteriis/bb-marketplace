@@ -1,6 +1,6 @@
 import { SearchPanel, type SearchActions } from "./search-panel.tsx";
 import type { SearchHit } from "../core/search.ts";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { ConflictAction, Entry, OperationJob, OperationPlan, ResourceRef } from "../core/model.ts";
@@ -23,7 +23,7 @@ import { Viewer } from "./viewer.tsx";
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
-  | { kind: "archive-estimate"; pane: Side; ref: ResourceRef; estimateId: string; bytes: string }
+  | { kind: "archive-estimate"; pane: Side; ref: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string }
   | ConflictView
   | { kind: "cancel"; job: OperationJob; returnTo?: ConflictView }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
@@ -76,6 +76,14 @@ export interface WorkspaceProps {
   passwordFor?: string | null;
   onPassword?: (archiveId: string, password: string) => Promise<unknown>;
   onPasswordCancel?: (archiveId: string) => void;
+  /** S14a: reopens an archive tab whose copy is gone (after a restart) through a new estimate. */
+  onResumeArchive?: (archiveId: string, estimateId?: string) => Promise<{ endpoint: string } | { estimateId: string; bytesPlanned: string }>;
+}
+
+/** A file that changed after the estimate gets its own line; everything else is the usual problem. */
+function archiveProblem(error: unknown): Problem {
+  const problem = problemOf(error);
+  return problem.code === "changed_since_plan" ? { code: problem.code, message: ru.archive.changed } : problem;
 }
 
 /** Only plain ZIP and TAR: compressed tarballs are not read in this stage. */
@@ -167,6 +175,21 @@ export function Workspace(props: WorkspaceProps) {
   const side = state.activePane, opposite = otherSide(side);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
   const tabs = { left, right }, tab = tabs[side], destination = tabs[opposite];
+  // S14a: an archive tab whose copy is gone (the host answers consent_required) asks for a new estimate once.
+  const asked = useRef(new Set<string>());
+  useEffect(() => {
+    for (const pane of sides) {
+      const value = tabs[pane], directory = props.directories[pane];
+      if (!value || !value.endpoint.startsWith("archive:") || directory?.error?.code !== "consent_required" || !props.onResumeArchive) continue;
+      const key = pane + ":" + value.endpoint;
+      if (asked.current.has(key)) continue;
+      asked.current.add(key);
+      const resumeId = value.endpoint.slice("archive:".length);
+      void props.onResumeArchive(resumeId).then((reply) => {
+        if ("estimateId" in reply) setDialog({ kind: "archive-estimate", pane, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+      }).catch((error: unknown) => setProblem(archiveProblem(error)));
+    }
+  });
   // S11: a search replaces only its source pane; the other pane remains the copy destination.
   const searchRoot = (pane: Side) => state.searchPanels?.[pane]?.root ?? searchRoots[pane];
   const inSearch = !!props.search && !!searchRoot(side);
@@ -334,14 +357,14 @@ export function Workspace(props: WorkspaceProps) {
     if (next.kind === "conflict") setSame(false);
     setDialog(next);
   };
-  async function perform(action: () => Promise<unknown>, completed?: () => void) {
+  async function perform(action: () => Promise<unknown>, completed?: () => void, describe: (error: unknown) => Problem = problemOf) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
     setProblem(null);
     setNotice(null);
     try { await action(); completed?.(); }
-    catch (error) { setProblem(problemOf(error)); }
+    catch (error) { setProblem(describe(error)); }
     finally { running.current = false; setBusy(false); }
   }
   function setPane(pane: Side) {
@@ -395,7 +418,7 @@ export function Workspace(props: WorkspaceProps) {
           reply = await props.onOpenArchive!(ref, reply.estimateId);
         }
         if ("endpoint" in reply) await props.onEndpoint(pane, reply.endpoint);
-      });
+      }, undefined, archiveProblem);
     } else view(value, entry);
   }
   function view(value: Tab, entry: Entry) {
@@ -744,9 +767,14 @@ export function Workspace(props: WorkspaceProps) {
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
         <Button size="sm" disabled={busy} onClick={() => void perform(async () => {
-          const reply = await props.onOpenArchive!(dialog.ref, dialog.estimateId);
+          if (dialog.resumeId) {
+            await props.onResumeArchive!(dialog.resumeId, dialog.estimateId);
+            props.onRefresh(dialog.pane);
+            return;
+          }
+          const reply = await props.onOpenArchive!(dialog.ref!, dialog.estimateId);
           if ("endpoint" in reply) await props.onEndpoint(dialog.pane, reply.endpoint);
-        }, close)}>{ru.archive.copyAndOpen}</Button>
+        }, close, archiveProblem)}>{ru.archive.copyAndOpen}</Button>
         <Button size="sm" variant="outline" onClick={close} disabled={busy}>{ru.cancel}</Button>
       </div>
     </Modal>}
