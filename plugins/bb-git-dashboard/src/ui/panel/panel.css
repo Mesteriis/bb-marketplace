@@ -52,3 +52,4 @@
 /* The copy's Code fills the panel's screen edge to edge: no page padding to undo there, and its bar keeps the panel's. */
 .git-ws .git-panel-screen > .git-codeview { margin: 0; }
 .git-ws .git-panel-screen .git-code-bar { padding: 8px 16px; }
+.git-ws .git-panel-note-banner { margin: 0; }

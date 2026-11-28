@@ -33,6 +33,11 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
 - `scaffolds.mjs` — New project in the Catalog: a Python scaffold with free text, GitHub Actions CI and an author; a
   name that is no folder name refused in the form; the preview before anything is written; the folder in the projects
   folder with its files, git on main and one commit by the author, listed in the catalog; the same name again refused.
+- `panel.mjs` — after `ci.mjs`, last: the thread header's Review opens the one Git tab on its Review; back gives the
+  summary; CI's Log, History and Changes open their screens in the panel and fit it; the panel's width as BB gives it and
+  no sideways scroll at 420, 520 and 640 px; a copy pinned from its page and a pull request pinned from Remote
+  repositories, each with Unpin — in light, dark and Russian. It leaves an uncommitted file in stand-beta while it runs
+  and removes it at the end.
 - `catalog-shots.mjs` — after `catalog.mjs` and `scaffolds.mjs`: the Catalog's two tables (the branch read on opening),
   the clone dialog (closed, nothing cloned), New project, Connections with Check of the Gitea account, the connection
   wizard's first and last step (the check only reads; nothing is saved) and the plugin's settings section, where the

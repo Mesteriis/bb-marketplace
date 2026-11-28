@@ -67,7 +67,7 @@ try {
     if (theme === "light" && language === "en") {
       const width = await panel.evaluate(element => Math.round(element.getBoundingClientRect().width));
       console.log("panel width as BB gives it: " + width);
-      check("the panel is as wide as BB gives it, between 420 and 640", width >= 380 && width <= 720, width);
+      check("the panel is as wide as BB gives it, between 420 and 640", width >= 420 && width <= 640, width);
       for (const size of [420, 520, 640]) {
         await panel.evaluate((element, size) => { element.style.width = size + "px"; element.style.maxWidth = size + "px"; }, size);
         await page.waitForTimeout(200);
@@ -95,9 +95,7 @@ try {
     await panel.getByRole("button", { name: w.back }).click();
     await panel.getByRole("button", { name: w.history, exact: true }).click();
     // Changes: the copy's full Code in the panel.
-    await panel.locator(".git-panel-section").first().getByRole("button").filter({ hasText: /All changes|Все изменения/ }).click().catch(async () => {
-      await panel.locator(".git-panel-path").first().click().catch(() => {});
-    });
+    await panel.locator(".git-panel-section").first().getByRole("button").filter({ hasText: /All changes|Все изменения/ }).click({ timeout: 20000 });
     if (await panel.locator(".git-panel-bar h3", { hasText: w.changes }).count()) {
       check(tag + ": Changes opens the copy's Code in the panel", await visible(panel.locator(".git-codeview")));
       check(tag + ": the copy's Code fits the panel", await overflow(page, ".git-panel") === 0, await overflow(page, ".git-panel"));
@@ -113,8 +111,7 @@ try {
     check(tag + ": a pinned copy is the same panel with its note and Unpin", await visible(pinned, 30000) && await visible(pinned.getByRole("button", { name: w.unpin })));
     await shot("panel-pinned-copy");
     await pinned.getByRole("button", { name: w.unpin }).click();
-    await page.waitForTimeout(600);
-    check(tag + ": Unpin closes it", await pinned.count() === 0);
+    check(tag + ": Unpin closes it", await pinned.first().waitFor({ state: "detached", timeout: 10000 }).then(() => true, () => false));
 
     // A pull request pinned from Remote repositories: its page in the side panel, under the pinned line.
     await page.goto(url + "plugins/bb-git-dashboard/git/remotes", { waitUntil: "load" });
@@ -127,8 +124,7 @@ try {
     check(tag + ": the pinned pull request fits the panel", await overflow(page, ".git-panel") === 0, await overflow(page, ".git-panel"));
     await shot("panel-pinned-pr");
     await pull.getByRole("button", { name: w.unpin }).click();
-    await page.waitForTimeout(600);
-    check(tag + ": Unpin closes the pinned pull request", await pull.count() === 0);
+    check(tag + ": Unpin closes the pinned pull request", await pull.first().waitFor({ state: "detached", timeout: 10000 }).then(() => true, () => false));
 
     if (language !== "en") {
       await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });

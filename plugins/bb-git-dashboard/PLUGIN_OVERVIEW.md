@@ -12,11 +12,11 @@ The **Projects folder** setting (default `~/projects`) and its exclusion list de
 
 ## History
 
-The History tab of a working copy, also a **Git History** tab in a thread and an optional thread header button, draws the commit graph of all refs or of HEAD only, lists uncommitted changes on top, and opens a commit's facts, files and numbered diff.
+The History tab of a working copy, also a screen of a thread's **Git** tab, draws the commit graph of all refs or of HEAD, uncommitted changes on top, and a commit's facts, files and diff.
 
 ## Line review
 
-**Review**, in Git or a thread's tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer. It follows the copy, keeps drafts, marks Viewed, reverts and finds.
+**Review**, in Git or a thread's **Git** tab, shows a working copy's diff. Comment on lines, files or the whole diff, suggest and apply changes, and send threads to the copy's agent, which answers each with `bb git-dashboard review`. AI runs review, summarize, explain or fix in their own threads; @reviewer asks the reviewer. It follows the copy, keeps drafts, marks Viewed, reverts and finds.
 
 ## My PRs
 
@@ -34,4 +34,4 @@ A copy's and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab
 
 Connect GitHub, GitLab, Azure Repos or Gitea accounts in three steps; **Check** says what each token can do. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s macOS Keychain entry; New project adds it on macOS. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
-Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their target.
+Beside a thread, one **Git** tab sums up the copy: changes, pull request, CI, review, history, each opening in the panel. Pin a copy or a PR. Grant agents read or write access.

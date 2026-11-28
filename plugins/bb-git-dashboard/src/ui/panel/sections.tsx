@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { Job, Run } from "../../core/ci/model.ts";
+import { isTerminal, type Job, type Run } from "../../core/ci/model.ts";
 import type { GitAction, GitResult } from "../../core/git.ts";
 import type { MessageKey } from "../../core/i18n/dictionary.ts";
 import { ago } from "../../core/i18n/time.ts";
@@ -25,9 +25,12 @@ export function Section({id, title, aside, open, onToggle, children}: {id: strin
   </section>;
 }
 
-/** The working tree: each file with its box (checked: in the index), and the commit of what is staged. */
+/**
+ * The working tree: each file with its box (checked: in the index), and the commit of what is staged. Conflicted files
+ * and a copy without a commit author are sent to the copy's Changes, where they are resolved or set.
+ */
 export function ChangesBody({state, run, onChanged, onOpen}: {state: GitResult; run(action: GitAction): Promise<GitResult>; onChanged(): void;
-  /** Opens the file in the copy's Changes. */
+  /** Opens the copy's Changes. */
   onOpen(): void}) {
   const t = useT();
   const [text, setText] = useState("");
@@ -36,14 +39,18 @@ export function ChangesBody({state, run, onChanged, onOpen}: {state: GitResult; 
   const files = state.files ?? [];
   const inIndex = (file: (typeof files)[number]) => ![".", "?"].includes(file.index);
   const staged = files.filter(inIndex).length;
-  const conflict = (file: (typeof files)[number]) => file.index === "U" || file.worktree === "U";
+  // The same rule as the copy's Changes: unmerged, both added or both deleted.
+  const conflict = (file: (typeof files)[number]) => file.index === "U" || file.worktree === "U" || ["AA", "DD"].includes(file.index + file.worktree);
+  const conflicts = files.filter(conflict).length;
   const act = async (action: GitAction) => {
     setPending(true); setError("");
     try { await run(action); onChanged(); return true; } catch (cause) { setError(message(cause)); return false; } finally { setPending(false); }
   };
   if (!files.length) return <p className="g-muted git-panel-empty">{t("pg.clean")}</p>;
-  const canCommit = !pending && staged > 0 && !!text.trim() && !!state.snapshot && !!state.author;
+  const canCommit = !pending && staged > 0 && !!text.trim() && !!state.snapshot && !!state.author && conflicts === 0;
   return <>
+    {conflicts > 0 && <div className="g-banner warn git-panel-note-banner" role="status"><span>{t("gp.conflicts", {n: conflicts})}</span>
+      <button type="button" className="g-btn sm" onClick={onOpen}>{t("pg.resolve")}</button></div>}
     <ul className="git-panel-files" aria-label={t("gp.changes")}>{files.map(file => {
       const mark = (inIndex(file) ? file.index : file.worktree === "." ? file.index : file.worktree).replace(".", "?");
       const letter = file.index === "?" ? "U" : mark;
@@ -58,8 +65,10 @@ export function ChangesBody({state, run, onChanged, onOpen}: {state: GitResult; 
     })}</ul>
     <form className="git-panel-commit" onSubmit={event => { event.preventDefault(); if (canCommit) void act({kind: "commit", expected: state.snapshot!, message: text}).then(done => { if (done) setText(""); }); }}>
       <input className="g-inp" aria-label={t("pg.message")} placeholder={t("pg.message")} maxLength={8000} value={text} onChange={event => setText(event.target.value)}/>
-      <button type="submit" className="g-btn" disabled={!canCommit} title={!state.author ? t("gp.no-author") : undefined}>{t("pg.commit")}{staged ? " " + staged : ""}</button>
+      <button type="submit" className="g-btn" disabled={!canCommit}>{t("pg.commit")}{staged ? " " + staged : ""}</button>
     </form>
+    {!state.author && <p className="g-muted git-panel-empty">{t("gp.no-author")}
+      <button type="button" className="g-btn ghost sm" onClick={onOpen}>{t("gp.set-author")}</button></p>}
     {error && <p className="g-bad git-panel-error" role="alert">{error}</p>}
   </>;
 }
@@ -79,7 +88,8 @@ export function PullBody({pull, branch, onOpen}: {pull: InboxPr | null; branch: 
   </div>;
 }
 
-const jobTone = (job: Job) => job.state === "success" ? "good" : job.state === "failure" ? "bad" : job.state === "running" || job.state === "queued" ? "warn" : "line";
+const jobTone = (job: Job) => job.state === "success" ? "good" : job.state === "failure" ? "bad" : !isTerminal(job.state) ? "warn" : "line";
+const stateWord = (state: string, t: T) => t((["success", "failure", "running", "queued", "waiting", "cancelled", "skipped"].includes(state) ? "gp.run." + state : "gp.run.other") as MessageKey);
 
 /**
  * The branch's latest run: its jobs as chips and, when it failed, the error lines of its first failed job; an agent
@@ -107,10 +117,10 @@ export function CiBody({api, copyId, run, onLog}: {api: CiApi; copyId: string; r
     }).catch(cause => { if (active) setError(message(cause)); });
     return () => { active = false; };
   }, [api, copyId, run.id]);
-  const finished = run.state !== "running" && run.state !== "queued";
+  const finished = isTerminal(run.state);
   return <>
     {jobs === null ? <p className="g-muted" role="status">{t("common.loading")}</p>
-      : <div className="git-panel-chips">{jobs.map(job => <span key={job.id} className={"g-chip " + jobTone(job)} title={job.state}>{job.name}</span>)}</div>}
+      : <div className="git-panel-chips">{jobs.map(job => <span key={job.id} className={"g-chip " + jobTone(job)} title={stateWord(job.state, t)}>{job.name}</span>)}</div>}
     {lines.length > 0 && <pre className="git-panel-error-lines" aria-label={t("gp.ci-error")}>{lines.map(line =>
       <span key={line.number}><span className="git-panel-line-no">{line.number}</span>{line.text}{"\n"}</span>)}</pre>}
     <div className="git-panel-row">
@@ -135,8 +145,8 @@ export function CiBody({api, copyId, run, onLog}: {api: CiApi; copyId: string; r
 export function RunState({run, t}: {run: Run; t: T}) {
   const {language} = useLanguage();
   const when = ago(language, Date.now(), run.updatedAt ?? run.startedAt ?? run.createdAt);
-  const tone = run.state === "success" ? "g-good" : run.state === "failure" ? "g-bad" : run.state === "running" || run.state === "queued" ? "g-warn" : "g-muted";
+  const tone = run.state === "success" ? "g-good" : run.state === "failure" ? "g-bad" : !isTerminal(run.state) ? "g-warn" : "g-muted";
   const icon = run.state === "success" ? "CircleCheck" : run.state === "failure" ? "CircleX" : run.state === "running" ? "Loading" : "Clock";
-  const word = t((["success", "failure", "running", "queued", "cancelled"].includes(run.state) ? "gp.run." + run.state : "gp.run.other") as MessageKey);
+  const word = stateWord(run.state, t);
   return <span className={tone + " git-panel-runstate"}><Icon name={icon} small/>{when === t("time.now") ? word : t("gp.run-ago", {state: word, when})}</span>;
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.7 — 2026-11-28
+
+The new interface, eighth and last slice: the panel beside a thread.
+
+- **Git beside a thread** is one tab. The separate Git History, CI/CD and Review tabs are gone: their screens open inside it, with a way back. Its head: the copy and its forge, Pull and Push N (asked first), the branch → the pull request's base or the upstream, ↑↓. The summary, in parts that fold: Changes (files with the index box, a commit message and Commit N), Pull request (state chips, Open), CI (jobs as chips, the error lines, Fix with agent, Re-run after a confirmation, Log), Review (open comments, Open the review), History (commits not pushed, the last one's time). The agent's access is chosen under it.
+- The thread header's Review and Git History buttons, the Review palette commands and the Review row of the thread's Info open the Git tab on their screen.
+- **Pinned copy**: the same panel under "Pinned copy · not this thread's working copy", with Unpin. **Pinned pull request**: its page, narrow, under "Pinned pull request · repository · forge", with Unpin. Both are in the interface language.
+- The panel fits from 420 to 640 px: it is the container its screens' narrow layouts follow (the copy's Code, the run, the pull request page, the history).
+- Probes wait for conditions, not for time: the GitLab stand-in fails a pipeline when the My PRs probe asks and that probe waits for the toast; the overview probe waits for the saved view after a reload; the review probe measures 768 px after the pull request's heading.
+
 ## 0.14.6 — 2026-11-28
 
 The new interface, seventh slice: Catalog, Connections and Settings.

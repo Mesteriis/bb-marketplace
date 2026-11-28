@@ -11,7 +11,10 @@ function failMr5() {
   const facts = readFileSync(process.env.STAND + "/facts.env", "utf8");
   const gitlab = /^GITLAB=(.+)$/m.exec(facts)[1];
   return new Promise((resolve, reject) => {
-    const call = request(gitlab + "/__stand/fail-mr5", {method: "POST", ca: readFileSync(process.env.STAND + "/forge/cert.pem")}, answer => { answer.resume(); answer.on("end", resolve); });
+    const call = request(gitlab + "/__stand/fail-mr5", {method: "POST", ca: readFileSync(process.env.STAND + "/forge/cert.pem")}, answer => {
+      answer.resume();
+      answer.on("end", () => answer.statusCode === 200 ? resolve() : reject(new Error("the GitLab stand-in answered " + answer.statusCode)));
+    });
     call.on("error", reject); call.end();
   });
 }

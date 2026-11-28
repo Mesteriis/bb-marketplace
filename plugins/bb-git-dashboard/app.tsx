@@ -23,7 +23,7 @@ import { requestOfKey, ReviewOpenOverlay, reviewRoute } from "./src/app/review-o
 import { useReviewRevisions } from "./src/app/review-signal.ts";
 import { ciApi, codeReviewApi, failed, historyApi, okValue, pullRequestApi } from "./src/app/apis.tsx";
 import { useCatalog } from "./src/app/catalog-data.tsx";
-import { gitTab, pinnedCopyTab, pinnedPullTab, PinnedGit, PinnedPull, registerThreadSurfaces, ThreadGit } from "./src/app/thread-panel.tsx";
+import { gitTab, pinnedCopyTab, pinnedPullTab, PinnedGitPage, PinnedGitThread, PinnedPull, registerThreadSurfaces, ThreadGit } from "./src/app/thread-panel.tsx";
 import { Sidebar, type SidebarApi } from "./src/ui/shell/sidebar.tsx";
 import { ConnectionsPage, type ConnectionsApi } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
@@ -259,7 +259,7 @@ function Dashboard({subPath}: {subPath: string}) {
       <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
       <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
-        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,repo:repo.path,number},title:repo.name+" #"+number})) {
+        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,number},title:repo.name+" #"+number})) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
@@ -313,7 +313,7 @@ export default definePluginApp(app => {
   app.slots.navPanel({id:"git", title:"Git", icon:"GitBranch", path:"git", component:withCodeTheme(withInterface(Dashboard)), experimental_useBadge:useInboxBadge, experimental_sidebar:withInterface(ProjectsSidebar)});
   // One Git tab beside a thread: the summary and every screen that had a tab of its own (History, CI/CD, Review).
   app.slots.experimental_tab({...gitTab, title:"Git", icon:"GitBranch", layout:"flush", component:withCodeTheme(withInterface(ThreadGit))});
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGit))});
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"thread"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGitThread))});
   // The Review's palette commands: each opens the thread's Git tab on its Review and leaves the action there.
   app.slots.experimental_appOverlay({id:"review-open", component:ReviewOpenOverlay});
   app.slots.experimental_appOverlay({id:"pr-links", component:PrLinkOverlay});
@@ -328,5 +328,5 @@ export default definePluginApp(app => {
       }});
   }
   registerThreadSurfaces(app.slots);
-  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGit))});
+  app.slots.experimental_tab({id:tab.id, title:"Pinned Git", icon:"Pin", context:{kind:"nav-panel", panelId:"git"}, availability:"action", layout:"flush", component:withCodeTheme(withInterface(PinnedGitPage))});
 });
