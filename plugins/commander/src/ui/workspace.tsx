@@ -20,10 +20,11 @@ import { ru } from "./strings.ts";
 import { SyncDialog, type SyncActions } from "./sync-dialog.tsx";
 import { Viewer } from "./viewer.tsx";
 
+/** A question that waits for the owner: copy this archive to the server (S14a). Several can wait at once. */
+type ArchiveAsk = { pane: Side | null; ref: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string };
 type ConflictView = { kind: "conflict"; job: OperationJob };
 type Cursor = { key: string; index: number; explicit: boolean };
 type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
-  | { kind: "archive-estimate"; pane: Side; ref: ResourceRef | null; resumeId?: string; estimateId: string; bytes: string }
   | ConflictView
   | { kind: "cancel"; job: OperationJob; returnTo?: ConflictView }
   | { kind: "text"; title: string; label: string; initial?: string; submit: (value: string) => void }
@@ -155,6 +156,18 @@ export function Workspace(props: WorkspaceProps) {
   const previousRows = useRef<Record<Side, Entry[]>>({ left: [], right: [] });
   const [searchRoots, setSearchRoots] = useState<Partial<Record<Side, ResourceRef>>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
+  const [asks, setAsks] = useState<ArchiveAsk[]>([]);
+  const ask = (next: ArchiveAsk) => setAsks((previous) => [...previous, next]);
+  // S14a: a job that waits for its archive's copy names the archive in its plan; the question is the same as a panel's.
+  const confirmArchive = (job: OperationJob) => {
+    const endpoint = [job.plan.sourceEndpoint, job.plan.targetEndpoint, ...job.plan.items.flatMap((item) => [item.source?.endpoint, item.target?.endpoint])]
+      .find((id): id is string => typeof id === "string" && id.startsWith("archive:"));
+    if (!endpoint || !props.onResumeArchive) return;
+    const resumeId = endpoint.slice("archive:".length);
+    void props.onResumeArchive(resumeId).then((reply) => {
+      if ("estimateId" in reply) ask({ pane: null, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+    }).catch((error: unknown) => setProblem(archiveProblem(error)));
+  };
   const [same, setSame] = useState(false);
   const [retryConflict, setRetryConflict] = useState<{ view: ConflictView; problem: Problem } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -188,7 +201,7 @@ export function Workspace(props: WorkspaceProps) {
       asked.current.set(key, directory);
       const resumeId = value.endpoint.slice("archive:".length);
       void props.onResumeArchive(resumeId).then((reply) => {
-        if ("estimateId" in reply) setDialog({ kind: "archive-estimate", pane, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+        if ("estimateId" in reply) ask({ pane, ref: null, resumeId, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
       }).catch((error: unknown) => setProblem(archiveProblem(error)));
     }
   });
@@ -414,7 +427,7 @@ export function Workspace(props: WorkspaceProps) {
         // An estimate of zero bytes needs no question: the file is read in place. Anything else asks first.
         if ("estimateId" in reply) {
           if (reply.bytesPlanned !== "0") {
-            open({ kind: "archive-estimate", pane, ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
+            ask({ pane, ref, estimateId: reply.estimateId, bytes: reply.bytesPlanned });
             return;
           }
           reply = await props.onOpenArchive!(ref, reply.estimateId);
@@ -636,6 +649,7 @@ export function Workspace(props: WorkspaceProps) {
     onInspect={inspect} onSkip={(job) => decide(job, "skip", false)}
     onCancel={(job) => open({ kind: "cancel", job })}
     onRetry={(job) => { void props.onRetry(job).catch((error: unknown) => setProblem(problemOf(error))); }}
+    {...(props.onResumeArchive ? { onConfirmArchive: confirmArchive } : {})}
     retryNotes={props.retryNotes} />;
 
   return <div ref={root} className="cm-workspace" data-compact={compact} onKeyDown={onKeyDown}>
@@ -765,19 +779,21 @@ export function Workspace(props: WorkspaceProps) {
         open({ kind: "content", source: leftText, target: rightText, returnTo: dialog });
       })}
       cancel={() => open({ kind: "cancel", job: dialog.job, returnTo: dialog })} close={close} busy={busy} error={problem} />}
-    {dialog?.kind === "archive-estimate" && <Modal title={ru.archive.estimateTitle} description={ru.archive.estimateText(bytes(dialog.bytes))} close={close} busy={busy}>
+    {!dialog && asks[0] && <Modal key={asks[0].estimateId} title={ru.archive.estimateTitle} description={ru.archive.estimateText(bytes(asks[0].bytes))}
+      close={() => { setAsks((previous) => previous.slice(1)); setProblem(null); }} busy={busy}>
       {problem && <ProblemLine problem={problem} />}
       <div className="cm-actions">
-        <Button size="sm" disabled={busy} onClick={() => void perform(async () => {
-          if (dialog.resumeId) {
-            await props.onResumeArchive!(dialog.resumeId, dialog.estimateId);
-            props.onRefresh(dialog.pane);
+        <Button size="sm" disabled={busy} onClick={() => { const current = asks[0]!; void perform(async () => {
+          if (current.resumeId) {
+            await props.onResumeArchive!(current.resumeId, current.estimateId);
+            props.onRefresh("left");
+            props.onRefresh("right");
             return;
           }
-          const reply = await props.onOpenArchive!(dialog.ref!, dialog.estimateId);
-          if ("endpoint" in reply) await props.onEndpoint(dialog.pane, reply.endpoint);
-        }, close, archiveProblem)}>{ru.archive.copyAndOpen}</Button>
-        <Button size="sm" variant="outline" onClick={close} disabled={busy}>{ru.cancel}</Button>
+          const reply = await props.onOpenArchive!(current.ref!, current.estimateId);
+          if ("endpoint" in reply && current.pane) await props.onEndpoint(current.pane, reply.endpoint);
+        }, () => setAsks((previous) => previous.slice(1)), archiveProblem); }}>{ru.archive.copyAndOpen}</Button>
+        <Button size="sm" variant="outline" onClick={() => { setAsks((previous) => previous.slice(1)); setProblem(null); }} disabled={busy}>{ru.cancel}</Button>
       </div>
     </Modal>}
     {dialog?.kind === "cancel" && <Modal title={ru.cancelJob} description={ru.cancelConfirm} close={dialog.returnTo ? () => goBack(dialog.returnTo!) : close} busy={busy}>

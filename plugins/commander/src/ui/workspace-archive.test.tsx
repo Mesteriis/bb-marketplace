@@ -173,6 +173,63 @@ describe("a cold archive tab (after a restart)", () => {
   });
 });
 
+describe("confirming a copy from the queue, and several questions at once", () => {
+  const ID = "123e4567-e89b-42d3-a456-426614174000";
+  const ID2 = "999e4567-e89b-42d3-a456-426614174000";
+  const ESTIMATE = "223e4567-e89b-42d3-a456-426614174000";
+  const waiting = (id: string) => ({
+    id: "323e4567-e89b-42d3-a456-426614174000", state: "interrupted", awaitsOwner: false, pendingConflict: null, currentItem: 0,
+    error: { code: "consent_required", reason: "archive_copy", message: "x", retryable: false },
+    createdAt: "2026-11-27T00:00:00.000Z", updatedAt: "2026-11-27T00:00:00.000Z",
+    progress: { itemsDone: 0, itemsTotal: 1, bytesDone: "0", bytesTotal: "3" }, items: [{ outcome: "pending", error: null }],
+    plan: {
+      id: "123e4567-e89b-42d3-a456-426614174001", kind: "copy", createdAt: "2026-11-27T00:00:00.000Z", initiator: { kind: "owner" },
+      sourceEndpoint: "archive:" + id, targetEndpoint: "host:fixture", targetDir: { endpoint: "host:fixture", path: { segments: [] } },
+      items: [{ source: { endpoint: "archive:" + id, path: parsePosix("/a") }, target: { endpoint: "host:fixture", path: parsePosix("/a") },
+        kind: "file", fingerprint: { size: "1", mtimeNs: "1" }, expectTarget: "absent" }],
+      conflictPolicy: "ask", route: "relay-server", verify: "size", totalBytes: "3", digest: "a".repeat(64),
+    },
+  });
+
+  it("opens the question for the archive named in the job's plan, even though no archive tab is open", async () => {
+    const onResumeArchive = vi.fn(async (_id: string, estimateId?: string) =>
+      estimateId ? { endpoint: "archive:" + ID } : { estimateId: ESTIMATE, bytesPlanned: "1073741824" });
+    const props = mount({ queue: { jobs: [waiting(ID)], error: null, loading: false }, onResumeArchive } as never);
+    fireEvent.click(await screen.findByRole("button", { name: "Подтвердить копию" }));
+    expect(await screen.findByText(/1 ГБ/)).toBeTruthy();
+    expect(onResumeArchive).toHaveBeenCalledWith(ID);
+    fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
+    await waitFor(() => expect(onResumeArchive).toHaveBeenLastCalledWith(ID, ESTIMATE));
+    await waitFor(() => expect(props.onRefresh).toHaveBeenCalled());
+  });
+
+  it("the dialog has a neutral title", async () => {
+    const onResumeArchive = vi.fn(async () => ({ estimateId: ESTIMATE, bytesPlanned: "1073741824" }));
+    mount({ queue: { jobs: [waiting(ID)], error: null, loading: false }, onResumeArchive } as never);
+    fireEvent.click(await screen.findByRole("button", { name: "Подтвердить копию" }));
+    expect(await screen.findByRole("heading", { name: "Скопировать архив для открытия" })).toBeTruthy();
+  });
+
+  it("two cold archive panels get their questions one after the other; answering one does not push the other away", async () => {
+    const both = {
+      left: { activeTab: 0, tabs: [{ ...newTab("archive:" + ID, parsePosix("/")) }] },
+      right: { activeTab: 0, tabs: [{ ...newTab("archive:" + ID2, parsePosix("/")) }] },
+      activePane: "left", layout: "horizontal", split: 0.5,
+    } as UiState;
+    const cold = { entries: [], loading: false, error: { code: "consent_required", message: "x" } };
+    const onResumeArchive = vi.fn(async (id: string, estimateId?: string) =>
+      estimateId ? { endpoint: "archive:" + id } : { estimateId: id === ID ? ESTIMATE : "333e4567-e89b-42d3-a456-426614174000", bytesPlanned: id === ID ? "1073741824" : "2147483648" });
+    mount({ state: both, directories: { left: cold, right: cold }, onResumeArchive } as never);
+    expect(await screen.findByText(/1 ГБ/)).toBeTruthy();
+    expect(screen.queryByText(/2 ГБ/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Копировать и открыть" }));
+    expect(await screen.findByText(/2 ГБ/)).toBeTruthy();
+    await waitFor(() => expect(onResumeArchive).toHaveBeenCalledWith(ID, ESTIMATE));
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    await waitFor(() => expect(screen.queryByText(/2 ГБ/)).toBeNull());
+  });
+});
+
 describe("a file that changed after the estimate", () => {
   it("says to estimate again", async () => {
     const changed = Object.assign(new Error(JSON.stringify({ code: "changed_since_plan", message: "x", retryable: false })), { code: "conflict" });
