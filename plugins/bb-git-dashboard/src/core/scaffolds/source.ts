@@ -16,6 +16,15 @@ import { scaffold, scaffoldIssues, type CommonLayer, type Scaffold, type Scaffol
 
 /** One file of a templates repository: text, or with `base64` its bytes; `executable` from the file's mode. */
 export type TreeFile = {path: string; text: string; base64?: true; executable: boolean};
+/** Text when the bytes are UTF-8 without NUL; otherwise the bytes in base64 (an icon). */
+export function treeFileOf(path: string, bytes: Uint8Array, executable: boolean): TreeFile {
+  if (!bytes.includes(0)) {
+    try { return {path, text: new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes), executable}; } catch { /* binary */ }
+  }
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return {path, text: btoa(binary), base64: true, executable};
+}
 /** The highest manifest format this plugin reads. */
 export const templateFormat = 1;
 
@@ -100,7 +109,7 @@ function filesOf(tree: TreeFile[], folder: string, rules: z.infer<z.ZodObject<ty
  * refused with their reasons. A refused template does not keep the others from being offered; a broken common layer
  * refuses every template, as each would render with it.
  */
-export function loadRepository(tree: TreeFile[], source: Exclude<ScaffoldSource, "builtin">):
+export function loadRepository(tree: TreeFile[], source: ScaffoldSource):
   {common: CommonLayer | null; offered: OfferedScaffold[]; rejected: {source: ScaffoldSource; name: string; issues: string[]}[]} {
   const text = new Map(tree.filter(file => !file.base64).map(file => [file.path, file.text]));
   const hasCommon = tree.some(file => file.path.startsWith("common/"));
@@ -132,7 +141,7 @@ export function loadRepository(tree: TreeFile[], source: Exclude<ScaffoldSource,
     };
     const issues = scaffoldIssues(raw, common ?? undefined);
     if (issues.length) { rejected.push({source, name, issues}); continue; }
-    offered.push({key: source + ":" + m.id, source, scaffold: scaffold.parse(raw)});
+    offered.push({key: source + ":" + m.id, source, scaffold: scaffold.parse(raw), ...(common ? {common} : {})});
   }
   return {common, offered, rejected};
 }

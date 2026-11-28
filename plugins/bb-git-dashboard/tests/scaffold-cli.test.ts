@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
@@ -39,4 +39,18 @@ test("render writes the project with its bytes, executable bits and CI file; a v
   assert.match(refused.stderr, /TEMPLATE_INVALID: value of variant does not fit the parameter/);
   assert.ok(!existsSync(join(out, "bad")));
   assert.equal(run("render", fixture, "demo", "--out", target).status, 1, "an existing folder is not written into");
+});
+
+test("render takes the common files from the folder's common/: without it the project gets none of them", () => {
+  const withCommon = join(out, "with");
+  assert.equal(run("render", fixture, "demo", "--out", withCommon, "--set", "name=shop", "--set", "author=Ann").status, 0);
+  assert.equal(readFileSync(join(withCommon, "docs/adr/README.md"), "utf8"),
+    "# Decisions of the fixture repository\n\nOnly the common layer of this repository writes this file.\n");
+  assert.match(readFileSync(join(withCommon, "LICENSE"), "utf8"), /\n\nFixture line: only the repository's common layer has it\.\n/);
+  const bare = join(out, "bare-repo");
+  cpSync(join(fixture, "templates"), join(bare, "templates"), {recursive: true});
+  const without = join(out, "without");
+  assert.equal(run("render", bare, "demo", "--out", without, "--set", "name=shop").status, 0);
+  assert.ok(!existsSync(join(without, "LICENSE")) && !existsSync(join(without, "docs/adr/README.md")) && !existsSync(join(without, ".editorconfig")));
+  assert.ok(existsSync(join(without, "README.md")));
 });
