@@ -90,37 +90,57 @@ export type Direction = "from-helper" | "from-adapter";
 
 /** Incremental decoder. After the first violation it fails for good. */
 export class FrameDecoder {
-  private buffer = new Uint8Array(0);
+  /** Received pieces not yet decoded; joined only when a header or a whole frame needs contiguous bytes. */
+  private pieces: Uint8Array[] = [];
+  private size = 0;
   private failed: ProtocolError | null = null;
   constructor(private readonly direction: Direction) {}
 
   private fail(message: string): never {
     this.failed = new ProtocolError(message);
-    this.buffer = new Uint8Array(0);
+    this.pieces = [];
+    this.size = 0;
     throw this.failed;
+  }
+
+  /** The first piece, joined with the rest first when it holds fewer than `min` bytes. */
+  private head(min: number): Uint8Array {
+    if ((this.pieces[0]?.length ?? 0) >= min || this.pieces.length < 2) return this.pieces[0] ?? new Uint8Array(0);
+    const joined = new Uint8Array(this.size);
+    let at = 0;
+    for (const piece of this.pieces) {
+      joined.set(piece, at);
+      at += piece.length;
+    }
+    this.pieces = [joined];
+    return joined;
   }
 
   push(chunk: Uint8Array): Frame[] {
     if (this.failed) throw this.failed;
-    const joined = new Uint8Array(this.buffer.length + chunk.length);
-    joined.set(this.buffer);
-    joined.set(chunk, this.buffer.length);
-    this.buffer = joined;
+    if (chunk.length > 0) {
+      this.pieces.push(chunk);
+      this.size += chunk.length;
+    }
     const frames: Frame[] = [];
-    while (this.buffer.length >= 4) {
-      const view = new DataView(this.buffer.buffer, this.buffer.byteOffset, this.buffer.byteLength);
+    while (this.size >= 4) {
+      const first = this.head(Math.min(this.size, 5));
+      const view = new DataView(first.buffer, first.byteOffset, first.byteLength);
       const length = view.getUint32(0, true);
       if (length === 0) this.fail("Empty frame");
       // The length is judged before anything is allocated for the body.
       if (length > FRAME_LIMITS.dataMax + 5 && length > FRAME_LIMITS.controlMax) this.fail("Frame is too large");
-      if (this.buffer.length < 4 + length) {
+      if (this.size < 4 + length) {
         // Early rejection of an oversized control or data frame once the kind byte is known.
-        if (this.buffer.length >= 5) this.checkEnvelope(this.buffer[4] as number, length);
+        if (this.size >= 5) this.checkEnvelope(first[4] as number, length);
         break;
       }
-      const body = this.buffer.subarray(4, 4 + length);
+      const buffer = this.head(4 + length);
+      const body = buffer.subarray(4, 4 + length);
       frames.push(this.decodeBody(body));
-      this.buffer = this.buffer.slice(4 + length);
+      const rest = buffer.subarray(4 + length);
+      this.pieces = rest.length > 0 ? [rest] : [];
+      this.size = rest.length;
     }
     return frames;
   }

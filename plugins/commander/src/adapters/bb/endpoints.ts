@@ -6,7 +6,8 @@ import { EndpointId, type Endpoint } from "../../core/model.ts";
 import { NameSegment, ResourcePath } from "../../core/path.ts";
 import type { FileProvider } from "../../core/provider.ts";
 import { HostFsContract } from "../../core/wire/host-fs.ts";
-import { SFTP_REFUSALS, SftpRefusal, sftpMethods, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
+import { sftpFastMethods } from "./sftp-fast-wire.ts";
+import { SFTP_REFUSALS, SftpRefusal, type RemoteHubPort, type SftpInput, type SftpMethodName, type SftpOutput, type SftpRefusalCode } from "../../core/wire/remote-hub-sftp.ts";
 import type { EndpointView } from "../../core/wire/rpc.ts";
 import { createLocalProvider, translateHostFsError } from "./local-provider.ts";
 import { createSftpProvider, type SftpProvider } from "./sftp-provider.ts";
@@ -15,7 +16,7 @@ import { z } from "zod";
 
 const remoteId = "makosh-remote-hub";
 const bounded = (label: string) => label.slice(0, 200).toWellFormed();
-const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpMethods;
+const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } = sftpFastMethods;
 
 /**
  * The Remote Hub refusal code inside a failed `callRpc`, or null for a transport failure.
@@ -23,7 +24,7 @@ const methods: { [M in SftpMethodName]: { output: z.ZodType<SftpOutput<M>> } } =
  * class); newer SDKs throw experimental_PluginRpcCallError ("host_key_unknown: …"). Both carry the
  * refusal class in `code`, which must match the class the contract gives that refusal.
  */
-function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
+export function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   let code: unknown;
   let message: unknown;
   if (error instanceof experimental_PluginRpcCallError) {
@@ -40,6 +41,10 @@ function remoteHubRefusal(error: unknown): SftpRefusalCode | null {
   if (!Object.hasOwn(SFTP_REFUSALS, key)) return null;
   return SFTP_REFUSALS[key as SftpRefusalCode] === code ? key as SftpRefusalCode : null;
 }
+
+const SIGN_IN_REFUSALS: ReadonlySet<SftpRefusalCode> = new Set<SftpRefusalCode>([
+  "agent_unavailable", "keychain_locked", "keychain_unavailable", "keychain_needs_approval", "credential_missing", "auth_failed",
+]);
 
 export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager | null = () => null) {
   const hostFs = bb.hosts.experimental_client({ contract: HostFsContract });
@@ -168,6 +173,14 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
         }
         if (error.code === "permission_denied" || error.code === "consent_revoked" || error.code === "consent_required") {
           throw new CommanderError("consent_required", "Remote Hub did not grant access");
+        }
+        // The same refusals the provider reports as a failed sign-in; the server or the Keychain said no, retrying will not help.
+        // The profile cannot be used as an SFTP endpoint (unfinished, gone, or not SFTP): the provider calls this unsupported, final.
+        if (error.code === "profile_needs_config" || error.code === "profile_not_found" || error.code === "profile_not_sftp") {
+          throw new CommanderError("unsupported", "The server cannot do this operation");
+        }
+        if (SIGN_IN_REFUSALS.has(error.code)) {
+          throw new CommanderError("auth_failed", "Sign-in to the SFTP server failed");
         }
       }
       throw new CommanderError("connection_failed", "SFTP home directory is unavailable", true);

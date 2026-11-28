@@ -1,3 +1,4 @@
+import { problemOf } from "./src/ui/model.ts";
 import { expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { MIGRATIONS } from "./src/adapters/bb/migrations.ts";
@@ -465,6 +466,36 @@ for (const [label, message] of [
         code: "invalid",
         message: '{"code":"connection_failed","message":"SFTP home directory is unavailable","retryable":true}',
       });
+    } finally { await bb.dispose(); }
+  });
+}
+
+const FIRST_OPEN_REFUSALS = [
+  ["agent_unavailable", "auth_failed", "Вход отклонён"], ["keychain_locked", "auth_failed", "Вход отклонён"],
+  ["keychain_unavailable", "auth_failed", "Вход отклонён"], ["keychain_needs_approval", "auth_failed", "Вход отклонён"],
+  ["credential_missing", "auth_failed", "Вход отклонён"], ["auth_failed", "auth_failed", "Вход отклонён"],
+  ["profile_needs_config", "unsupported", null], ["profile_not_found", "unsupported", null], ["profile_not_sftp", "unsupported", null],
+] as const;
+for (const refusalAs of ["sdk", "http"] as const) {
+  test.each(FIRST_OPEN_REFUSALS)(`reports %s at the first open as the provider does, without Keychain text (refusal as ${refusalAs})`, async (refusal, expected, line) => {
+    const fixture = remoteFixture({ refusalAs });
+    const bb = await backend(undefined, async (args) => {
+      if (args.method === "hub_sftp_open") {
+        const message = refusal + ": Keychain item commander-secret could not be read";
+        const refusalClass = SFTP_REFUSALS[refusal];
+        if (refusalAs === "http") throw new BbHttpErrorLike(REFUSAL_STATUS[refusalClass], refusalClass, message);
+        throw new experimental_PluginRpcCallError({ code: refusalClass, message });
+      }
+      return fixture.callRpc(args);
+    });
+    try {
+      const failure = await bb.rpc("endpoint_home", { endpoint: fixture.endpoint }).then(() => null, (error: unknown) => error);
+      const shape = JSON.parse((failure as Error).message) as { code: string; retryable: boolean };
+      expect(shape.code).toBe(expected);
+      expect(shape.retryable).toBe(false);
+      expect(String((failure as Error).message)).not.toMatch(/keychain|commander-secret/i);
+      expect(problemOf(failure).code).toBe(expected);
+      if (line !== null) expect(problemOf(failure).message).toBe(line);
     } finally { await bb.dispose(); }
   });
 }

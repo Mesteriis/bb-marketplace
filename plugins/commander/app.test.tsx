@@ -2,7 +2,7 @@
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { localStand, pauseAfterWrite, waitForJob, waitForPart } from "./tests/s19b-fixture.ts";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type Entry, OperationJob } from "./src/core/model.ts";
 import { CommanderError } from "./src/core/errors.ts";
@@ -25,6 +25,13 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
   useSdk: () => host.sdk,
   experimental_Icon: ({ name }: { name: string }) => <svg aria-hidden="true" data-test-icon={name} />,
 }));
+
+// Counts how many times the panel merges arriving pages into its sorted rows.
+const merges = vi.hoisted(() => ({ count: 0 }));
+vi.mock("./src/ui/model.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./src/ui/model.ts")>();
+  return { ...original, mergeVisible: (...args: Parameters<typeof original.mergeVisible>) => { merges.count++; return original.mergeVisible(...args); } };
+});
 
 import app from "./app.tsx";
 import { ru } from "./src/ui/strings.ts";
@@ -119,6 +126,167 @@ test("F5 opens a copy plan from the grid and leaves foreign and address inputs a
   expect(fireEvent.keyDown(grid(), { key: "F5" })).toBe(false);
   const plan = await screen.findByRole("dialog", { name: "Копирование" });
   expect(within(plan).getByText("/приёмник")).toBeDefined();
+});
+
+test("shows the first page of a long directory at once and keeps operations off until the last page arrives", async () => {
+  files = Array.from({ length: 2500 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные" && input.cursor !== null) await gate;
+    return call(method, input);
+  });
+
+  mount();
+  fireEvent.click(await leftFile("файл-0000"));
+  const left = grid();
+  expect(left.getAttribute("aria-busy")).toBe("true");
+  // The pages after the first are still outstanding, so a plan would miss entries: F5 is not taken.
+  fireEvent.keyDown(left, { key: "F5" });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(screen.queryByRole("dialog", { name: "Копирование" })).toBeNull();
+
+  release();
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(2500);
+  fireEvent.click(await leftFile("файл-0000"));
+  fireEvent.keyDown(grid(), { key: "F5" });
+  expect(await screen.findByRole("dialog", { name: "Копирование" })).toBeDefined();
+});
+
+test("keeps the cursor and the view on the same entry while later pages merge in above it, and reports progress", async () => {
+  // Page 1 holds the names that sort last, so every later page lands above the entries already shown.
+  files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(2999 - index).padStart(4, "0")));
+  const gates = [Promise.resolve(), Promise.resolve()] as Promise<void>[];
+  const releases: (() => void)[] = [];
+  gates[0] = new Promise<void>((resolve) => releases.push(resolve));
+  gates[1] = new Promise<void>((resolve) => releases.push(resolve));
+  const call = host.call.getMockImplementation()!;
+  host.call.mockImplementation(async (method, input) => {
+    if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные" && input.cursor !== null) {
+      await gates[input.cursor === "1000" ? 0 : 1];
+    }
+    return call(method, input);
+  });
+
+  mount();
+  const row = await leftFile("файл-2000");
+  fireEvent.click(row);
+  const cursorName = () => within(grid()).getByRole("row", { selected: false, name: /файл-2000/ }).getAttribute("data-cursor");
+  expect(cursorName()).toBe("true");
+  expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Загружено 1000 записей…"))).toBe(true);
+  const topBefore = grid().scrollTop;
+
+  releases[0]!();
+  await waitFor(() => expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Загружено 2000 записей…"))).toBe(true));
+  expect(cursorName()).toBe("true");
+  // 1000 entries now sort above the cursor: the view moved down by their height, so the cursor row did not jump.
+  expect(grid().scrollTop).toBeGreaterThan(topBefore);
+
+  releases[1]!();
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  expect(cursorName()).toBe("true");
+  expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
+  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(3000);
+});
+
+test("hands 100 arriving pages to the sorted rows in at most 12 batches, with the cursor and order as for one full load", async () => {
+  // Fake clock: every page arrives after its own 1 ms timer, so the page rate does not depend on machine load.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    // 100 pages of 20 entries; later pages sort above earlier ones.
+    const total = 2000;
+    const all = Array.from({ length: total }, (_, index) => entry("файл-" + String(total - 1 - index).padStart(4, "0")));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method !== "dir_list") return call(method, input);
+      if (input.ref.path.segments.at(-1)?.t !== "данные") return { entries: [], cursor: null };
+      const start = Number(input.cursor ?? 0);
+      if (start === 20) await gate;
+      if (start > 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      return { entries: all.slice(start, start + 20), cursor: start + 20 < total ? String(start + 20) : null };
+    });
+
+    mount();
+    const first = await vi.waitFor(() => within(grid()).getByRole("row", { name: /файл-1980/ }));
+    fireEvent.click(first);
+    merges.count = 0;
+    release();
+    // The last batch is shown when the grid stops being busy; step the clock one page at a time until then.
+    for (let step = 0; step < 400 && grid().getAttribute("aria-busy") === "true"; step++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    }
+    expect(grid().getAttribute("aria-busy")).toBe("false");
+    expect(merges.count).toBeLessThanOrEqual(12);
+    expect(merges.count).toBeGreaterThan(0);
+    expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(total);
+    expect(within(grid()).getByRole("row", { name: /файл-1980/ }).getAttribute("data-cursor")).toBe("true");
+    // The rendered rows are in name order.
+    const rendered = within(grid()).getAllByRole("row").map((row) => row.textContent ?? "").filter((text) => text.startsWith("файл-"));
+    const names = rendered.map((text) => text.slice(0, 9));
+    expect(names).toEqual([...names].sort((x, y) => x.localeCompare(y)));
+  } finally { vi.useRealTimers(); }
+});
+
+test("a failing page shows the error even when an earlier batch is still waiting for its display timer", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+    let fail!: () => void;
+    const third = new Promise<void>((_, reject) => { fail = () => reject(new CommanderError("permission_denied", "private")); });
+    third.catch(() => {});
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные") {
+        if (input.cursor === "2000") await third;
+        const start = Number(input.cursor ?? 0);
+        return { entries: files.slice(start, start + 1000), cursor: String(start + 1000) };
+      }
+      return call(method, input);
+    });
+    mount();
+    // Page 1 is shown at once, page 2 waits in the 100 ms batch timer, page 3 is still on its way.
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    fail();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.waitFor(() => expect(within(grid()).queryAllByText("Доступ запрещён").length).toBeGreaterThan(0));
+    expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
+    expect(grid().getAttribute("aria-busy")).toBe("false");
+  } finally { vi.useRealTimers(); }
+});
+
+test("a refresh of a directory after an error shows its first page at once and is not held by the old error", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+    let attempt = 0;
+    let holdSecond!: () => void;
+    const second = new Promise<void>((resolve) => { holdSecond = resolve; });
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные") {
+        if (input.cursor === null) attempt++;
+        if (attempt === 1) throw new CommanderError("permission_denied", "private");
+        const start = Number(input.cursor ?? 0);
+        if (start === 1000) await second;
+        return { entries: files.slice(start, start + 1000), cursor: start + 1000 < files.length ? String(start + 1000) : null };
+      }
+      return call(method, input);
+    });
+    mount();
+    await vi.waitFor(() => expect(within(grid()).queryAllByText("Доступ запрещён").length).toBeGreaterThan(0));
+    fireEvent.click(within(grid().parentElement!).getAllByRole("button", { name: /Обновить/ })[0]!);
+    // The new attempt's first page is on screen at once; its second page is still held.
+    await vi.waitFor(() => expect(within(grid()).queryAllByRole("row", { name: /файл-0000/ }).length).toBe(1));
+    expect(within(grid()).queryAllByText("Доступ запрещён")).toHaveLength(0);
+    expect(grid().getAttribute("aria-busy")).toBe("true");
+    holdSecond();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  } finally { vi.useRealTimers(); }
 });
 
 test("a read-only destination blocks copy and move, and its own panel blocks writes", async () => {

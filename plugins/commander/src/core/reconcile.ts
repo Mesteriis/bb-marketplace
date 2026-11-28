@@ -44,6 +44,26 @@ function rotate(value: number, bits: number): number {
   return (value >>> bits) | (value << (32 - bits));
 }
 
+/** Incremental SHA-256 as the core uses it. */
+export interface Sha256Stream {
+  update(bytes: Uint8Array): void;
+  finish(): string;
+}
+
+let sha256Factory: (() => Sha256Stream) | null = null;
+
+/**
+ * The core stays free of host code, so it carries only a portable SHA-256 below (about 80 MB/s: 13 to 17 s of CPU
+ * per GiB in the S18 archive runs). The adapter registers a native implementation here; `null` restores the portable one.
+ */
+export function setSha256Factory(factory: (() => Sha256Stream) | null): void {
+  sha256Factory = factory;
+}
+
+export function createTransferHash(): Sha256Stream {
+  return sha256Factory?.() ?? new TransferHash();
+}
+
 export class TransferHash {
   private readonly state = new Uint32Array([
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
@@ -142,7 +162,7 @@ async function digest(location: Location, expected: Fingerprint, context: Verify
     }
     return hash;
   }
-  const hash = new TransferHash();
+  const hash = createTransferHash();
   await readChunks(location, expected, chunkBytes, signal, call, async (bytes) => { hash.update(bytes); });
   const actual = await call(() => provider.stat(path, signal));
   if (!matches(actual, { size: expected.size, mtimeNs: expected.mtimeNs })) {

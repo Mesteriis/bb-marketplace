@@ -13,7 +13,11 @@ export type PlanCheck = { ok: true; checkedAt: string } | {
   ok: false; checkedAt: string; changed: { index: number; reason: "source_changed" | "target_changed" }[];
 };
 export interface Problem { code: string; message: string }
-export interface Directory { entries: Entry[]; loading: boolean; error: Problem | null }
+/**
+ * `partial`: the first pages of a long listing, shown while the rest is still being read. Rows are drawn, but
+ * anything that acts on the whole directory (copy, search, selection checks) waits for the last page.
+ */
+export interface Directory { entries: Entry[]; loading: boolean; error: Problem | null; partial?: boolean }
 export const unloaded: Directory = { entries: [], loading: true, error: null };
 export const sides = ["left", "right"] as const;
 export const otherSide = (side: Side): Side => side === "left" ? "right" : "left";
@@ -66,23 +70,67 @@ export function problemOf(error: unknown): Problem {
 }
 
 const collator = new Intl.Collator("ru", { numeric: true });
-function byNumber(a: string | null, b: string | null) {
+function byNumber(a: bigint | null, b: bigint | null) {
   if (a === b) return 0;
   if (a === null) return -1;
   if (b === null) return 1;
-  const x = BigInt(a), y = BigInt(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  return a < b ? -1 : a > b ? 1 : 0;
 }
-export function visibleEntries(entries: Entry[], tab: Tab): Entry[] {
-  const filter = tab.filter.toLocaleLowerCase("ru");
+const toBig = (value: string | null) => value === null ? null : BigInt(value);
+
+/**
+ * Display name and numbers are computed once per entry and remembered, not on every comparison: a 100 000-entry
+ * panel spent most of its main-thread time in `nameOf` (a regular-expression replace) inside the comparator (S19a).
+ * Entries are never mutated, so the cache is keyed by the entry.
+ */
+interface SortFacts { name: string; size?: bigint | null; mtime?: bigint | null }
+const facts = new WeakMap<Entry, SortFacts>();
+function factsOf(entry: Entry): SortFacts {
+  let found = facts.get(entry);
+  if (!found) facts.set(entry, found = { name: nameOf(entry.name) });
+  return found;
+}
+function numberOf(entry: Entry, by: "size" | "mtime"): bigint | null {
+  const found = factsOf(entry);
+  if (by === "size") return found.size === undefined ? found.size = toBig(entry.size) : found.size;
+  return found.mtime === undefined ? found.mtime = toBig(entry.mtimeNs) : found.mtime;
+}
+
+function comparatorFor(tab: Tab): (a: Entry, b: Entry) => number {
   const { by, direction } = tab.sort;
-  return entries.filter((entry) => nameOf(entry.name).toLocaleLowerCase("ru").includes(filter)).sort((a, b) => {
+  return (a, b) => {
     if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
-    const names = collator.compare(nameOf(a.name), nameOf(b.name)) || keyOf(a.name).localeCompare(keyOf(b.name));
+    const names = collator.compare(factsOf(a).name, factsOf(b).name) || keyOf(a.name).localeCompare(keyOf(b.name));
     const value = by === "name" ? names : by === "kind" ? a.kind.localeCompare(b.kind)
-      : by === "size" ? byNumber(a.size, b.size) : byNumber(a.mtimeNs, b.mtimeNs);
+      : byNumber(numberOf(a, by === "size" ? "size" : "mtime"), numberOf(b, by === "size" ? "size" : "mtime"));
     return (direction === "asc" ? value : -value) || names;
-  });
+  };
+}
+
+function matching(entries: readonly Entry[], tab: Tab): Entry[] {
+  const filter = tab.filter.toLocaleLowerCase("ru");
+  return filter === "" ? entries.slice() : entries.filter((entry) => factsOf(entry).name.toLocaleLowerCase("ru").includes(filter));
+}
+
+export function visibleEntries(entries: Entry[], tab: Tab): Entry[] {
+  return matching(entries, tab).sort(comparatorFor(tab));
+}
+
+/**
+ * `sorted` is the result of `visibleEntries` for earlier pages; `added` are the entries of the pages that arrived
+ * since. The new pages are sorted and merged in one pass, so the order equals `visibleEntries` of all of them
+ * while a long listing costs O(n) per page instead of a full sort.
+ */
+export function mergeVisible(sorted: Entry[], added: readonly Entry[], tab: Tab): Entry[] {
+  const fresh = visibleEntries(added as Entry[], tab);
+  if (fresh.length === 0) return sorted;
+  const compare = comparatorFor(tab);
+  const merged: Entry[] = new Array(sorted.length + fresh.length);
+  let i = 0, j = 0, k = 0;
+  while (i < sorted.length && j < fresh.length) merged[k++] = compare(sorted[i]!, fresh[j]!) <= 0 ? sorted[i++]! : fresh[j++]!;
+  while (i < sorted.length) merged[k++] = sorted[i++]!;
+  while (j < fresh.length) merged[k++] = fresh[j++]!;
+  return merged;
 }
 
 export function bytes(size: string | bigint) {

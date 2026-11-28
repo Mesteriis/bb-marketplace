@@ -1,4 +1,4 @@
-// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@e1b0d502):
+// Ручное zod-зеркало контракта Remote Hub для других плагинов (remote-hub@271406d0):
 // plugins/remote-hub/src/core/sftp-contract.ts. Плагины не импортируют файлы друг друга,
 // поэтому схемы переписаны здесь. Ничего, кроме zod и самого себя, не импортирует.
 //
@@ -6,7 +6,7 @@
 // ссылки на учётные данные или имени элемента Keychain (все объекты `.strict()`).
 import { z } from "zod";
 
-export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@e1b0d502";
+export const REMOTE_HUB_SFTP_CONTRACT = "remote-hub@271406d0";
 
 export const SFTP_LIMITS = {
   /** Наибольший объём байт одного чтения или одной записи. */
@@ -247,6 +247,8 @@ export const SFTP_REFUSALS = {
   /** Подключение `agent`, а SSH-агент не запущен или не держит ключа, который принимает сервер. */
   agent_unavailable: "conflict",
   keychain_locked: "conflict",
+  /** The Keychain (or Credential Vault) could not be reached at all, so the saved credential could not be read. */
+  keychain_unavailable: "conflict",
   keychain_needs_approval: "conflict",
   credential_missing: "conflict",
   auth_failed: "conflict",

@@ -14,7 +14,7 @@ import { ConflictDialog, Modal, PlanDialog, TextDialog } from "./dialogs.tsx";
 import { BatchRenameDialog } from "./batch-rename.tsx";
 import type { RenamePattern } from "../core/rename-pattern.ts";
 import { chord, findShortcut, shortcuts, shortcutText, type KeyBindings, type Shortcut } from "./keyboard.ts";
-import { activeTab, bytes, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, visibleEntries,
+import { activeTab, bytes, currentRef, keyOf, nameOf, nativePath, otherSide, problemOf, selectionInfo, shortPath, sides, mergeVisible, visibleEntries,
   type Directory, type EndpointView, type PlanCheck, type PlanRequest, type Problem, type Side, type Tab } from "./model.ts";
 import { Pane, ProblemLine, rowHeight, upKey } from "./pane.tsx";
 import { Queue, type QueueProps, type RetryNote } from "./queue.tsx";
@@ -134,8 +134,24 @@ function maskMatcher(mask: string) {
     return j === pattern.length;
   };
 }
-function filterAndSort(directory: Directory | undefined, tab: Tab | undefined) {
-  return directory && tab ? visibleEntries(directory.entries, tab) : noEntries;
+/**
+ * The rows of one pane. While a long listing arrives in pages (`Directory.partial`), each new page is sorted and merged
+ * into the previous result instead of sorting everything again; any other change sorts from scratch.
+ */
+function useVisibleEntries(directory: Directory | undefined, tab: Tab | undefined): Entry[] {
+  const last = useRef<{ source: Entry[]; sortKey: string; result: Entry[] } | null>(null);
+  return useMemo(() => {
+    if (!directory || !tab) return noEntries;
+    const source = directory.entries, sortKey = tab.sort.by + tab.sort.direction + "\u0000" + tab.filter;
+    const previous = last.current;
+    const grew = previous && previous.sortKey === sortKey && previous.source.length > 0 && source.length >= previous.source.length
+      && source[0] === previous.source[0] && source[previous.source.length - 1] === previous.source[previous.source.length - 1];
+    const result = grew
+      ? source.length === previous.source.length ? previous.result : mergeVisible(previous.result, source.slice(previous.source.length), tab)
+      : visibleEntries(source, tab);
+    last.current = { source, sortKey, result };
+    return result;
+  }, [directory, tab?.sort.by, tab?.sort.direction, tab?.filter]);
 }
 
 function closestRow(previous: Entry[], current: Entry[], position: Cursor) {
@@ -229,8 +245,8 @@ export function Workspace(props: WorkspaceProps) {
   // S11: a search replaces only its source pane; the other pane remains the copy destination.
   const searchRoot = (pane: Side) => state.searchPanels?.[pane]?.root ?? searchRoots[pane];
   const inSearch = !!props.search && !!searchRoot(side);
-  const leftEntries = useMemo(() => filterAndSort(directories.left, left), [directories.left, left?.sort, left?.filter]);
-  const rightEntries = useMemo(() => filterAndSort(directories.right, right), [directories.right, right?.sort, right?.filter]);
+  const leftEntries = useVisibleEntries(directories.left, left);
+  const rightEntries = useVisibleEntries(directories.right, right);
   const all = { left: leftEntries, right: rightEntries }, entries = all[side];
   const endpointsBySide = { left: endpoints.find((item) => item.id === left?.endpoint), right: endpoints.find((item) => item.id === right?.endpoint) };
   const endpoint = endpointsBySide[side], target = endpointsBySide[opposite];
@@ -239,7 +255,7 @@ export function Workspace(props: WorkspaceProps) {
   useLayoutEffect(() => {
     for (const pane of sides) {
       const position = cursor[pane], value = tabs[pane], directory = directories[pane];
-      if (!value || !directory || directory.loading || directory.error) continue;
+      if (!value || !directory || directory.loading || directory.partial || directory.error) continue;
       const rows = all[pane], above = parent(value.path), previous = previousRows.current[pane];
       previousRows.current[pane] = rows;
       if (!position) {
@@ -254,9 +270,9 @@ export function Workspace(props: WorkspaceProps) {
       setCursor((previous) => ({ ...previous, [pane]: replacement }));
       if (replacement) revealCursor(pane, next ? index + Number(!!above) : 0);
     }
-  }, [leftEntries, rightEntries, directories.left?.loading, directories.right?.loading, cursor]);
-  const targetReady = !!target && !target.readOnly && !directories[opposite]?.loading && !directories[opposite]?.error;
-  const ready = !!endpoint && !directories[side]?.error && !directories[side]?.loading;
+  }, [leftEntries, rightEntries, directories.left?.loading, directories.right?.loading, directories.left?.partial, directories.right?.partial, cursor]);
+  const targetReady = !!target && !target.readOnly && !directories[opposite]?.loading && !directories[opposite]?.partial && !directories[opposite]?.error;
+  const ready = !!endpoint && !directories[side]?.error && !directories[side]?.loading && !directories[side]?.partial;
   const selectedNames = useMemo(() => {
     if (!tab?.selection.length || !directories[side]) return [];
     const existing = new Set(directories[side].entries.map((entry) => keyOf(entry.name)));
@@ -745,7 +761,7 @@ export function Workspace(props: WorkspaceProps) {
           const targetPane = otherSide(pane);
           const targetTab = tabs[targetPane], copyTo = endpointsBySide[targetPane];
           const canCopy = !!targetTab && !!copyTo && !copyTo.readOnly && !searchRoot(targetPane)
-            && !directories[targetPane]?.loading && !directories[targetPane]?.error && !busy;
+            && !directories[targetPane]?.loading && !directories[targetPane]?.partial && !directories[targetPane]?.error && !busy;
           return <SearchPanel key={pane} side={pane} active={pane === side} root={where}
             label={endpoints.find(({ id }) => id === where.endpoint)?.label ?? where.endpoint}
             savedId={state.searchPanels?.[pane]?.scanId} grid={grids[pane]} api={props.search}
@@ -769,7 +785,7 @@ export function Workspace(props: WorkspaceProps) {
           onScroll={(scrollTop) => patch(pane, (item) => item.scrollTop === scrollTop ? item : { ...item, scrollTop })}
           onPoint={(entry, mark) => point(pane, entry, mark)}
           onOpen={(entry) => openEntry(pane, entry)} onRefresh={() => props.onRefresh(pane)}
-          onSearch={props.search && value && source && !directories[pane]?.error && !directories[pane]?.loading
+          onSearch={props.search && value && source && !directories[pane]?.error && !directories[pane]?.loading && !directories[pane]?.partial
             ? () => { setPane(pane); setSearchRoots((previous) => ({ ...previous, [pane]: currentRef(value) })); }
             : undefined}
           onAccess={() => { if (source) void perform(() => props.onAccess(source)); }} />;

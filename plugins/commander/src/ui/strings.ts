@@ -40,7 +40,7 @@ export const ru = {
   },
 
   left: "Левая панель", right: "Правая панель", path: "Путь", filter: "Фильтр", up: "Вверх",
-  loading: "Загрузка каталога", empty: "Каталог пуст", noResults: "Нет совпадений",
+  loading: "Загрузка каталога", loadedCount: (count: number) => `Загружено ${count} записей…`, empty: "Каталог пуст", noResults: "Нет совпадений",
   noEndpoint: "Нет доступного источника", readOnly: "Только чтение", writable: "Чтение и запись",
   local: "Локально", sftp: "SFTP", refresh: "Обновить", swap: "Поменять", compare: "Сравнить каталоги",
   queue: "Очередь", collapseQueue: "Свернуть очередь", emptyQueue: "Очередь пуста", damaged: "Задание повреждено, план недоступен",
