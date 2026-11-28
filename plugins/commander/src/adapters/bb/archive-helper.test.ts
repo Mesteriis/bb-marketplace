@@ -197,6 +197,22 @@ describe("requests", () => {
   });
 });
 
+describe("requests with a payload", () => {
+  it("sends the data frame with the same request id right after the control frame", async () => {
+    const s = setup();
+    const started = s.client.start();
+    s.proc.hello();
+    await started;
+    const pending = s.client.request({ t: "pack_data" }, { data: Uint8Array.from([7, 8, 9]) });
+    expect(await s.proc.nextControl()).toMatchObject({ t: "pack_data", req: 1 });
+    for (let i = 0; i < 100 && s.proc.received.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(s.proc.received[0]).toMatchObject({ kind: "data", reqId: 1 });
+    expect([...(s.proc.received[0] as { bytes: Uint8Array }).bytes]).toEqual([7, 8, 9]);
+    s.proc.say(encodeControl({ t: "ok", req: 1, written: "3" }));
+    await pending;
+  });
+});
+
 describe("password", () => {
   it("answers need_password with a secret frame, clears the buffer and never prints it", async () => {
     const s = setup();

@@ -1,6 +1,6 @@
 import { CommanderError, CommanderErrorShape } from "../../core/errors.ts";
 import {
-  FrameDecoder, HelloMessage, PROTOCOL_VERSION, ProtocolError, encodeControl, encodeSecret, type Frame,
+  FrameDecoder, HelloMessage, PROTOCOL_VERSION, ProtocolError, encodeControl, encodeData, encodeSecret, type Frame,
 } from "../../core/wire/archive-protocol.ts";
 import type { IntegrityResult } from "./archive-helper-integrity.ts";
 
@@ -39,6 +39,8 @@ export interface HelperResult {
 
 export interface RequestOptions {
   signal?: AbortSignal;
+  /** A payload sent as a data frame right after the control frame (pack_data). */
+  data?: Uint8Array;
   /** Called when the helper asks for the owner's password; the returned bytes are cleared after sending. */
   password?: () => Promise<Uint8Array | null>;
 }
@@ -152,6 +154,13 @@ export class ArchiveHelperClient {
     }
     this.arm(pending);
     this.send({ ...pending.body, req: pending.req });
+    if (pending.options.data) {
+      try {
+        this.proc?.stdin.write(encodeData(pending.req, pending.options.data));
+      } catch {
+        this.fatal(crashed());
+      }
+    }
   }
 
   private arm(pending: Pending): void {
