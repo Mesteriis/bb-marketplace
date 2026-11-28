@@ -103,7 +103,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
       <h3 className="git-np-group">{t("np.author")}</h3>
       <div className="git-np-pair">
         <Field label={t("np.author-name")}><input className="g-inp" value={author.name} maxLength={200} onChange={event => setAuthor(previous => ({...previous, name: event.target.value}))}/></Field>
-        <Field label="Email"><input className="g-inp" value={author.email} maxLength={200} type="email" placeholder="name@example.org" onChange={event => setAuthor(previous => ({...previous, email: event.target.value}))}/></Field>
+        <Field label={t("np.email")}><input className="g-inp" value={author.email} maxLength={200} type="email" placeholder="name@example.org" onChange={event => setAuthor(previous => ({...previous, email: event.target.value}))}/></Field>
       </div>
       {accounts.length > 0 && <>
         <h3 className="git-np-group">{t("np.repository")}</h3>
@@ -120,7 +120,7 @@ function ScaffoldForm({api, hostId, root, categories, entry, suggested, accounts
           }}>{accounts.map(item => <option key={item.id} value={item.id}>{item.label} ({item.kind})</option>)}</select></Field>
           <div className="git-np-pair">
             <Field label={account?.kind === "azure" ? t("np.azure-project") : t("np.owner", {user: account?.username ?? "—"})}>
-              <input className="g-inp" value={remote.owner} maxLength={255} placeholder={account?.kind === "gitlab" ? "group/subgroup" : account?.kind === "azure" ? "Project" : "organization"}
+              <input className="g-inp" value={remote.owner} maxLength={255} placeholder={t(account?.kind === "gitlab" ? "np.owner-gitlab" : account?.kind === "azure" ? "np.azure-placeholder" : "np.owner-placeholder")}
                 onChange={event => setRemote(previous => ({...previous, owner: event.target.value}))}/></Field>
             <div className="git-np-field" role="group" aria-label={t("np.visibility")}><span>{account?.kind === "azure" ? t("np.visibility-azure") : t("np.visibility")}</span>
               <div className="g-seg">{(["private", "public"] as const).map(value => <button key={value} type="button" aria-pressed={remote.visibility === value}

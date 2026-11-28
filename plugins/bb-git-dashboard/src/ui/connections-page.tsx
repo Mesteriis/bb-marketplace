@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { accountHealth, remoteHosts, type AccountCheck, type Health } from "../core/connections/health.ts";
 import { ago } from "../core/i18n/time.ts";
 import type { Account } from "../core/providers.ts";
@@ -59,15 +59,27 @@ export function ConnectionsPage({api, title, hosts, localKeys, onBrowse, onChang
   const [error, setError] = useState("");
   const [connecting, setConnecting] = useState<{address: string} | null>(null);
   const hostId = hosts[0]?.id ?? "";
+  // Each account's answers are numbered: the last check read or asked wins, so a slow read of the kept check cannot
+  // overwrite a newer Check. Nothing is set once the page is gone.
+  const order = useRef({next: 0, latest: new Map<string, number>(), live: true});
+  useEffect(() => { order.current.live = true; return () => { order.current.live = false; }; }, []);
+  const ask = useCallback((id: string, refresh: boolean) => {
+    const number = ++order.current.next;
+    order.current.latest.set(id, number);
+    const keep = (found: AccountCheck | null) => {
+      if (order.current.live && order.current.latest.get(id) === number) setChecks(previous => new Map(previous).set(id, found));
+    };
+    return api.accountCheck(id, refresh).then(keep, (failure: unknown) => { if (refresh) keep({ok: false, code: failure instanceof Error ? failure.message : "FAILED"}); });
+  }, [api]);
   useEffect(() => {
     let active = true;
     api.accounts().then(value => {
       if (!active) return;
       setAccounts(value);
-      for (const account of value) api.accountCheck(account.id, false).then(found => { if (active) setChecks(previous => new Map(previous).set(account.id, found)); }, () => {});
+      for (const account of value) void ask(account.id, false);
     }, (failure: unknown) => { if (active) setError(failure instanceof Error ? failure.message : String(failure)); });
     return () => { active = false; };
-  }, [api]);
+  }, [api, ask]);
   useEffect(() => {
     if (!hostId) return;
     let active = true;
@@ -76,10 +88,8 @@ export function ConnectionsPage({api, title, hosts, localKeys, onBrowse, onChang
   }, [localKeys, hostId]);
   const check = useCallback((id: string) => {
     setChecking(previous => new Set(previous).add(id));
-    api.accountCheck(id, true).then(found => setChecks(previous => new Map(previous).set(id, found)),
-      (failure: unknown) => setChecks(previous => new Map(previous).set(id, {ok: false, code: failure instanceof Error ? failure.message : "FAILED"})))
-      .finally(() => setChecking(previous => { const next = new Set(previous); next.delete(id); return next; }));
-  }, [api]);
+    void ask(id, true).finally(() => { if (order.current.live) setChecking(previous => { const next = new Set(previous); next.delete(id); return next; }); });
+  }, [ask]);
   const servers = useMemo(() => keys ? remoteHosts(keys, accounts ?? []) : [], [keys, accounts]);
   const localOf = (account: Account) => servers.find(row => row.accounts.includes(account.id) && row.accounts.length === 1)?.repositories ?? 0;
   // Two servers on one host name (told apart by port) share a row: each account then says its forge.

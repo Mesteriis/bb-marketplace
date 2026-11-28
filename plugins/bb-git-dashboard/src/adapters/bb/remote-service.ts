@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { accountCheck, checkConnection } from "./connection.ts";
 import type { AccountCheck } from "../../core/connections/health.ts";
@@ -148,17 +148,20 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
       const current = accounts((await settings.get()).accounts).find(row => row.id === accountId);
       if (!current) throw new Error("ACCOUNT_UNCONFIGURED");
       const key = "account-check/" + accountId;
-      const stamp = JSON.stringify(current);
+      // The check belongs to the account as declared and to its token (a digest, never the token): a rotated token
+      // makes the kept check stale.
+      let found: Awaited<ReturnType<typeof context>>;
+      try { found = await context(accountId); }
+      catch (error) { return refresh ? {ok:false as const,code:failureFor(error,"ACCOUNT_UNCONFIGURED").code} : null; }
+      const {selected,token} = found;
+      const stamp = JSON.stringify(current) + "#" + createHash("sha256").update(token).digest("hex");
       if (!refresh) {
         const saved = await kv.get<{stamp:string;value:AccountCheck}>(key);
         return saved?.stamp === stamp ? saved.value : null;
       }
-      let value: AccountCheck;
-      try {
-        const {selected,token} = await context(accountId);
-        value = await accountCheck(selected,token);
-      } catch (error) { value = {ok:false,code:failureFor(error,"ACCOUNT_UNCONFIGURED").code}; }
-      await kv.set(key,{stamp,value});
+      const value = await accountCheck(selected,token);
+      // A server that did not answer says nothing of the account: only what the server said is kept.
+      if (value.ok || value.code === "PROVIDER_DENIED") await kv.set(key,{stamp,value});
       return value;
     }),
     matches: async (target:Target,copy:Copy) => assertOrigin((await repository(target)).repo,copy),

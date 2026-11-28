@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.6 — 2026-11-28
+
+The new interface, seventh slice: Catalog, Connections and Settings.
+
+- **Catalog** has the head of every section (the projects folder and how many accounts, the search, New project…, Refresh) and two tables as tabs. **Local**: project and path, category, branch, state (changed files, ahead, behind, clean, or the failure) and remote with its forge; the branch and state of the first 50 projects are read when the catalog opens. Status, Fetch and Pull act on the chosen ones, Fetch and Pull after a dialog. **Remote**: repository with its forge and accounts, where it is cloned, Open or Clone…, an account filter, and the open pull requests of the chosen ones under the table.
+- **Clone** is one dialog: the machine, the category as a segment, the folder name and the path that will be made; Clone… asks the server for its preview (account, address, destination), shown in the same dialog with Back and Clone.
+- **New project** is a page with its path (Catalog › New project) in three columns: the form (scaffold with where it comes from, category, folder name, the scaffold's parameters, the common files, CI as a segment, the first commit's author, the repository on a forge), the files, and the chosen file's numbered text with where it goes and **Check project…**. The common fields are named in the interface language.
+- The New project preview no longer promises the macOS Keychain on a machine without it: the host says whether its Git has one, and elsewhere the preview says the repository is made empty; creating then asks no Keychain, and the note says to set origin, add the credential, push main and link the repository by hand.
+- **Connections**: each account with its forge, login and server, **Check** (a new server call that signs in with the stored token and keeps the answer) and its state as a chip; the servers of the projects folder's remotes with their account, or Connect. The connection wizard has three steps — Server type (an address, or one of six server types as cards), Access, Check — in the interface language.
+- **Settings**: the plugin's own settings section in the interface language with the main settings in groups and the test notification, written through a new server call that takes only these settings and refuses a change no part of the plugin owns.
+- History keeps its search and All branches / Current only while you leave the tab and come back; the AI review dialog gives back what was typed when it was closed by Escape or the backdrop, until a run starts; the form that links a working copy to an account's repository by hand is translated.
+
 ## 0.14.5 — 2026-11-28
 
 The new interface, sixth slice: Reviews and History.

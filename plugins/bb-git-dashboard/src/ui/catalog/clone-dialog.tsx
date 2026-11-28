@@ -6,7 +6,7 @@ import { useT } from "../i18n/use-t.tsx";
 import type { CatalogApi, CatalogView, RemoteRow } from "./catalog-api.ts";
 
 export type Host = {id: string; name: string};
-const message = (error: unknown) => error instanceof Error ? error.message : "Request failed.";
+import { message } from "../ci/ci-api.ts";
 
 /**
  * Where to clone a repository: the machine, a category folder of its projects folder and a folder name, with the path
@@ -25,13 +25,15 @@ export function CloneDialog({row, view, hosts, hostId, api, onClose, onDone}: {r
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   useEffect(() => {
-    if (host === hostId) { setPlace({root: view.root, categories: view.categories}); return; }
+    // Back on the catalog's machine: its own categories, and a category chosen on another machine is not kept.
+    const pick = (categories: string[]) => setCategory(current => categories.includes(current) ? current : categories.includes("") ? "" : categories[0] ?? "");
+    if (host === hostId) { setPlace({root: view.root, categories: view.categories}); pick(view.categories); return; }
     let active = true;
     setPlace(null); setError("");
     api.catalog(host, false).then(other => {
       if (!active) return;
       setPlace({root: other.root, categories: other.categories});
-      setCategory(current => other.categories.includes(current) ? current : other.categories.includes("") ? "" : other.categories[0] ?? "");
+      pick(other.categories);
     }, failure => { if (active) setError(message(failure)); });
     return () => { active = false; };
   }, [api, host, hostId, view]);

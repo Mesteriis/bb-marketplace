@@ -26,7 +26,7 @@ type Deps = {
 };
 type Prepared = {hostId: string; projectsRoot: string; category: string; name: string; files: ScaffoldOutput[];
   author: ScaffoldRequest["author"]; message: string; expires: number; description: string;
-  repository: (RepositoryChoice & {accountId: string; stamp: string}) | null};
+  repository: (RepositoryChoice & {accountId: string; stamp: string; keychain: boolean}) | null};
 const ttl = 10 * 60_000;
 
 /** New projects from scaffolds: what is offered, a preview of what would be written, and the project made after confirmation. */
@@ -87,9 +87,10 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
           if (visibility !== input.repository.visibility) throw new CodedError("VISIBILITY_MISMATCH", "the Azure project " + owner + " is " + (visibility ?? "unknown"));
         }
         const choice = {...input.repository, owner};
-        repository = {...choice, stamp: JSON.stringify(account)};
         // The token goes into the Keychain only on macOS: elsewhere (or when the machine does not say) nothing is promised.
         const keychain = await host.call("credentialHelper", {}, {hostId: input.hostId}).then(answer => answer.keychain, () => false);
+        // What the preview promised is what is done: without a Keychain the repository is made and left empty.
+        repository = {...choice, stamp: JSON.stringify(account), keychain};
         repositoryText = repositoryLine(account, choice, name) + (keychain
           ? " · the token of " + account.username + " is saved in the Keychain for the new repository's address only, then main is pushed over HTTPS with it"
           : " · this machine has no Keychain for the token: the repository is created empty; add the HTTPS credential of " + account.username
@@ -160,6 +161,16 @@ export function scaffoldHandlers(bb: BbPluginApi, deps: Deps) {
           : "The project was made, but the repository was not created (" + failed + "). Create it on the forge, then push main from Git."]};
       }
       const notes: string[] = [];
+      if (!choice.keychain) {
+        // The push step sets origin, and linking checks it: with neither, the copy is linked by hand afterwards.
+        notes.push("Repository " + created.path + " was created empty, as the preview said: this machine has no Keychain for the token. Set origin to "
+          + created.clone + ", add the HTTPS credential of " + account.username + " for it by hand, push main from Git, then link the repository in the repository panel.");
+        await finish({status: "completed", target: {accountId: choice.accountId, repoId: created.id},
+          summary: ["New " + choice.visibility + " repository " + created.path, "No Keychain on this machine: the token of " + account.username + " is not saved",
+            "main not pushed from " + made.root]});
+        bb.realtime.publish("git-workspace-changed", {copyId: copy.id});
+        return {copyId: copy.id, root: made.root, repository: {path: created.path, pushed: false}, notes};
+      }
       const addByHand = "Add the HTTPS credential of " + account.username + " for " + created.clone + " to the Keychain, then push main from Git.";
       // Only now, with the repository made by this account, its token goes into the Keychain for this repository's exact
       // address, through the host's Git on stdin; the first push then takes it as any HTTPS push of the plugin does.

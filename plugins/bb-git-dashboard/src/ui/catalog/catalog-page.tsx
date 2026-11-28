@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { categoryOf, localState } from "../../core/catalog/rows.ts";
 import { PageHead } from "../shell/page-head.tsx";
 import { Icon } from "../system/icon.tsx";
@@ -57,22 +57,46 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const [created, setCreated] = useState<{root: string; repository: {path: string; pushed: boolean} | null; notes: string[]} | null>(null);
   // One bulk action at a time: two fetches of the same project would meet on its index lock.
   const [busy, setBusy] = useState(false);
+  // Answers belong to the machine they were asked of: a switch of machine makes every answer still on its way stale.
+  const machine = useRef({hostId, epoch: 0});
+  // Each status, fetch or pull is numbered; a project's row keeps the answer of the latest one asked, so a slow
+  // automatic status cannot overwrite what a later pull found.
+  const requests = useRef({next: 0, rows: new Map<string, number>()});
+  const [viewHost, setViewHost] = useState("");
   const load = useCallback(async (refresh: boolean) => {
     if (!hostId) return;
+    const epoch = machine.current.epoch;
     setPending(true); setError("");
-    try { setView(await api.catalog(hostId, refresh)); } catch (failure) { setError(message(failure)); } finally { setPending(false); }
+    try {
+      const value = await api.catalog(hostId, refresh);
+      if (machine.current.epoch === epoch) { setView(value); setViewHost(hostId); }
+    } catch (failure) { if (machine.current.epoch === epoch) setError(message(failure)); } finally { setPending(false); }
   }, [api, hostId]);
-  useEffect(() => { setPicked(new Set()); setResults(new Map()); setPulls(null); setView(null); void load(false); }, [load]);
-  useEffect(() => { if (!hostId && hosts[0]) setHostId(hosts[0].id); }, [hosts, hostId]);
-  const merge = (answers: BulkResult[]) => setResults(previous => { const next = new Map(previous); for (const answer of answers) next.set(answer.root, answer); return next; });
-  // The first projects' status is read when the catalog shows them, so the table says branch and state without a click.
   useEffect(() => {
-    const roots = view?.local.slice(0, autoStatus).map(row => row.path) ?? [];
+    machine.current = {hostId, epoch: machine.current.epoch + 1};
+    requests.current.rows.clear();
+    setPicked(new Set()); setResults(new Map()); setPulls(null); setView(null); setViewHost(""); void load(false);
+  }, [load, hostId]);
+  useEffect(() => { if (!hostId && hosts[0]) setHostId(hosts[0].id); }, [hosts, hostId]);
+  /** Asks a status, fetch or pull of `roots` and keeps each row's answer unless a later request was asked of it. */
+  const request = async (roots: string[], action: Bulk) => {
+    const epoch = machine.current.epoch;
+    const number = ++requests.current.next;
+    for (const root of roots) requests.current.rows.set(root, number);
+    const answers = await api.bulk(machine.current.hostId, roots, action);
+    if (machine.current.epoch !== epoch) return;
+    const latest = answers.filter(answer => requests.current.rows.get(answer.root) === number);
+    setResults(previous => { const next = new Map(previous); for (const answer of latest) next.set(answer.root, answer); return next; });
+  };
+  // The first projects' status is read when the catalog shows them, so the table says branch and state without a click.
+  // It holds the bulk actions while it runs: two git commands on one project would meet on its index lock.
+  useEffect(() => {
+    if (!view || viewHost !== hostId) return;
+    const roots = view.local.slice(0, autoStatus).map(row => row.path);
     if (!roots.length) return;
-    let active = true;
-    api.bulk(hostId, roots, "status").then(answers => { if (active) merge(answers); }, () => {});
-    return () => { active = false; };
-  }, [api, hostId, view]);
+    setBusy(true);
+    request(roots, "status").catch(() => {}).finally(() => setBusy(false));
+  }, [api, hostId, view, viewHost]);
 
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const matches = (text: string) => words.every(word => text.toLowerCase().includes(word));
@@ -86,7 +110,7 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
   const all = shown.length > 0 && chosen.length === shown.length;
   const run = async (action: Bulk) => {
     setBusy(true);
-    try { merge(await api.bulk(hostId, chosen, action)); } finally { setBusy(false); }
+    try { await request(chosen, action); } finally { setBusy(false); }
   };
   const tooMany = chosen.length > bulkLimit ? t("ct.bulk-limit") : undefined;
   const failedSources = view?.sources.filter(source => !source.ok) ?? [];
@@ -96,8 +120,9 @@ export function CatalogPage({api, hosts}: {api: CatalogApi; hosts: Host[]}) {
     api.pulls(repos).then(setPulls, failure => setError(message(failure)));
   };
   const tabKeys = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const next: Tab = tab === "local" ? "remote" : "local";
+    if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next: Tab = event.key === "Home" ? "local" : event.key === "End" ? "remote" : tab === "local" ? "remote" : "local";
     setTab(next);
     (event.currentTarget.parentElement?.querySelector("[data-tab=\"" + next + "\"]") as HTMLElement | null)?.focus();
   };

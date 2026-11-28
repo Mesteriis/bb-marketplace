@@ -33,6 +33,10 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
 - `scaffolds.mjs` — New project in the Catalog: a Python scaffold with free text, GitHub Actions CI and an author; a
   name that is no folder name refused in the form; the preview before anything is written; the folder in the projects
   folder with its files, git on main and one commit by the author, listed in the catalog; the same name again refused.
+- `catalog-shots.mjs` — after `catalog.mjs` and `scaffolds.mjs`: the Catalog's two tables (the branch read on opening),
+  the clone dialog (closed, nothing cloned), New project, Connections with Check of the Gitea account, the connection
+  wizard's first and last step (the check only reads; nothing is saved) and the plugin's settings section, where the
+  overview's view is switched and put back — each in light, dark and Russian.
 
 - `ci-templates.mjs` — after `ci.mjs`, last, as it commits to `stand-beta`: commits a pnpm Node project to `stand-beta`; Templates reads the stack at HEAD and
   offers Node.js · Gitea Actions first; a value that does not fit is refused before anything is sent; the file and

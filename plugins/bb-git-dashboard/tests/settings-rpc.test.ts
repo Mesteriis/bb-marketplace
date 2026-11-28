@@ -28,3 +28,13 @@ test("the plugin's settings section writes only the main settings, each through 
   }
   assert.deepEqual(written, []);
 });
+
+test("a main setting no module writes is refused, and nothing of that change is written", async () => {
+  const written: unknown[] = [];
+  const registry = settingsRegistry();
+  registry.add("interface", ["uiLanguage", "overviewView"], async values => { written.push(values); });
+  const {settingsSet} = settingsHandlers(registry);
+  const answer = await settingsSet({uiLanguage: "ru", projectsRoot: "/home/me/code"}, client);
+  assert.equal(answer.ok ? "ok" : answer.code, "SETTING_UNOWNED");
+  assert.deepEqual(written, []);
+});

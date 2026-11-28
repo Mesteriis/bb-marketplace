@@ -57,7 +57,7 @@ export function ConnectionWizard({api,onClose,onSaved,initialAddress = ""}:{
     active.current = true;
     return () => {active.current = false;};
   },[]);
-  useEffect(() => {if (step) heading.current?.focus();},[step]);
+  // Steps 2 and 3 put the focus on their field (autoFocus); the step's heading is read by its live region.
   const failed = (cause: unknown) => {
     const code = cause instanceof Error ? cause.message : "";
     return known.includes(code) ? t(("cw.e." + code) as MessageKey) : t("cw.e.other");
@@ -119,7 +119,7 @@ export function ConnectionWizard({api,onClose,onSaved,initialAddress = ""}:{
           {index < step && <span className="g-sr"> — {t("cw.done")}</span>}
         </li>)}
       </ol>
-      <h3 ref={heading} tabIndex={-1} className="g-sr">{t(steps[step]!)}</h3>
+      <h3 ref={heading} className="g-sr" aria-live="polite">{t(steps[step]!)}</h3>
       {step === 0 && <>
         <p className="git-connect-lead">{t("cw.lead")}</p>
         <label className="git-connect-field"><span>{t("cw.address")}</span>
@@ -128,8 +128,18 @@ export function ConnectionWizard({api,onClose,onSaved,initialAddress = ""}:{
         {detection?.kind ? <p className="git-connect-found"><Icon name="CircleCheck" small/><span>{t("cw.detected")} <strong>{providerLabels[detection.kind]}</strong> · <span className="g-mono">{detection.origin}</span></span></p>
           : detection && <p className="git-connect-found g-muted"><Icon name="Info" small/><span>{t("cw.choose-own", {origin: detection.origin})}</span></p>}
         <h4 className="git-connect-group" id="git-connect-types">{t("cw.or-type")}</h4>
-        <div className="git-connect-types" role="radiogroup" aria-labelledby="git-connect-types">
-          {types.map(type => <button key={type.id} type="button" role="radio" aria-checked={chosen(type)} className="git-connect-type" onClick={() => choose(type)}>
+        <div className="git-connect-types" role="radiogroup" aria-labelledby="git-connect-types" onKeyDown={event => {
+          // One Tab stop for the group; arrows move and choose, as a radio group does.
+          const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+          if (!step) return;
+          event.preventDefault();
+          const at = types.findIndex(type => type.id === (event.target as HTMLElement).dataset.type);
+          const next = types[(at + step + types.length) % types.length]!;
+          choose(next);
+          (event.currentTarget.querySelector("[data-type=\"" + next.id + "\"]") as HTMLElement | null)?.focus();
+        }}>
+          {types.map((type, index) => <button key={type.id} data-type={type.id} type="button" role="radio" aria-checked={chosen(type)} className="git-connect-type"
+            tabIndex={(types.some(chosen) ? chosen(type) : index === 0) ? 0 : -1} onClick={() => choose(type)}>
             <strong>{type.title}</strong><span className="g-muted">{type.note ? t(type.note) : type.origin!.replace(/^https:\/\//, "").replace(/\/$/, "")}</span></button>)}
         </div>
         {provider === "azure" && <div className="git-connect-pair">

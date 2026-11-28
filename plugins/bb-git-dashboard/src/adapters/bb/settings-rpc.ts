@@ -13,6 +13,8 @@ export function settingsRegistry() {
   return {
     add(name: string, keys: readonly string[], write: Writer) { writers.push({name, keys, write}); },
     async set(values: Record<string, unknown>) {
+      // A key no module owns would be dropped while the answer said saved: the whole change is refused first.
+      if (Object.keys(values).some(key => !writers.some(writer => writer.keys.includes(key)))) throw new Error("SETTING_UNOWNED");
       for (const writer of writers) {
         const own = Object.fromEntries(Object.entries(values).filter(([key]) => writer.keys.includes(key)));
         if (Object.keys(own).length) await writer.write(own);
@@ -29,7 +31,7 @@ export function settingsHandlers(registry: SettingsRegistry) {
       if (context.experimental_caller.kind !== "client") return failureFor(undefined, "ACCESS_DENIED");
       const parsed = mainSettings.safeParse(input);
       if (!parsed.success) return failureFor(undefined, "INVALID_INPUT");
-      try { await registry.set(parsed.data); } catch (error) { return failureFor(error, "INVALID_INPUT"); }
+      try { await registry.set(parsed.data); } catch (error) { return failureFor(error, "SETTING_UNOWNED"); }
       return {ok: true as const};
     },
   };

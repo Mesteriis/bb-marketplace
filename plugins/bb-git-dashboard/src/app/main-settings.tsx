@@ -26,7 +26,7 @@ export function MainSettingsSection() {
   }, [client, language]);
   const onTest = useCallback(async () => {
     const answer = await client.call("inboxTest", {});
-    return answer.ok ? answer.push.message + " " + format(language, "st.test-in-inbox") : answer.code + " · " + answer.next;
+    return answer.ok ? answer.push.message + " " + format(language, "st.test-in-inbox") : format(language, "st.test-refused", {code: answer.code});
   }, [client, language]);
   return <div className="git-ws"><SettingsPanel values={values} onSet={onSet} onTest={onTest}/></div>;
 }

@@ -8,7 +8,7 @@ Each working copy is matched to its forge from its `origin` remote (SSH aliases 
 
 ## Projects folder and catalog
 
-The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Каталог** lists them beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a scaffold (Python, Go, BB plugin or your own) and its private repository.
+The **Projects folder** setting (default `~/projects`) and its exclusion list define the projects: a folder with `.git`; worktrees and submodules belong to their parent; hidden folders, `node_modules`, `vendor` and `references` are skipped. **Catalog** lists them in two tables with branch and state beside every account's repositories, marks what is cloned, clones into a category, fetches or pulls chosen projects, and makes a **New project** from a scaffold and its private repository.
 
 ## History
 
@@ -20,7 +20,7 @@ The History tab of a working copy, also a **Git History** tab in a thread and an
 
 ## My PRs
 
-**My PRs** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab and repository, each with its states in words, and chips that count and filter what blocks them. Search (on GitHub the whole merged or closed history), fold or hide repositories, j/k moves. Alerts on failing CI and new comments come as toasts, a count and Push notifications.
+**My PRs** lists the pull requests of every connected GitHub, GitLab, Gitea and Azure DevOps account by tab and repository, each with its states in words, and chips that count and filter what blocks them. Search, fold or hide repositories, j/k moves. Alerts on failing CI and new comments come as toasts, a count and Push notifications.
 
 ## Pull requests and issues
 
@@ -32,6 +32,6 @@ A copy's and a thread's **CI/CD** tab list GitHub Actions, Gitea Actions, GitLab
 
 ## Remote repositories
 
-Connect GitHub, GitLab, Azure Repos or Gitea accounts. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s macOS Keychain entry; New project adds it. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
+Connect GitHub, GitLab, Azure Repos or Gitea accounts in three steps; **Check** says what each token can do. Repository tabs show Code, CI/CD, issues and variables where supported. Secret and variable values stay in the provider. Review clone, fetch, push and PR actions before confirming them. HTTPS Git uses the account’s macOS Keychain entry; New project adds it on macOS. API tokens go to Makosh Credential Vault when enabled, with a fallback copy in BB’s secret settings.
 
 Grant agents read or local write access and review their publication and worktree requests in BB. Pinned tabs keep their target.

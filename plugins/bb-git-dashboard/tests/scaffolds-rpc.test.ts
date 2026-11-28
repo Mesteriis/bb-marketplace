@@ -216,3 +216,21 @@ test("off macOS the preview promises no Keychain: the repository is made empty a
   if (!unknown.ok) return;
   assert.match(unknown.preview.lines.at(-1) ?? "", /this machine has no Keychain for the token/);
 });
+
+test("off macOS the project and the empty repository are made as previewed: no Keychain is asked, and the note says what is left", async () => {
+  const run = server(made, {helper: async () => ({ok: true, keychain: false})});
+  const prepared = await run.handlers.scaffoldPrepare({...request, repository: {accountId: "acc-1", owner: null, visibility: "private"}}, client);
+  assert.ok(prepared.ok);
+  if (!prepared.ok) return;
+  const done = await run.handlers.scaffoldCreate({previewId: prepared.preview.id}, client);
+  assert.ok(done.ok);
+  if (!done.ok) return;
+  assert.deepEqual(done.repository, {path: "octo/notes", pushed: false});
+  assert.deepEqual(run.calls.map(call => call.name), ["scaffoldCreate"]);
+  assert.deepEqual(done.notes, ["Repository octo/notes was created empty, as the preview said: this machine has no Keychain for the token."
+    + " Set origin to https://git.example.org/octo/notes.git, add the HTTPS credential of octo for it by hand, push main from Git, then link the repository in the repository panel."]);
+  assert.deepEqual(run.log.map(entry => entry.status), ["pending", "completed"]);
+  assert.deepEqual(run.log[1]!.summary, ["New private repository octo/notes", "No Keychain on this machine: the token of octo is not saved",
+    "main not pushed from /home/owner/projects/notes"]);
+  assert.deepEqual(run.linked, []);
+});
