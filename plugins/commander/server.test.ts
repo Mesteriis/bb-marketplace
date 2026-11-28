@@ -787,7 +787,7 @@ test("append-only migrations persist explicit approval in the job store across r
     const second = await submitAgent(bb, request);
     await bb.rpc("plan_approve", { jobId: first.jobId, digest: plan.digest });
     const reopened = sqliteStore.createSqliteJobStore(bb.db);
-    expect(MIGRATIONS).toHaveLength(9);
+    expect(MIGRATIONS).toHaveLength(10);
     expect(reopened.hasOwnerApproval(first.jobId)).toBe(true);
     expect(reopened.hasOwnerApproval(second.jobId)).toBe(false);
   } finally { await bb.dispose(); }

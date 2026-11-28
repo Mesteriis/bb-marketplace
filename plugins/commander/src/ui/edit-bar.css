@@ -1,0 +1,29 @@
+.cm-edit {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.cm-edit-label {
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+
+.cm-edit textarea {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 12rem;
+  padding: 0.75rem;
+  resize: vertical;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  font: 0.875rem/1.5 ui-monospace, monospace;
+}
+
+.cm-edit .cm-actions {
+  flex-wrap: wrap;
+}

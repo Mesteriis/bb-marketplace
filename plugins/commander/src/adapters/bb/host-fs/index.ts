@@ -23,12 +23,18 @@ import { changed, describe, entryKind, forEachChunk, hashFile, matches, position
   type ExpectedVersion } from "./files.ts";
 import { validateTargetName, type NamePlatform } from "./names.ts";
 import { childPath, decodeName, lstatOrNull, parseWindowsPath, recheckParent, requireDirectory, resolvePath, sameNode } from "./paths.ts";
+// S16: the ordinary filesystem routes exclude the editor data on this host.
+import { createEditPathPolicy } from "../edit-path-policy.ts";
+import { join, parent } from "../../../core/path.ts";
 import { WriteSessions, type WriteOptions } from "./writes.ts";
 
 interface Context {
   signal: AbortSignal;
   lifecycle?: { signal: AbortSignal };
   experimental_retainWorker?: () => { dispose(): Promise<void> };
+  // S16
+  experimental_paths?: { dataDir: string };
+  editPaths?: Awaited<ReturnType<typeof createEditPathPolicy>>;
 }
 
 type Handler<M extends HostFsMethod> = (input: HostFsInput<M>, context: Context) => Promise<HostFsOutput<M>>;
@@ -71,7 +77,7 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
     void dispose().catch(() => {});
   }
 
-  function handle<M extends HostFsMethod>(fn: Handler<M>, cleanup = false): Handler<M> {
+  function handle<M extends HostFsMethod>(fn: Handler<M>, cleanup = false, checkPaths = true): Handler<M> {
     return (input, context) => {
       if (!lifecycle && context.lifecycle) {
         lifecycle = context.lifecycle.signal;
@@ -82,8 +88,11 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       const task = (async () => {
         try {
           if (!cleanup) signal.throwIfAborted();
+          // S16: BB supplies the private root via host context only.
+          const editPaths = checkPaths && context.experimental_paths?.dataDir
+            ? await createEditPathPolicy(context.experimental_paths.dataDir, platform, signal) : undefined;
           return await fn(input, {
-            signal,
+            signal, editPaths,
             experimental_retainWorker: context.experimental_retainWorker?.bind(context),
           });
         } catch (error) {
@@ -108,7 +117,8 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
   }
 
   const handlers: Handlers = {
-    list: handle<"list">(async ({ path, cursor, limit }, { signal }) => {
+    list: handle<"list">(async ({ path, cursor, limit }, { signal, editPaths }) => {
+      await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
       if (!stats) {
         if (cursor !== null) throw changed();
@@ -128,16 +138,18 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
           signal.throwIfAborted();
           const item = await directory.read();
           if (!item) break;
-          if (seen++ < start) continue;
-          if (entries.length === limit) {
-            more = true;
-            break;
-          }
+          if (!editPaths && seen++ < start) continue;
           // Node returns Buffer names with encoding=buffer, despite its Dirent declaration.
           const name = decodeName(Buffer.from(item.name));
           const child = childPath(full, name);
           const childStats = await lstatOrNull(child);
           if (!childStats) throw changed();
+          // S16: omit private entries before counting the cursor or page limit.
+          if (editPaths && (await editPaths.hidden(child, childStats) || seen++ < start)) continue;
+          if (entries.length === limit) {
+            more = true;
+            break;
+          }
           const entry = await describe(child, name, childStats);
           responseBytes += Buffer.byteLength(JSON.stringify(entry)) + 1;
           // Leave space for the cursor and RPC envelope under BB's 8 MiB limit.
@@ -154,39 +166,52 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
       }
       return { entries, cursor: more ? (start + entries.length) + ":" + version : null };
     }),
-    stat: handle<"stat">(async ({ path }) => {
+    stat: handle<"stat">(async ({ path }, { editPaths }) => {
+      await editPaths?.check(path);
       const resolved = await resolvePath(path, platform).catch((error) => {
         if (hasErrno(error, "ENOENT")) return null;
         throw error;
       });
+      if (resolved?.stats && await editPaths?.hidden(resolved.full, resolved.stats)) {
+        throw new CommanderError("permission_denied", "Path is outside the agent's grant");
+      }
       return resolved?.stats ? describe(resolved.full, path.segments.at(-1) ?? { t: "root" }, resolved.stats) : null;
     }),
-    read: handle<"read">(async ({ path, offset, length, expect }, { signal }) => {
+    read: handle<"read">(async ({ path, offset, length, expect }, { signal, editPaths }) => {
+      await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
       return withRegularFile(full, stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
         if (expect && !matches(opened, expect)) throw changed();
         const buffer = Buffer.allocUnsafe(length);
         const { bytesRead } = await file.read(buffer, 0, length, position(offset));
         return { b64: buffer.subarray(0, bytesRead).toString("base64") };
       });
     }),
-    writeOpen: handle<"writeOpen">(({ target, tempName }, { signal, experimental_retainWorker }) =>
-      writes.open(target, tempName, signal, experimental_retainWorker)),
+    writeOpen: handle<"writeOpen">(async ({ target, tempName }, { signal, experimental_retainWorker, editPaths }) => {
+      await editPaths?.check(target);
+      const directory = parent(target);
+      if (directory) await editPaths?.check(join(directory, tempName));
+      return writes.open(target, tempName, signal, experimental_retainWorker);
+    }),
     writeChunk: handle<"writeChunk">(async ({ session, offset, b64 }, { signal }) => {
       await writes.write(session, position(offset), Buffer.from(b64, "base64"), signal);
       return {};
-    }),
+    }, false, false),
     writeCommit: handle<"writeCommit">(({ session, replace, expectTarget }, { signal }) =>
-      writes.commit(session, replace, expectTarget, signal)),
-    writeAbort: handle<"writeAbort">(({ session }) => writes.abort(session), true),
-    mkdir: handle<"mkdir">(({ path }, { signal }) => writes.publish(async () => {
+      writes.commit(session, replace, expectTarget, signal), false, false),
+    writeAbort: handle<"writeAbort">(({ session }) => writes.abort(session), true, false),
+    mkdir: handle<"mkdir">(({ path }, { signal, editPaths }) => writes.publish(async () => {
+      await editPaths?.check(path);
       const target = await resolvePath(path, platform, { target: true });
       await recheckParent(target);
       signal.throwIfAborted();
       await mkdir(target.full);
       return {};
     })),
-    rename: handle<"rename">(async ({ from, to, replace, expectTarget }, { signal }) => {
+    rename: handle<"rename">(async ({ from, to, replace, expectTarget }, { signal, editPaths }) => {
+      await editPaths?.check(from, true);
+      await editPaths?.check(to, true);
       const name = to.segments.at(-1);
       if (name) validateTargetName(name, platform);
       // Inspect the leaf with lstat so a newly occupied target reports a version mismatch.
@@ -245,7 +270,8 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         return noReplace ? { atomicNoReplace: false as const } : {};
       });
     }),
-    remove: handle<"remove">(async ({ path, kind, expect }, { signal }) => {
+    remove: handle<"remove">(async ({ path, kind, expect }, { signal, editPaths }) => {
+      await editPaths?.check(path, true);
       const resolveEntry = () => resolveVersionedPath(path, expect, { mutable: true });
       const hashed = await verifyVersionHash(resolveEntry, expect, signal, options.hashTarget);
       return writes.publish(async () => {
@@ -261,9 +287,12 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         return {};
       });
     }),
-    copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget }, { signal }) => {
+    copyWithin: handle<"copyWithin">(async ({ from, to, replace, expectTarget }, { signal, editPaths }) => {
+      await editPaths?.check(from);
+      await editPaths?.check(to);
       const source = await resolvePath(from, platform);
       return withRegularFile(source.full, source.stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(source.full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
         const { session } = await writes.open(to, undefined, signal);
         try {
           await forEachChunk(file, signal, (chunk, offset) => writes.write(session, offset, chunk, signal));
@@ -276,9 +305,13 @@ export function createHostFs(options: WriteOptions & { platform?: NamePlatform }
         }
       });
     }),
-    sha256: handle<"sha256">(async ({ path }, { signal }) => {
+    sha256: handle<"sha256">(async ({ path }, { signal, editPaths }) => {
+      await editPaths?.check(path);
       const { full, stats } = await resolvePath(path, platform);
-      return { hex: await withRegularFile(full, stats, signal, (file) => hashFile(file, signal)) };
+      return { hex: await withRegularFile(full, stats, signal, async (file, opened) => {
+        if (await editPaths?.hidden(full, opened)) throw new CommanderError("permission_denied", "Path is outside the agent's grant");
+        return hashFile(file, signal);
+      }) };
     }),
     home: handle<"home">(async () => {
       const home = homedir();

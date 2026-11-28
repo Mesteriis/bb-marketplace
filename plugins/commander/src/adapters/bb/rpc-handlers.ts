@@ -1,3 +1,7 @@
+// S16
+import { checkEditSize } from "../../core/edit-source.ts";
+import { EDIT_SNAPSHOT_ENDPOINT } from "../../core/edit-session.ts";
+import type { EditOperations } from "./edit-operations.ts";
 import { search, searchCandidates, SearchConsentError, type SearchContext, type SearchHit, type SearchQuery } from "../../core/search.ts";
 import { MAX_RESPONSE_BYTES } from "../../core/preview.ts";
 import { createHash } from "node:crypto";
@@ -44,6 +48,10 @@ export function publicError(error: unknown) {
   if (error instanceof experimental_PluginRpcRefusal) return error;
   if (error instanceof SftpRefusal) return refusal(SFTP_REFUSALS[error.code], error.code);
   if (!isCommanderError(error)) return refusal("invalid", "Commander operation failed");
+  // S16
+  if (error.code === "permission_denied" && error.message === "Path is outside the agent's grant") {
+    return refusal("forbidden", error.message);
+  }
   const code = error.code === "permission_denied" || error.code === "read_only" || error.code === "consent_required"
     || error.code === "host_key_rejected" ? "forbidden"
     : error.code === "not_found" ? "not_found"
@@ -66,7 +74,7 @@ function refs(plan: OperationPlan): string[] {
   // S13: deletion does not write to the opposite endpoint, but still needs its absence proof.
   return [...new Set([plan.sourceEndpoint, plan.targetEndpoint, ...plan.items.flatMap(
     ({ requireAbsent }) => requireAbsent ? [requireAbsent.endpoint] : [],
-  )].filter((id) => id !== null))];
+  )].filter((id): id is string => id !== null && id !== EDIT_SNAPSHOT_ENDPOINT))];
 }
 
 function autoRunAllowed(plan: OperationPlan, initiator: Initiator, grants: AgentGrant[]) {
@@ -126,6 +134,8 @@ export function createOperations(deps: {
   isManaged(id: string): boolean;
   scans: ScanRunner;
   archives?: import("./archive-runtime.ts").ArchiveRuntime;
+  // S16
+  edit?: EditOperations;
 }) {
   const { endpoints, runner, store, planner, grants, kv, publish } = deps;
   const plans = new Map<string, { plan: OperationPlan; bytes: number; created: number }>();
@@ -211,7 +221,9 @@ export function createOperations(deps: {
 
   async function requireJob(id: string, initiator?: Initiator) {
     const job = await store.get(id);
-    if (!job) throw refusal("not_found", "Job not found");
+    if (!job || initiator?.kind === "agent" && job.plan.sourceEndpoint === EDIT_SNAPSHOT_ENDPOINT) {
+      throw refusal("not_found", "Job not found");
+    }
     if (initiator && !ownedBy(initiator, job.plan.initiator)) throw refusal("forbidden", "Job belongs to another initiator");
     if (damaged(job)) throw refusal("invalid", "Stored job is damaged");
     return job;
@@ -490,7 +502,7 @@ export function createOperations(deps: {
   }
 
   async function startScan(input: RpcInput<"scan_start">, initiator: Initiator, signal: AbortSignal,
-    onStarted?: (id: string) => void) {
+    onStarted?: (id: string) => void, estimateScope?: "edit") {
     signal.throwIfAborted();
     const paths = input.kind === "search" ? [input.root]
       : input.kind === "checksum" ? [input.ref] : [input.left, input.right];
@@ -499,7 +511,7 @@ export function createOperations(deps: {
     await deps.ready();
     const remote = ids.some((id) => id.startsWith("sftp:"));
     const { estimateId, estimateOnly, ...scan } = input;
-    const request = JSON.stringify(scan);
+    const request = JSON.stringify(estimateScope ? { scope: estimateScope, scan } : scan);
     if (!estimateOnly && remote && !estimateId && input.kind === "search" && input.content) {
       throw new SearchConsentError();
     }
@@ -510,6 +522,8 @@ export function createOperations(deps: {
     await endpoints.prepare(ids, signal);
     const { planned, snapshot, work } = await prepareScan(input, signal);
     const bytes = planned.reduce((total, count) => total + count, 0n);
+    // S16: the checksum preflight only measures the prospective editor copy.
+    if (estimateScope === "edit") checkEditSize(bytes.toString());
     const snapshotDigest = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
     return serializeAccess(async () => {
       await checkScanRead(initiator, paths);
@@ -551,6 +565,26 @@ export function createOperations(deps: {
   }
 
   return {
+    // S16
+    async edit() {
+      await deps.ready();
+      if (!deps.edit) throw refusal("not_found", "Commander editor is unavailable");
+      return deps.edit;
+    },
+    async editEstimate({ ref }: RpcInput<"edit_estimate">, signal: AbortSignal) {
+      const quote = await startScan({ kind: "checksum", ref, estimateOnly: true }, owner, signal, undefined, "edit");
+      if (!("estimateId" in quote)) throw refusal("conflict", "Commander could not estimate the copy");
+      return { estimateId: quote.estimateId, endpoint: ref.endpoint, bytesPlanned: quote.bytesPlanned };
+    },
+    async editOpen(input: RpcInput<"edit_open">, signal: AbortSignal) {
+      return (await this.edit()).open(input, signal, (id, ref, entry) => {
+        const request = JSON.stringify({ scope: "edit", scan: { kind: "checksum", ref } });
+        const estimate = requireScanEstimate(id, owner, request);
+        scanEstimates.delete(id);
+        const actual = createHash("sha256").update(JSON.stringify([entry])).digest("hex");
+        if (estimate.snapshot !== actual) throw refusal("conflict", "Файл изменился — подтвердите новую оценку");
+      });
+    },
     async endpointsList(initiator: Initiator, signal: AbortSignal) {
       const endpointsList = await endpoints.list(signal);
       if (initiator.kind === "owner") return { endpoints: endpointsList };
@@ -696,6 +730,9 @@ export function createOperations(deps: {
         }
       }
       signal.throwIfAborted();
+      if (job.plan.sourceEndpoint === EDIT_SNAPSHOT_ENDPOINT) {
+        throw refusal("conflict", "Откройте сеанс правки, чтобы записать актуальную редакцию");
+      }
       const retry = await runner.retryJob(id, initiator, signal);
       signal.throwIfAborted();
       if (retry.plan) remember(retry.plan);
@@ -945,6 +982,17 @@ function changedRefusal(error: unknown): never {
 
 export function createRpcHandlers(ops: Operations): ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> {
   const handlers: ExperimentalPluginRpcHandlersWithContext<typeof rpcSchemas> = {
+    // S16: the wrapper below admits only owner clients for every editor method.
+    edit_estimate: (input, ctx) => ops.editEstimate(input, ctx.experimental_signal),
+    edit_open: (input, ctx) => ops.editOpen(input, ctx.experimental_signal),
+    edit_route: async (input, ctx) => (await ops.edit()).route(input, ctx.experimental_signal),
+    edit_get: async (input, ctx) => (await ops.edit()).get(input, ctx.experimental_signal),
+    edit_read: async (input, ctx) => (await ops.edit()).read(input, ctx.experimental_signal),
+    edit_save: async (input, ctx) => (await ops.edit()).save(input, ctx.experimental_signal),
+    edit_writeback: async (input, ctx) => (await ops.edit()).writeBack(input, ctx.experimental_signal),
+    edit_compare: async (input, ctx) => (await ops.edit()).compare(input, ctx.experimental_signal),
+    edit_dismiss: async (input, ctx) => (await ops.edit()).dismiss(input, ctx.experimental_signal),
+    edit_close: async (input, ctx) => (await ops.edit()).close(input, ctx.experimental_signal),
     endpoints_list: (_, ctx) => ops.endpointsList(owner, ctx.experimental_signal),
     endpoint_home: ({ endpoint }, ctx) => ops.home(endpoint, ctx.experimental_signal),
     dir_list: (input, ctx) => ops.list(input, owner, ctx.experimental_signal),

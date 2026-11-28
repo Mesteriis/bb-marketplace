@@ -1,3 +1,5 @@
+// S16: an editor snapshot is an immutable read-only source.
+import { EDIT_SNAPSHOT_ENDPOINT, type WriteBackRequest } from "./edit-session.ts";
 import { CommanderError, isCommanderError } from "./errors.ts";
 import { transition, type JobEvent } from "./job-machine.ts";
 import type { Checkpoint, JobStore } from "./job-store.ts";
@@ -29,7 +31,7 @@ export interface RunnerDeps {
   onEvent(e: { jobId: string; kind: "progress" | "state" | "conflict" }): void;
 }
 
-type SubmitOptions = { awaitsOwner: boolean; syncDeleteConflict?: ChangedItem };
+type SubmitOptions = { awaitsOwner: boolean; syncDeleteConflict?: ChangedItem; editWriteBack?: WriteBackRequest };
 type Patch = Parameters<JobStore["update"]>[1];
 type EventKind = Parameters<RunnerDeps["onEvent"]>[0]["kind"];
 type Decision = { conflict: Conflict; action: ConflictAction };
@@ -187,7 +189,7 @@ export class JobRunner {
       progress: { itemsDone: 0, itemsTotal: plan.items.length, bytesDone: "0", bytesTotal: plan.totalBytes },
       items: plan.items.map(() => ({ outcome: "pending", error: null })),
     });
-    await this.store.create(job);
+    await this.store.create(job, opts?.editWriteBack);
     this.deps.onEvent({ jobId: job.id, kind: pendingConflict ? "conflict" : "state" });
     if (!awaitsOwner && !pendingConflict) await this.start(job);
     return job;
@@ -1221,7 +1223,9 @@ export class JobRunner {
     const item = job.plan.items[index];
     const expanded = this.expandedDirectory(job, index, item.source && this.location(item.source));
     const allowedResolutions: ConflictAction[] = ["skip", "cancel"];
-    if (item.target && (!item.source || conflict.source)) {
+    // S16: an altered snapshot can only be skipped or cancelled.
+    const immutableSourceChanged = item.source?.endpoint === EDIT_SNAPSHOT_ENDPOINT && conflict.reason === "source_changed";
+    if (item.target && (!item.source || conflict.source) && !immutableSourceChanged) {
       if (!expanded) allowedResolutions.push("rename");
       if (conflict.reason !== "type_mismatch" && (job.plan.kind !== "rename" || conflict.target)) {
         allowedResolutions.push("overwrite");

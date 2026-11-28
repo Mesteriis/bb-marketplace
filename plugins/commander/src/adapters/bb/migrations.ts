@@ -1,3 +1,5 @@
+import { EDIT_MIGRATION } from "./edit-store.ts";
+
 // Append only. BB identifies each migration by its position and SQL hash.
 export const MIGRATIONS: string[] = [
   `
@@ -79,4 +81,6 @@ export const MIGRATIONS: string[] = [
       last_referenced_at TEXT NOT NULL
     );
   `,
+  // S16
+  EDIT_MIGRATION,
 ];

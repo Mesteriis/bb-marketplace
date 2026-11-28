@@ -1,3 +1,8 @@
+// S16
+import { EDIT_SNAPSHOT_ENDPOINT } from "./src/core/edit-session.ts";
+import { createEditHostClient } from "./src/adapters/bb/edit-host-client.ts";
+import { createEditOperations } from "./src/adapters/bb/edit-operations.ts";
+import { createEditStore } from "./src/adapters/bb/edit-store.ts";
 import { randomUUID } from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { createAgentGrants } from "./src/adapters/bb/agent-grants.ts";
@@ -19,7 +24,9 @@ export const rpcContract = defineRpcContract(rpcSchemas);
 export default function activate(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
-  const store = createSqliteJobStore(db);
+  // S16: recover durable edit sessions and receive queue receipts in the same database.
+  const editStore = createEditStore(db);
+  const store = createSqliteJobStore(db, editStore);
   const scanStore = createSqliteScanStore(db);
   const scans = new ScanRunner(randomUUID, scanStore);
   // S14: set below; null where the helper does not exist (anything but macOS arm64) or failed to prepare.
@@ -54,10 +61,22 @@ export default function activate(bb: BbPluginApi) {
       return changed;
     },
   };
-  const runner = new JobRunner({
+  // S16: the snapshot provider exists only inside the queue and editor.
+  const editHost = createEditHostClient(bb);
+  const editProvider = editHost.provider();
+  const queuePlanner = {
     ...planner,
+    provider: (endpoint: string) => endpoint === EDIT_SNAPSHOT_ENDPOINT ? editProvider : planner.provider(endpoint),
+  };
+  const editShutdown = new AbortController();
+  let editSweep: ReturnType<typeof setInterval> | undefined;
+  const sweepEdits = () => void edit.sweep(editShutdown.signal).catch(() => {
+    if (!disposed) bb.log.error("Commander edit cleanup failed");
+  });
+  const runner = new JobRunner({
+    ...queuePlanner,
     store: runnerStore,
-    revalidate: (plan, signal) => revalidate(plan, planner, signal),
+    revalidate: (plan, signal) => revalidate(plan, queuePlanner, signal),
     onEvent: ({ jobId, kind }) => {
       if (disposed) return;
       publish("job", jobId);
@@ -66,12 +85,20 @@ export default function activate(bb: BbPluginApi) {
         if (job && ["completed", "failed", "cancelled"].includes(job.state)) void archives?.registry.releaseForJob(job).catch(() => {});
         if (disposed || !job || !["completed", "failed", "cancelled", "unknown"].includes(job.state)) return;
         const { kind, sourceEndpoint, targetEndpoint } = job.plan;
+        // S16: release a writeback snapshot after its last queue reference.
+        if (sourceEndpoint === EDIT_SNAPSHOT_ENDPOINT) sweepEdits();
         const changed = new Set([targetEndpoint, kind === "copy" ? null : sourceEndpoint]);
         for (const id of changed) if (id !== null) publish("dir", id);
       }).catch(() => {});
     },
   });
 
+  // S16
+  const edit = createEditOperations({
+    host: editHost, store: editStore, jobs: store, planner: queuePlanner, prepare: endpoints.prepare,
+    submit: (plan, request) => runner.submit(plan, { awaitsOwner: false, editWriteBack: request }),
+    failure: () => { if (!disposed) bb.log.error("Commander edit cleanup failed"); },
+  });
   let recovery: "starting" | "ready" | "failed" = "starting";
   const ops = createOperations({
     endpoints, runner, store, planner, grants, kv, publish: (kind, id) => publish(kind, id),
@@ -79,6 +106,8 @@ export default function activate(bb: BbPluginApi) {
     get archives() {
       return archives ?? undefined;
     },
+    // S16
+    edit,
     isManaged: (id) => live.has(id),
     async ready() {
       if (recovery === "failed") throw refusal("conflict", "Commander recovery failed");
@@ -106,6 +135,10 @@ export default function activate(bb: BbPluginApi) {
         await runner.recover();
         if (signal.aborted || disposed) return;
         recovery = "ready";
+        // S16: cleanup never blocks recovery or the rest of Commander.
+        sweepEdits();
+        editSweep = setInterval(sweepEdits, 30_000);
+        editSweep.unref();
       } catch {
         if (signal.aborted || disposed) return;
         recovery = "failed";
@@ -119,6 +152,10 @@ export default function activate(bb: BbPluginApi) {
   });
   bb.onDispose(async () => {
     disposed = true;
+    // S16
+    clearInterval(editSweep);
+    editShutdown.abort();
+    await edit.shutdown();
     await scans.shutdown();
     await runner.shutdown();
     await archives?.dispose();

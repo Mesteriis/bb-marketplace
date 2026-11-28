@@ -56,6 +56,14 @@ beforeEach(() => {
         return {};
       case "endpoint_home": return { path: path("дом") };
       case "entry_stat": return entry("пример.txt");
+      // S16: the editor opens a host-worker copy, with an explicit opener.
+      case "edit_open": return {
+        sessionId: "65fb3d47-752e-48d8-b4c4-7112e2e4f460", base: { size: "16", mtimeNs: null },
+        opener: {
+          id: "commander-private-editor", hostId: "fixture",
+          path: "/worker/commander-edits/65fb3d47-752e-48d8-b4c4-7112e2e4f460/revision-0",
+        },
+      };
       case "job_decide": jobs = jobs.filter((job) => (job as OperationJob).id !== input.jobId); return {};
       case "endpoints_list": return { endpoints: [endpoint] };
       case "job_list": return { jobs };
@@ -83,6 +91,8 @@ function mount(thread = false) {
   const register = app as unknown as (api: unknown) => void;
   register({ slots: {
     navPanel: ({ component }: { component: ComponentType }) => { Page = component; },
+    // S16
+    fileOpener: () => {},
     experimental_tab: ({ component: Tab }: { component: ComponentType<{ threadId: string; environment: { id: string } }> }) => {
       if (thread) Page = () => <Tab threadId="проверка-треда" environment={{ id: "env-fixture" }} />;
     },
@@ -402,11 +412,21 @@ test("entering a directory places the cursor on the parent and file shortcuts fo
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(await leftFile());
   fireEvent.keyDown(grid(), { key: "F3" });
-  fireEvent.keyDown(grid(), { key: "F4" });
-  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledTimes(2);
+  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledTimes(1);
   expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledWith({
     target: { kind: "host", hostId: "fixture", path: "/данные/вложенный/пример.txt" }, location: null,
   });
+  // S16: F4 never invokes the default opener, even when the explicit opener is refused.
+  host.navigate.experimental_openFilePreview.mockClear().mockReturnValueOnce(false);
+  fireEvent.keyDown(grid(), { key: "F4" });
+  const fallback = await screen.findByRole("dialog", { name: "Редактор BB недоступен" });
+  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledTimes(1);
+  expect(host.navigate.experimental_openFilePreview).toHaveBeenCalledWith({
+    opener: "commander-private-editor", location: null,
+    target: { kind: "host", hostId: "fixture", path: "/worker/commander-edits/65fb3d47-752e-48d8-b4c4-7112e2e4f460/revision-0" },
+  });
+  expect(host.navigate.experimental_openFilePreview.mock.calls.filter(([request]) => !request.opener)).toHaveLength(0);
+  fireEvent.click(within(fallback).getByRole("button", { name: "Закрыть" }));
   fireEvent.keyDown(grid(), { key: "F6", shiftKey: true });
   expect(await screen.findByRole("dialog", { name: "Переименовать" })).toBeDefined();
 });
