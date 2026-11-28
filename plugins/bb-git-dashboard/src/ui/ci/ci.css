@@ -21,7 +21,7 @@
 .git-ws .git-ci-dispatch label.git-ci-check > input { order: -1; }
 .git-ws .git-ci-threads legend { padding: 0 4px; font-weight: 600; }
 .git-ws .git-ci-thread-list { display: grid; gap: 4px; max-height: 30vh; overflow: auto; }
-.git-ci-dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--background); color: var(--foreground); padding: 16px; width: min(460px, calc(100vw - 32px)); }
+.git-ci-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100dvh - 32px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--background); color: var(--foreground); padding: 16px; width: min(460px, calc(100vw - 32px)); }
 .git-ci-dialog::backdrop { background: rgb(0 0 0 / .35); }
 .git-ci-dialog h2 { margin: 0; font-size: 15px; }
 .git-ci-lines { margin: 0; padding-inline-start: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }

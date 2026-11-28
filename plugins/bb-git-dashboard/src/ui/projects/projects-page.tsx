@@ -5,6 +5,7 @@ import { isActive } from "../../core/ci/model.ts";
 import { reasonOf } from "../../core/overview/items.ts";
 import { copyRepositories, projectTable, projectViews, viewRows, type ProjectRow, type ProjectView, type TableCopy } from "../../core/projects/table.ts";
 import { repositoryKey } from "../../core/project-workspace.ts";
+import { homeRelative } from "../../core/short-path.ts";
 import type { Copy } from "../../core/workspace.ts";
 import { useLanguage, useT } from "../i18n/use-t.tsx";
 import type { OverviewData } from "../overview/overview-api.ts";
@@ -15,6 +16,7 @@ import "./projects.css";
 
 type T = ReturnType<typeof useT>;
 const bulkLimit = 50;
+const forgeNames: Record<string, string> = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "Azure DevOps"};
 const tones = {"ci-failed": "bad", conflict: "warn", changes: "warn", threads: "", ready: "good", "ci-running": ""} as Record<string, string>;
 
 /**
@@ -54,9 +56,16 @@ export function ProjectsPage({api, copies, categoryOf, hostName, title, ready, a
     const states = new Map((data?.input.copies ?? []).map(state => [state.copyId, state]));
     const repositories = copyRepositories(data?.input.runs ?? [], new Map(copies.map(copy => [copy.id, repositoryKey(copy)])));
     const input: TableCopy[] = copies.map(copy => ({copyId: copy.id, name: copy.repositoryName ?? copy.root.split(/[\\/]/).pop() ?? copy.root,
-      place: hostName(copy.hostId) + " · " + copy.root, repository: repositories.get(copy.id) ?? null, category: categoryOf(copy), state: states.get(copy.id) ?? null}));
+      place: hostName(copy.hostId) + " · " + homeRelative(copy.root), repository: repositories.get(copy.id) ?? null, category: categoryOf(copy), state: states.get(copy.id) ?? null}));
     return projectTable({copies: input, mine: data?.input.mine ?? [], runs: data?.input.runs ?? []});
   }, [data, copies, categoryOf, hostName]);
+  // The forge of each repository, and which repositories have more than one copy here: those rows say their machine and path.
+  const forges = useMemo(() => new Map((data?.input.runs ?? []).flatMap(entry => entry.forge ? [[entry.repository, entry.forge] as const] : [])), [data]);
+  const shared = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const row of table.rows) { const key = row.repository ?? row.name; seen.set(key, (seen.get(key) ?? 0) + 1); }
+    return new Set([...seen].filter(([, n]) => n > 1).map(([key]) => key));
+  }, [table]);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = viewRows(table.rows, view).filter(row => words.every(word =>
     [row.name, row.branch, row.upstream, row.repository, row.place].some(value => value?.toLowerCase().includes(word))));
@@ -108,7 +117,8 @@ export function ProjectsPage({api, copies, categoryOf, hostName, title, ready, a
     {adding}
     <div className="g-views git-projects-bar">
       <div role="tablist" aria-label={t("pj.views")} className="git-projects-tabs">
-        {projectViews.map(option => <button key={option} type="button" role="tab" aria-selected={view === option} tabIndex={view === option ? 0 : -1}
+        {projectViews.map(option => <button key={option} id={"git-projects-" + option} type="button" role="tab" aria-selected={view === option}
+          aria-controls="git-projects-panel" tabIndex={view === option ? 0 : -1}
           onClick={() => setView(option)} onKeyDown={event => {
             const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
             if (!step) return;
@@ -135,7 +145,7 @@ export function ProjectsPage({api, copies, categoryOf, hostName, title, ready, a
     {!copies.length ? <div className="g-state-page" role="status"><strong>{t("pj.empty")}</strong></div>
       : !data ? (error ? null : <p className="g-state-page" role="status">{t("common.loading")}</p>)
       : !shown.length ? <div className="g-state-page" role="status">{t("pj.none")}</div>
-      : <div className="git-projects-scroll">
+      : <div className="git-projects-scroll" role="tabpanel" id="git-projects-panel" aria-labelledby={"git-projects-" + view}>
         <table className="g-table two git-projects-table">
           <thead><tr>
             <th className="git-projects-pick"><input type="checkbox" aria-label={t("pj.select-all")} checked={all}
@@ -158,7 +168,8 @@ export function ProjectsPage({api, copies, categoryOf, hostName, title, ready, a
                   <Icon name={open ? "ChevronDown" : "ChevronRight"} small/>{name} <span className="g-num g-count">{rows.length}</span>
                 </button>
               </td></tr>
-              {open && rows.map(row => <Row key={row.copyId} row={row} t={t} now={data?.at ?? Date.now()} language={language}
+              {open && rows.map(row => <Row key={row.copyId} row={row} forge={row.repository ? forges.get(row.repository) ?? null : null}
+                shared={shared.has(row.repository ?? row.name)} t={t} now={data?.at ?? Date.now()} language={language}
                 picked={picked.has(row.copyId)} onPick={() => toggle(row.copyId, picked, setPicked)} api={api}/>)}
             </tbody>;
           })}
@@ -167,7 +178,9 @@ export function ProjectsPage({api, copies, categoryOf, hostName, title, ready, a
   </div>;
 }
 
-function Row({row, t, now, language, picked, onPick, api}: {row: ProjectRow; t: T; now: number; language: ReturnType<typeof useLanguage>["language"];
+function Row({row, forge, shared, t, now, language, picked, onPick, api}: {row: ProjectRow; forge: string | null;
+  /** Another copy of the same repository is listed: the row says its machine and path. */
+  shared: boolean; t: T; now: number; language: ReturnType<typeof useLanguage>["language"];
   picked: boolean; onPick(): void; api: ProjectsApi}) {
   const reason = row.pr ? reasonOf(row.pr) : null;
   const ci = row.ci;
@@ -177,7 +190,8 @@ function Row({row, t, now, language, picked, onPick, api}: {row: ProjectRow; t: 
   return <tr className={picked ? "sel" : undefined}>
     <td className="git-projects-pick"><input type="checkbox" aria-label={t("pj.select", {name: row.name})} checked={picked} onChange={onPick}/></td>
     <td><button type="button" className="git-projects-name" onClick={() => api.openCopy(row.copyId)}>{row.name}</button>
-      <div className="git-projects-repo" title={row.place}>{row.repository ? row.repository + " · " : ""}{row.place}</div></td>
+      <div className="git-projects-repo" title={row.place}>{[forge ? forgeNames[forge] ?? forge : null, row.repository, shared || !row.repository ? row.place : null]
+        .filter(Boolean).join(" · ")}</div></td>
     <td>{row.unreadable ? <span className="g-warn">{t("pj.unreadable")}</span>
       : <span className="g-branch" title={row.branch ?? undefined}>{row.branch ?? t("pj.detached")}</span>}</td>
     <td className="g-num">{row.files ? t("pj.files", {n: row.files}) : "—"}</td>

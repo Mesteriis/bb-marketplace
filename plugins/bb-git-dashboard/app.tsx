@@ -28,6 +28,7 @@ import { ConnectionsPage } from "./src/ui/connections-page.tsx";
 import { OverviewPage } from "./src/ui/overview/overview-page.tsx";
 import { useOverviewApi } from "./src/app/overview-data.tsx";
 import { ProjectsRoute, useCopyCategories } from "./src/app/projects-route.tsx";
+import { useCopyStates } from "./src/app/copy-states.tsx";
 import { useT } from "./src/ui/i18n/use-t.tsx";
 import { accountsChanged, onAccountsChanged, withInterface } from "./src/app/interface.tsx";
 import "./src/ui/system/tokens.css";
@@ -79,8 +80,8 @@ function useCatalog() {
     locations:locations.filter(location => !hidden.has(location.projectId)), loaded, error, reload};
 }
 
-function BoundWorktree({copy, client, host, attach, pin}: {
-  copy: Copy; client: Client; host?: string; attach?(path: string): Promise<void>; pin?(): void;
+function BoundWorktree({copy, client, host, attach, pin, openReview}: {
+  copy: Copy; client: Client; host?: string; attach?(path: string): Promise<void>; pin?(): void; openReview?(path: string): void;
 }) {
   const [revision, setRevision] = useState(0);
   const changed = useCallback(() => setRevision(value => value + 1), []);
@@ -91,10 +92,10 @@ function BoundWorktree({copy, client, host, attach, pin}: {
     return result.value;
   }, [client, copy.id]);
   const operations = useCallback(() => client.call("operations", {copyId:copy.id}), [client, copy.id]);
-  return <Worktree copy={copy} host={host ?? copy.hostId} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin}/>;
+  return <Worktree copy={copy} host={host ?? copy.hostId} run={run} refresh={revision} loadOperations={operations} attach={attach} pin={pin} openReview={openReview}/>;
 }
 
-function BoundHead({copy, client}: {copy: Copy; client: Client}) {
+function BoundHead({copy, client, onFiles}: {copy: Copy; client: Client; onFiles(count: number): void}) {
   const [revision, setRevision] = useState(0);
   const changed = useCallback(() => setRevision(value => value + 1), []);
   useRealtime(signal, changed);
@@ -103,7 +104,8 @@ function BoundHead({copy, client}: {copy: Copy; client: Client}) {
     if (!result.ok) return failed(result);
     return result.value;
   }, [client, copy.id]);
-  return <ProjectHead copy={copy} run={run} refresh={revision} onChanged={changed}/>;
+  const onState = useCallback((state: import("./src/core/git.ts").GitResult) => onFiles(state.files?.length ?? 0), [onFiles]);
+  return <ProjectHead copy={copy} run={run} refresh={revision} onChanged={changed} onState={onState}/>;
 }
 
 /** Open comment threads over every line review, for the Reviews count. */
@@ -135,6 +137,7 @@ function useAccountCount(client: Client) {
 
 function ProjectsSidebar({subPath}: {subPath:string}) {
   const {client,projects,projectCopies:copies,hiddenRepositories,hosts,hiddenProjects,reload,error,loaded} = useCatalog();
+  const states = useCopyStates(copies, signal);
   const navigate = useBbNavigate();
   const inbox = useInboxBadge();
   const reviews = useOpenReviews(client);
@@ -147,7 +150,7 @@ function ProjectsSidebar({subPath}: {subPath:string}) {
   }), [client, reload]);
   return <Sidebar subPath={subPath} open={path => navigate.toPluginPanel("git", path ? {subPath: path} : undefined)} projects={projects} copies={copies}
     hosts={hosts} hiddenRepositories={hiddenRepositories} hiddenProjects={hiddenProjects} loaded={loaded} error={error} api={api}
-    counts={{inbox: inbox?.count ?? null, reviews: reviews || null, connections: accounts}}/>;
+    counts={{inbox: inbox?.count ?? null, reviews: reviews || null, connections: accounts}} states={states}/>;
 }
 
 function Dashboard({subPath}: {subPath: string}) {
@@ -323,8 +326,9 @@ function Dashboard({subPath}: {subPath: string}) {
         const result = await client.call("attach",{hostId,root,projectId});
         return result.ok ? result.value : failed(result);
       }}
-      renderHead={copy => <BoundHead key={copy.id} copy={copy} client={client}/>}
+      renderHead={(copy,onFiles) => <BoundHead key={copy.id} copy={copy} client={client} onFiles={onFiles}/>}
       renderWorktree={(copy,host,attach) => <BoundWorktree key={copy.id} copy={copy} client={client} host={host} attach={attach}
+        openReview={path => open(copy.id + "/review/" + encodeURIComponent(path))}
         pin={() => panel.openTab({tab:{...tab,context:{kind:"nav-panel",panelId:"git"}},params:{copyId:copy.id},title:copy.repositoryName})}/> }/>}
   </div></div>;
 }

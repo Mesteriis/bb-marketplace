@@ -99,7 +99,7 @@ export function OverviewPage({api, initialView, ready, categories = new Map(), g
   const sources = failed.map(source => source === "copies" ? t("ov.src.copies", {n: data?.copiesFailed ?? 0}) : t(("ov.src." + source) as MessageKey)).join(", ");
 
   return <div className="g-page git-overview">
-    <PageHead title={t("section.overview")} sub={data ? t("ov.sub", {copies: data.copies, when: ago(language, now, new Date(data.at).toISOString())}) : undefined}
+    <PageHead title={t("section.overview")} sub={data ? t("ov.sub", {copies: chosen === null ? data.copies : [...categories.values()].filter(name => name === chosen).length, when: ago(language, now, new Date(data.at).toISOString())}) : undefined}
       actions={<>
         {names.length > 1 && <div className="g-seg" role="group" aria-label={t("ov.category")}>
           {[null, ...names].map(name => <button key={name ?? ""} type="button" aria-pressed={chosen === name} onClick={() => setCategory(name)}>

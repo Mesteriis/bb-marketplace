@@ -38,7 +38,7 @@ async function read(client: Client, copies: Copy[]): Promise<OverviewData> {
     const result = await client.call("ciOverview", {}).catch(() => null);
     if (!result?.ok) { failed.push("ci"); return []; }
     if (result.repositories.some(repository => repository.error)) failed.push("ci");
-    return result.repositories.map(({copyId, repository, runs}) => ({copyId, repository, runs}));
+    return result.repositories.map(({copyId, repository, runs, forge}) => ({copyId, repository, runs, forge}));
   };
   let copiesFailed = 0;
   const shown = copies.slice(0, copyLimit);

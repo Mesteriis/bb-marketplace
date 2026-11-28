@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { author, type GitAction, type GitResult } from "../../core/git.ts";
 import { gitRunner, type GitRun } from "./git-process.ts";
 import { mergeGit, type MergeAction } from "./merge-git.ts";
+import { branchFormat } from "../../core/merge/branches.ts";
 
 const mergeKinds = new Set<GitAction["kind"]>(["sequence", "mergePreview", "conflict", "merge", "rebase", "abort", "continue", "skip", "resolve", "take", "undo"]);
 
@@ -281,7 +282,7 @@ export async function localGit(path: string, action: GitAction, signal?: AbortSi
   switch (action.kind) {
     case "status": return status(git, root);
     case "history": return {root, text: (await git(["log", "-n", "75", "--format=%H %as %s", "--no-show-signature"], {codes: [0, 128]})).text};
-    case "branches": return {root, text: (await git(["for-each-ref", "--format=%(refname) %(objectname) %(worktreepath)", "refs/heads", "refs/remotes"])).text};
+    case "branches": return {root, text: (await git(["for-each-ref", "--format=" + branchFormat, "refs/heads", "refs/remotes"])).text};
     case "worktrees": return {root, worktrees: await listedWorktrees(git)};
     case "localOrigin": return {root, text: await localOrigin(git)};
     case "outgoing": {

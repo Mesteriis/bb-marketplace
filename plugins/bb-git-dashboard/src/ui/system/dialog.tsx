@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
 
 const focusable = "a[href], button:not([disabled]), input:not([disabled]):not([type='hidden']), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex='-1'])";
 
@@ -33,4 +33,21 @@ export function useModal(dialog: RefObject<HTMLDialogElement | null>, open = tru
       if (opener?.isConnected) opener.focus();
     };
   }, [dialog, open]);
+}
+
+/**
+ * The plugin's dialog: centred over the page with a 12px radius, a title, its body and its actions at the bottom right.
+ * Escape and the backdrop's cancel close it unless `busy`; the focus stays inside and goes back to the opener.
+ */
+export function Dialog({title, busy = false, onClose, actions, children}: {title: string; busy?: boolean; onClose(): void;
+  actions: ReactNode; children?: ReactNode}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const id = useId();
+  useModal(dialog);
+  return <dialog ref={dialog} className="g-dialog" aria-labelledby={id} onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
+    onClose={onClose}>
+    <h2 id={id}>{title}</h2>
+    <div className="g-dialog-body">{children}</div>
+    <div className="g-dialog-actions">{actions}</div>
+  </dialog>;
 }

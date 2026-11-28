@@ -42,7 +42,7 @@ try {
     check(theme + ": the copy's page opens on Code", await visible(page.getByRole("heading", { name: "delta", level: 1 }), 30000)
       && await sections.getByRole("tab", { name: "Code" }).getAttribute("aria-selected") === "true");
     if (theme === "light") {
-      check("the sections are six tabs", (await sections.getByRole("tab").allInnerTexts()).join("|") === "Code|History|Review|CI/CD|Issues|Variables",
+      check("the sections are six tabs", (await sections.getByRole("tab").allInnerTexts()).map(text => text.replace(/\s*\d+$/, "")).join("|") === "Code|History|Review|CI/CD|Issues|Variables",
         await sections.getByRole("tab").allInnerTexts());
       check("Code has Changes, Branches, Worktrees and Activity, without History", await views.getByRole("tab").count() === 4
         && await views.getByRole("tab", { name: /^History/ }).count() === 0);
@@ -56,7 +56,9 @@ try {
       await visible(page.getByRole("button", { name: "Push 1" }), 30000);
       await push.click();
       const dialog = page.getByRole("dialog", { name: "Push to origin?" });
-      check("Push asks in a dialog what it will push where", await visible(dialog) && await visible(dialog.getByText(/→ .*delta\.git · main/)));
+      check("Push asks in a dialog what it will push where", await visible(dialog) && await visible(dialog.getByText("origin/main")));
+      const box = await dialog.boundingBox();
+      check("the dialog stands in the middle of the window", !!box && Math.abs(box.x + box.width / 2 - 720) < 40 && Math.abs(box.y + box.height / 2 - 512) < 80, box);
       await page.screenshot({ path: out + "/project-push-light.png" });
       await page.keyboard.press("Escape");
       check("Escape closes the dialog and pushes nothing", await dialog.count() === 0 && originHead() === before && await visible(page.getByRole("heading", { name: "delta", level: 1 })));
@@ -65,15 +67,26 @@ try {
       await dialog.waitFor({ state: "detached", timeout: 30000 }).catch(() => {});
       check("Push in the dialog pushes the branch to its origin", originHead() === git("-C", repo, "rev-parse", "HEAD"), [originHead(), before]);
       for (const name of ["Branches", "Worktrees", "Activity"]) {
-        await views.getByRole("tab", { name }).click();
+        await views.getByRole("tab", { name: new RegExp("^" + name) }).click();
         await page.waitForTimeout(1200);
         await page.screenshot({ path: out + "/project-" + name.toLowerCase() + "-light.png" });
+        if (name === "Branches") {
+          check("the branches are a table with what each tracks and its last commit", await visible(page.getByRole("table", { name: "Branches" }).locator("tr[data-branch=\"main\"]").getByText("origin/main")));
+          await page.getByRole("button", { name: "+ Create branch" }).click();
+          const create = page.getByRole("dialog", { name: "Create a branch" });
+          check("Create branch asks in a dialog", await visible(create));
+          await page.screenshot({ path: out + "/project-create-branch-light.png" });
+          await page.keyboard.press("Escape");
+        }
       }
-      check("the Activity records the push", await visible(page.getByText(/^push · /), 15000));
+      check("the Activity says the push in words, with its result", await visible(page.locator(".git-activity-list li", { hasText: "Push" }).getByText("done"), 15000));
       // Russian.
       await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: "RU", exact: true }).click();
-      check("in Russian the tabs are Russian", await visible(page.getByRole("tablist", { name: "Разделы проекта" }).getByRole("tab", { name: "Код" }))
+      check("in Russian the tabs are Russian", await visible(page.getByRole("tablist", { name: "Разделы проекта" }).getByRole("tab", { name: /^Код/ }))
         && await visible(page.getByRole("tablist", { name: "Виды кода" }).getByRole("tab", { name: /^Изменения/ })));
+      await page.getByRole("tablist", { name: "Виды кода" }).getByRole("tab", { name: /^Изменения/ }).click();
+      await page.waitForTimeout(1000);
+      await page.screenshot({ path: out + "/project-code-ru-light.png" });
       await page.getByRole("navigation", { name: "Makosh Git" }).getByRole("button", { name: "EN", exact: true }).click();
       // Issues of a copy whose forge has them.
       await page.goto(url + "plugins/bb-git-dashboard/git/projects", { waitUntil: "load" });
@@ -85,10 +98,21 @@ try {
       await page.getByText("README.md").first().waitFor({ timeout: 30000 }).catch(() => {});
       await page.screenshot({ path: out + "/project-code-dark.png" });
       for (const name of ["Branches", "Worktrees", "Activity"]) {
-        await views.getByRole("tab", { name }).click();
+        await views.getByRole("tab", { name: new RegExp("^" + name) }).click();
         await page.waitForTimeout(1200);
         await page.screenshot({ path: out + "/project-" + name.toLowerCase() + "-dark.png" });
+        if (name === "Branches") {
+          await page.getByRole("button", { name: "+ Create branch" }).click();
+          await page.getByRole("dialog", { name: "Create a branch" }).waitFor({ timeout: 10000 }).catch(() => {});
+          await page.screenshot({ path: out + "/project-create-branch-dark.png" });
+          await page.keyboard.press("Escape");
+        }
       }
+      await views.getByRole("tab", { name: /^Changes/ }).click();
+      await page.getByRole("button", { name: /^Push/ }).click();
+      await page.getByRole("dialog", { name: "Push to origin?" }).waitFor({ timeout: 10000 }).catch(() => {});
+      await page.screenshot({ path: out + "/project-push-dark.png" });
+      await page.keyboard.press("Escape");
     }
     check(theme + ": no page errors", errors.length === 0, errors);
     await context.close();

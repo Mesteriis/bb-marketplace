@@ -1,14 +1,28 @@
 // The Branches list of a working copy, and the words of a merge or rebase preview. No I/O.
 
-export type BranchRow = {ref: string; name: string; remote: boolean; target: string; worktree: string | null};
+export type BranchRow = {ref: string; name: string; remote: boolean; target: string; worktree: string | null;
+  /** The branch's upstream (`origin/main`), how far it is ahead and behind it, and whether it is gone on the remote. */
+  upstream: string | null; ahead: number; behind: number; gone: boolean;
+  /** The last commit: its subject, author and committer date (ISO); null where the listing does not say. */
+  subject: string | null; author: string | null; date: string | null};
+/** The fields `branches` asks for-each-ref for, split by the unit separator (U+001F): one listing gives the whole table. */
+export const branchFormat = "%(refname)%1f%(objectname)%1f%(worktreepath)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(committerdate:iso-strict)%1f%(authorname)%1f%(subject)";
 export type MergePreview = {incoming: number; outgoing: number; conflicts: string[]; fastForward: boolean; upToDate: boolean};
 
-/** `for-each-ref --format=%(refname) %(objectname) %(worktreepath)` as rows; `refs/remotes/<remote>/HEAD` aliases are left out. */
+/** `for-each-ref --format=<branchFormat>` (or the older `%(refname) %(objectname) %(worktreepath)`) as rows; `refs/remotes/<remote>/HEAD` aliases are left out. */
 export function branchRows(text: string): BranchRow[] {
-  return text.split("\n").flatMap(line => {
-    const match = /^(refs\/(heads|remotes)\/(\S+)) ([0-9a-f]{40,64}) ?(.*)$/.exec(line);
+  return text.split("\n").flatMap((line): BranchRow[] => {
+    const fields = line.includes("\u001f") ? line.split("\u001f") : null;
+    const match = fields ? /^(refs\/(heads|remotes)\/(\S+))$/.exec(fields[0] ?? "") : /^(refs\/(heads|remotes)\/(\S+)) ([0-9a-f]{40,64}) ?(.*)$/.exec(line);
     if (!match || (match[2] === "remotes" && match[3]!.endsWith("/HEAD"))) return [];
-    return [{ref: match[1]!, name: match[3]!, remote: match[2] === "remotes", target: match[4]!, worktree: match[5] || null}];
+    const target = fields ? fields[1] ?? "" : match[4]!;
+    if (!/^[0-9a-f]{40,64}$/.test(target)) return [];
+    const track = fields?.[4] ?? "";
+    const count = (word: string) => Number(new RegExp(word + " (\\d+)").exec(track)?.[1] ?? 0);
+    const text = (value: string | undefined) => value ? value : null;
+    return [{ref: match[1]!, name: match[3]!, remote: match[2] === "remotes", target, worktree: text(fields ? fields[2] : match[5]),
+      upstream: text(fields?.[3]), ahead: count("ahead"), behind: count("behind"), gone: track === "gone",
+      date: text(fields?.[5]), author: text(fields?.[6]), subject: text(fields?.slice(7).join("\u001f"))}];
   });
 }
 

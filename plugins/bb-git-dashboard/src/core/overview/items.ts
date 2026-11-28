@@ -3,7 +3,8 @@ import type { InboxPr } from "../pulls/model.ts";
 
 /** What the overview knows of an attached copy, from git status without a fetch: its branch, upstream and distance to it. */
 export type CopyState = {copyId: string; name: string; branch: string | null; upstream: string | null; ahead: number; behind: number; files: number; at: string | null};
-export type RepositoryRuns = {copyId: string; repository: string; runs: Run[]};
+/** A repository's runs, read for one of its copies; `forge` is the kind of forge it is on, when known. */
+export type RepositoryRuns = {copyId: string; repository: string; runs: Run[]; forge?: string};
 export type OverviewInput = {
   /** My open pull requests (My PRs, Open). */
   mine: InboxPr[];

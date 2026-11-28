@@ -136,3 +136,15 @@
 @media (prefers-reduced-motion: no-preference) {
   .git-ws :is(.g-btn, .g-nav, .g-tree, .g-seg button, .g-tog, .g-tog::after) { transition: background-color .12s, color .12s, left .12s; }
 }
+
+/* Dialogs: centred over the page, radius 12px; title, body, actions at the bottom right. */
+.git-ws .g-dialog {
+  position: fixed; inset: 0; margin: auto; height: fit-content; max-height: calc(100dvh - 32px); overflow: auto;
+  width: min(480px, calc(100vw - 32px)); padding: 20px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--card); color: var(--foreground); box-shadow: 0 18px 60px oklch(from var(--background) 0.1 0 0 / 0.35);
+}
+.git-ws .g-dialog::backdrop { background: oklch(from var(--background) 0.1 0 0 / 0.45); }
+.git-ws .g-dialog h2 { margin: 0 0 12px; font-size: 15px; font-weight: 650; }
+.git-ws .g-dialog-body { display: grid; gap: 10px; }
+.git-ws .g-dialog-body label { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 12px; }
+.git-ws .g-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }

@@ -57,10 +57,10 @@ try {
     await entry.click({ timeout: 30000 });
     await page.getByRole("tablist", { name: "Code views" }).getByRole("tab", { name: "Branches" }).click({ timeout: 30000 });
   };
-  const branch = name => page.getByRole("list", { name: "Branches" }).getByRole("listitem").filter({ has: page.locator(".git-path", { hasText: new RegExp("^" + name + "$") }) });
+  const branch = name => page.getByRole("table", { name: "Branches" }).locator("tr[data-branch=\"" + name + "\"]");
 
   await open();
-  await branch("topic").getByRole("button", { name: "Merge into main" }).click();
+  await branch("topic").getByRole("button", { name: "Merge into current" }).click();
   check("the merge is previewed with what it brings and the file it will conflict in", await visible(dialog.getByText("Merge topic (1 commit) into main"))
     && await visible(dialog.getByText(/Expected conflicts in 1 file: merge\.txt\./)));
   check("nothing happened before Confirm", git("rev-parse", "HEAD").trim() === before && git("status", "--porcelain") === "");
@@ -90,7 +90,8 @@ try {
   writeFileSync(join(repo, "merge.txt"), "one\nmine\nthree\n");
   git("-c", "user.name=Author", "-c", "user.email=author@example.invalid", "commit", "-qam", "rebase work");
   await open();
-  await branch("main").getByRole("button", { name: "Rebase onto" }).click();
+  await branch("main").getByRole("button", { name: "More for main" }).click();
+  await branch("main").getByRole("button", { name: "Rebase onto…" }).click();
   check("the rebase is previewed", await visible(dialog.getByText(/^Rebase rebase-me \(1 commit\) onto main \(\d+ new commits\)$/))
     && await visible(dialog.getByText(/Likely conflicts in 1 file: merge\.txt\. The rebase stops/)), await dialog.innerText().catch(() => ""));
   await confirm();
@@ -114,7 +115,7 @@ try {
   git("switch", "-q", "main");
   const head = git("rev-parse", "HEAD").trim();
   await open();
-  await branch("stray").getByRole("button", { name: "Merge into main" }).click();
+  await branch("stray").getByRole("button", { name: "Merge into current" }).click();
   check("the second merge is previewed with its conflict", await visible(dialog.getByText(/Expected conflicts in 1 file: merge\.txt\./)), await dialog.innerText().catch(() => ""));
   await confirm();
   const stray = page.getByRole("region", { name: "Merge in progress" });

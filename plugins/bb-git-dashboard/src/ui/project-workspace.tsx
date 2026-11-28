@@ -27,7 +27,8 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
   reviewRevisions?:Record<string,number>;
   loaded:boolean; error:string; api:RepositoryApi & ConnectionApi;
   onOpen(path:string):void; onAttach(hostId:string,root:string,projectId?:string):Promise<Copy>;
-  renderHead(copy:Copy):ReactNode;
+  /** The copy's head; it reports the number of changed files for the Code tab. */
+  renderHead(copy:Copy, onFiles:(count:number)=>void):ReactNode;
   renderWorktree(copy:Copy,host:string,attach:(root:string)=>Promise<void>):ReactNode;
   onOpenIssue?(accountId:string,repo:string,number:number|"new"):void;
 }) {
@@ -40,6 +41,8 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
   const [accounts,setAccounts] = useState<Account[]>([]);
   const [accountError,setAccountError] = useState("");
   const [connecting,setConnecting] = useState(false);
+  const [files,setFiles] = useState<number|null>(null);
+  useEffect(() => { setFiles(null); }, [first]);
 
   useEffect(() => {
     let active = true;
@@ -55,18 +58,19 @@ export function ProjectWorkspace({copies,hosts,subPath,loaded,error,api,onOpen,o
   const forge = section !== "Code" && section !== "History" && section !== "Review";
 
   return <div className="g-page git-project">
-    {renderHead(copy)}
+    {renderHead(copy,setFiles)}
     <div className="g-views" role="tablist" aria-label={t("pg.sections")}>
-      {sections.map(item => <button key={item} type="button" role="tab" data-section={item} aria-selected={item === section} tabIndex={item === section ? 0 : -1}
+      {sections.map(item => <button key={item} id={"git-section-" + item} type="button" role="tab" data-section={item} aria-selected={item === section}
+        aria-controls="git-section-panel" tabIndex={item === section ? 0 : -1}
         onClick={() => openCopy(item)} onKeyDown={event => {
           const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
           if (!step) return;
           const next = sections[(sections.indexOf(item) + step + sections.length) % sections.length]!;
           openCopy(next);
           (event.currentTarget.parentElement?.querySelector("[data-section=\"" + next + "\"]") as HTMLElement | null)?.focus();
-        }}>{t(labels[item])}</button>)}
+        }}>{t(labels[item])}{item === "Code" && files ? <span className="g-num g-muted"> {files}</span> : null}</button>)}
     </div>
-    <main className="git-project-main">
+    <main className="git-project-main" role="tabpanel" id="git-section-panel" aria-labelledby={"git-section-" + section}>
       {accountError && forge && <p role="alert" className="git-panel-message git-error">{accountError}</p>}
       {error && <p className="git-panel-message git-error" role="alert">{error}</p>}
       {section === "Code" && renderWorktree(copy,hostName(copy.hostId),async root => {

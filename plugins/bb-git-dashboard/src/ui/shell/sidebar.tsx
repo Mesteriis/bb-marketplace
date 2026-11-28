@@ -17,9 +17,11 @@ export type SidebarApi = {
 export type SidebarCounts = Partial<Record<SectionId, number | null>>;
 
 /** The one navigation of the Git panel: search, sections, the projects folder tree, connections and the language. */
-export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositories, hiddenProjects, loaded, error, counts, api}: {
+export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositories, hiddenProjects, loaded, error, counts, api, states = new Map()}: {
   subPath: string; open(path: string): void; projects: Project[]; copies: Copy[]; hosts: Host[]; hiddenRepositories: string[];
   hiddenProjects: Project[]; loaded: boolean; error: string; counts: SidebarCounts; api: SidebarApi;
+  /** Each copy's local state (copy id → ahead, behind, changed files), for the tree's short state of a project. */
+  states?: Map<string, {ahead: number; behind: number; files: number}>;
 }) {
   const t = useT();
   const {language, choose} = useLanguage();
@@ -120,6 +122,7 @@ export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositor
             <div className="g-tree-row">
               <button className="g-tree" style={{paddingLeft: 26 + depth * 14}} title={group.name} aria-current={here ? "location" : undefined} onClick={() => open(path)}>
                 <span className="g-ell">{group.name}</span>
+                <ProjectState t={t} copies={group.repositories.flatMap(repo => repo.copies.map(copy => states.get(copy.id)))}/>
               </button>
               <button className="g-btn ghost sm g-tree-more" disabled={busy} aria-label={t("shell.manage", {name: group.name})} aria-expanded={manage === group.id}
                 onClick={() => { setManage(manage === group.id ? null : group.id); setConfirm(null); setNotice(""); }}>
@@ -174,4 +177,15 @@ export function Sidebar({subPath, open, projects, copies, hosts, hiddenRepositor
       </div>
     </div>
   </nav>;
+}
+
+/** A project's short state in the tree: commits to push and to pull, and changed files, over its copies. */
+function ProjectState({t, copies}: {t: ReturnType<typeof useT>; copies: ({ahead: number; behind: number; files: number} | undefined)[]}) {
+  const known = copies.filter(item => item !== undefined);
+  if (!known.length) return null;
+  const sum = (key: "ahead" | "behind" | "files") => known.reduce((total, item) => total + item[key], 0);
+  const ahead = sum("ahead"), behind = sum("behind"), files = sum("files");
+  const parts = [ahead ? "↑" + ahead : "", behind ? "↓" + behind : ""].filter(Boolean).join(" ");
+  if (!parts && !files) return null;
+  return <span className="g-state" title={t("shell.state", {ahead, behind, files})}>{[parts, files ? String(files) : ""].filter(Boolean).join(" · ")}</span>;
 }
