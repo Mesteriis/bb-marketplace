@@ -163,6 +163,8 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
     let active = true;
     const snapshot = JSON.parse(key) as ResourceRef;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // The error of THIS attempt blocks only this attempt's queued batch; a later attempt at the same directory starts clean.
+    let failed = false;
     const read = async () => {
       const entries: Entry[] = [];
       const cursors = new Set<string>();
@@ -175,9 +177,9 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
         clearTimeout(timer);
         timer = undefined;
         pending = 0;
-        if (!active) return;
+        if (!active || failed) return;
         const partial = entries.slice();
-        setView((previous) => previous?.key === key && (previous.directory.error || (!previous.directory.partial && !previous.directory.loading))
+        setView((previous) => previous?.key === key && (!previous.directory.partial && !previous.directory.loading && !previous.directory.error)
           ? previous : { key, directory: { entries: partial, loading: false, partial: true, error: null } });
       };
       let shown = false;
@@ -196,6 +198,7 @@ function useDirectory(rpc: Rpc, ref: ResourceRef | undefined, revision: number):
           else timer ??= setTimeout(show, SHOW_MS);
         }
       } while (cursor !== null);
+      failed = true;
       clearTimeout(timer);
       if (active) setView({ key, directory: { entries, loading: false, error: null } });
     };

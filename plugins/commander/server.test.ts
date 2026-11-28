@@ -470,12 +470,18 @@ for (const [label, message] of [
   });
 }
 
+const FIRST_OPEN_REFUSALS = [
+  ["agent_unavailable", "auth_failed", "Вход отклонён"], ["keychain_locked", "auth_failed", "Вход отклонён"],
+  ["keychain_unavailable", "auth_failed", "Вход отклонён"], ["keychain_needs_approval", "auth_failed", "Вход отклонён"],
+  ["credential_missing", "auth_failed", "Вход отклонён"], ["auth_failed", "auth_failed", "Вход отклонён"],
+  ["profile_needs_config", "unsupported", null],
+] as const;
 for (const refusalAs of ["sdk", "http"] as const) {
-  test(`reports an unreachable Keychain at the first open as a final sign-in failure, without Keychain text (refusal as ${refusalAs})`, async () => {
+  test.each(FIRST_OPEN_REFUSALS)(`reports %s at the first open as the provider does, without Keychain text (refusal as ${refusalAs})`, async (refusal, expected, line) => {
     const fixture = remoteFixture({ refusalAs });
     const bb = await backend(undefined, async (args) => {
       if (args.method === "hub_sftp_open") {
-        const message = "keychain_unavailable: Keychain item commander-secret could not be read";
+        const message = refusal + ": Keychain item commander-secret could not be read";
         if (refusalAs === "http") throw new BbHttpErrorLike(409, "conflict", message);
         throw new experimental_PluginRpcCallError({ code: "conflict", message });
       }
@@ -483,12 +489,12 @@ for (const refusalAs of ["sdk", "http"] as const) {
     });
     try {
       const failure = await bb.rpc("endpoint_home", { endpoint: fixture.endpoint }).then(() => null, (error: unknown) => error);
-      expect(failure).toMatchObject({
-        message: '{"code":"auth_failed","message":"Sign-in to the SFTP server failed","retryable":false}',
-      });
+      const shape = JSON.parse((failure as Error).message) as { code: string; retryable: boolean };
+      expect(shape.code).toBe(expected);
+      expect(shape.retryable).toBe(false);
       expect(String((failure as Error).message)).not.toMatch(/keychain|commander-secret/i);
-      // What the panel shows for exactly this error.
-      expect(problemOf(failure)).toEqual({ code: "auth_failed", message: "Вход отклонён" });
+      expect(problemOf(failure).code).toBe(expected);
+      if (line !== null) expect(problemOf(failure).message).toBe(line);
     } finally { await bb.dispose(); }
   });
 }

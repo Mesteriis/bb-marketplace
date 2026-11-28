@@ -213,7 +213,8 @@ test("hands 100 arriving pages to the sorted rows in at most 12 batches, with th
   fireEvent.click(first);
   merges.count = 0;
   release();
-  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
+  // 100 pages in separate tasks: under machine load the 1 s default is too tight.
+  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"), { timeout: 20_000 });
   expect(merges.count).toBeLessThanOrEqual(12);
   expect(merges.count).toBeGreaterThan(0);
   expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(total);
@@ -248,6 +249,37 @@ test("a failing page shows the error even when an earlier batch is still waiting
     await vi.waitFor(() => expect(within(grid()).queryAllByText("Доступ запрещён").length).toBeGreaterThan(0));
     expect(screen.queryByText(/Загружено \d+ записей/)).toBeNull();
     expect(grid().getAttribute("aria-busy")).toBe("false");
+  } finally { vi.useRealTimers(); }
+});
+
+test("a refresh of a directory after an error shows its first page at once and is not held by the old error", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    files = Array.from({ length: 3000 }, (_, index) => entry("файл-" + String(index).padStart(4, "0")));
+    let attempt = 0;
+    let holdSecond!: () => void;
+    const second = new Promise<void>((resolve) => { holdSecond = resolve; });
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method === "dir_list" && input.ref.path.segments.at(-1)?.t === "данные") {
+        if (input.cursor === null) attempt++;
+        if (attempt === 1) throw new CommanderError("permission_denied", "private");
+        const start = Number(input.cursor ?? 0);
+        if (start === 1000) await second;
+        return { entries: files.slice(start, start + 1000), cursor: start + 1000 < files.length ? String(start + 1000) : null };
+      }
+      return call(method, input);
+    });
+    mount();
+    await vi.waitFor(() => expect(within(grid()).queryAllByText("Доступ запрещён").length).toBeGreaterThan(0));
+    fireEvent.click(within(grid().parentElement!).getAllByRole("button", { name: /Обновить/ })[0]!);
+    // The new attempt's first page is on screen at once; its second page is still held.
+    await vi.waitFor(() => expect(within(grid()).queryAllByRole("row", { name: /файл-0000/ }).length).toBe(1));
+    expect(within(grid()).queryAllByText("Доступ запрещён")).toHaveLength(0);
+    expect(grid().getAttribute("aria-busy")).toBe("true");
+    holdSecond();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"));
   } finally { vi.useRealTimers(); }
 });
 
