@@ -53,8 +53,12 @@ async function working(git: GitRun, hasHead: boolean) {
   ]);
   // `diff HEAD` does not see untracked files: each is counted against /dev/null, as its patch is shown ("2\t0\t\0/dev/null\0path\0").
   const untracked = status.text.split("\0").filter(record => record.startsWith("?? ")).map(record => record.slice(3)).slice(0, untrackedCounted);
-  const extra = await Promise.all(untracked.map(path => git(["diff", "--no-index", "--numstat", "-z", ...diffFlags, "--", "/dev/null", path], {codes: [0, 1]})
-    .then(answer => { const [numbers = ""] = answer.text.split("\0"); return numbers + path + "\0"; }, () => "")));
+  // Eight git calls at a time; a file git could not read gets no counts (shown without them, not as binary).
+  const extra: string[] = [];
+  for (let start = 0; start < untracked.length; start += 8) {
+    extra.push(...await Promise.all(untracked.slice(start, start + 8).map(path => git(["diff", "--no-index", "--numstat", "-z", ...diffFlags, "--", "/dev/null", path], {codes: [0, 1]})
+      .then(answer => { const [numbers = ""] = answer.text.split("\0"); return numbers + path + "\0"; }, () => ""))));
+  }
   return {status: status.text, files: workingChanges(status.text, counts.text + extra.join(""))};
 }
 

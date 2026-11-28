@@ -35,7 +35,7 @@ test("an untracked file is counted by its lines like a changed one; only a binar
     writeFileSync(join(root, "logo.bin"), Buffer.from([0, 1, 2, 0]));
     const page = await historyPage(root, 0, 50);
     assert.deepEqual(page.uncommitted, [
-      {path: "logo.bin", status: "added", additions: null, deletions: null},
+      {path: "logo.bin", status: "added", additions: null, deletions: null, binary: true},
       {path: "note.txt", status: "added", additions: 3, deletions: 0},
     ]);
   } finally { done(); }

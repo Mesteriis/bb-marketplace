@@ -55,13 +55,30 @@ function fakePanel(tabs: {key: string; id: string; params: unknown}[], accepts =
   return {panel, calls};
 }
 
-test("Unpin closes the tab with these params and says false when it is no longer open", () => {
+test("Unpin closes the tab with these params, and tells a tab no longer open from one the panel kept", () => {
   const {panel, calls} = fakePanel([{key: "k1", id: "git-pinned", params: {copyId: "c1"}}, {key: "k2", id: "git-pinned", params: {copyId: "c2"}}]);
-  assert.equal(unpinTab(panel, {id: "git-pinned"}, {copyId: "c2"}), true);
+  assert.equal(unpinTab(panel, {id: "git-pinned"}, {copyId: "c2"}), "closed");
   assert.deepEqual(calls, ["close k2"]);
-  assert.equal(unpinTab(panel, {id: "git-pinned"}, {copyId: "c3"}), false);
-  assert.equal(unpinTab(panel, {id: "git-pinned-pr"}, {copyId: "c1"}), false);
+  assert.equal(unpinTab(panel, {id: "git-pinned"}, {copyId: "c3"}), "missing");
+  assert.equal(unpinTab(panel, {id: "git-pinned-pr"}, {copyId: "c1"}), "missing");
   assert.deepEqual(calls, ["close k2"]);
+  const keeping = {...panel, closeTab: () => false};
+  assert.equal(unpinTab(keeping, {id: "git-pinned"}, {copyId: "c1"}), "refused");
+});
+
+test("Pin pressed twice while an old pin's path is read gives one answer and one tab", async () => {
+  const tabs: {key: string; id: string; params: unknown}[] = [{key: "p2", id: "git-pinned-pr", params: {accountId: "acc_1", repoId: "991", number: 7}}];
+  const {panel, calls} = fakePanel(tabs);
+  let release: (path: string) => void = () => {};
+  const path = new Promise<string>(resolve => { release = resolve; });
+  let asked = 0;
+  const lookup = async () => { asked++; return path; };
+  const first = pinPullTab(panel, {id: "git-pinned-pr"}, {accountId: "acc_1", repo: "team/app", number: 7}, "app #7", lookup);
+  const second = pinPullTab(panel, {id: "git-pinned-pr"}, {accountId: "acc_1", repo: "Team/App", number: 7}, "app #7", lookup);
+  release("team/app");
+  assert.deepEqual(await Promise.all([first, second]), ["selected", "selected"]);
+  assert.equal(asked, 1);
+  assert.deepEqual(calls, ["select p2"]);
 });
 
 test("pinning a pull request already pinned selects its tab — a pin of 0.14.6 by its repository id too", async () => {

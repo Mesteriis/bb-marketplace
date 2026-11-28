@@ -65,7 +65,7 @@ export function ChangeView({api, copyId, hash, uncommitted}: {api: HistoryApi; c
       return <li key={file.path}><button type="button" aria-current={file.path === path ? "true" : undefined} onClick={() => setPath(file.path)}>
         <span className="git-history-status" data-status={file.status} title={file.status}>{letters[file.status]}</span>
         <span className="git-history-path"><span className="g-muted">{file.path.slice(0, slash + 1)}</span>{file.path.slice(slash + 1)}</span>
-        {file.additions === null ? <span className="g-muted">{t("hs.binary")}</span> : <span className="g-num">
+        {file.binary ? <span className="g-muted">{t("hs.binary")}</span> : file.additions === null ? null : <span className="g-num">
           {file.additions > 0 && <span className="g-good">+{file.additions}</span>} {file.deletions! > 0 && <span className="g-bad">−{file.deletions}</span>}</span>}
       </button></li>;
     })}</ul>}

@@ -215,13 +215,15 @@ export function remoteService(bb: BbPluginApi, loadCopy: (id:string) => Promise<
       const lines = [selected.kind + " · " + selected.origin + " · " + selected.label + " (" + selected.username + ")",repo.path + " · " + repo.clone];
       let base: string | null | undefined;
       let snapshot: {branch:string;head:string} | undefined;
-      if (action.kind === "clone") lines.push(action.hostId + " · " + action.destination);
+      // The machine by its name, as the owner knows it; the id only if BB no longer lists it.
+      const machine = async (hostId:string) => (await Promise.resolve().then(() => bb.sdk.hosts.list()).catch(() => [])).find(row => row.id === hostId)?.name ?? hostId;
+      if (action.kind === "clone") lines.push(await machine(action.hostId) + " · " + action.destination);
       else if (action.kind === "fetch" || action.kind === "push") {
         const copy = await loadCopy(action.copyId);
         if (!copy) throw new Error("NOT_FOUND");
         const result = await host.call("git",{root:copy.root,identity:copy.identity,action:{kind:"status"}},{hostId:copy.hostId}).catch(() => { throw new Error("HOST_UNAVAILABLE"); });
         if (!result.ok) throw new Error(result.code);
-        lines.push(copy.hostId + " · " + copy.root + " · " + (result.value.branch ?? "Detached HEAD"));
+        lines.push(await machine(copy.hostId) + " · " + copy.root + " · " + (result.value.branch ?? "Detached HEAD"));
         if (action.kind === "push") {
           if (repo.canPush === false) throw new Error("PROVIDER_DENIED");
           if (!result.value.branch || !result.value.head) throw new Error("STALE_HEAD");

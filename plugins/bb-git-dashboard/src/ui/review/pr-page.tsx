@@ -29,7 +29,7 @@ const forgeNames = {github: "GitHub", gitlab: "GitLab", gitea: "Gitea", azure: "
 /** A pull request: its head (path, place in the list, title and state, the branches), then Overview, Checks, Files, Commits and Comments. */
 export function PrPage({api, accountId, repo, number, onStep, position, revision = 0, onList, onPin}: {api: ReviewApi; accountId: string; repo: string; number: number; onStep?(step: -1 | 1): void;
   /** Pins this pull request as its own tab beside the thread. */
-  onPin?(): Promise<void> | void;
+  onPin?(): Promise<"opened" | "selected">;
   /** Where this pull request is in the My PRs list it was opened from (0-based); absent when opened from elsewhere. */
   position?: {index: number; total: number};
   /** Changes when an agent's answer may have arrived: the drafts are read again. */

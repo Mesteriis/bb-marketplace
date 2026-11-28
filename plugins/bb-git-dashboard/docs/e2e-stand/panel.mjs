@@ -100,8 +100,9 @@ try {
     const newRow = panel.locator(".git-history-files li", { hasText: "panel-note.txt" });
     const rowText = await visible(newRow, 20000) ? await newRow.innerText() : "";
     check(tag + ": History counts the new file's line, +1, and does not call it binary", /\+1/.test(rowText) && !rowText.includes(w.binary), rowText);
-    const sums = await panel.locator(".git-history-change, .git-history-detail").first().innerText().catch(() => "");
-    check(tag + ": the uncommitted changes add up to +1 −0", /\+1\s*−0/.test(sums), sums.slice(0, 200));
+    // Earlier probes leave other changes in this copy: the sum counts them too, so it is checked to have counts, and no binary.
+    const sums = await panel.locator(".git-history-change").first().innerText().catch(() => "");
+    check(tag + ": the uncommitted changes are summed in lines (+N −M), nothing binary", /\+\d+\s*−\d+/.test(sums) && !sums.includes(w.binary), sums.slice(0, 200));
     await newRow.click();
     await shot("panel-history-new-file");
     await panel.getByRole("button", { name: w.back }).click();
@@ -111,7 +112,7 @@ try {
     const chosen = panel.locator(".git-changes-name[aria-current]");
     check(tag + ": a file chosen in the summary opens Code with that file shown", await visible(chosen, 20000) && (await chosen.innerText()).includes("panel-note.txt"),
       await chosen.allInnerTexts());
-    const added = panel.locator(".git-changes-line[data-type='+']").first();
+    const added = panel.locator(".git-changes-line[data-type='+']", { hasText: "a line for the panel" }).first();
     const numbered = await visible(added, 20000) ? await added.evaluate(row => [row.children[1]?.textContent ?? "", row.children[2]?.textContent ?? ""]) : null;
     check(tag + ": the new file is a numbered diff: one added line, No. 1", numbered?.[0] === "1" && /a line for the panel/.test(numbered?.[1] ?? ""), numbered);
     // The hunk's own @@ line belongs to the numbered diff; git's file header lines are the raw patch.
@@ -135,7 +136,7 @@ try {
     await page.locator(".git-projects-table").getByText("beta", { exact: true }).first().click({ timeout: 30000 });
     // The copy's page: Changes with the new file as a numbered diff, the place named by machine, never its id.
     await page.locator(".git-changes-name", { hasText: "panel-note.txt" }).first().click({ timeout: 30000 });
-    const pageAdded = page.locator(".git-codeview .git-changes-line[data-type='+']").first();
+    const pageAdded = page.locator(".git-codeview .git-changes-line[data-type='+']", { hasText: "a line for the panel" }).first();
     const pageNumbered = await visible(pageAdded, 20000) ? await pageAdded.evaluate(row => [row.children[1]?.textContent ?? "", row.children[2]?.textContent ?? ""]) : null;
     check(tag + ": the copy's Changes shows the new file as a numbered diff", pageNumbered?.[0] === "1" && /a line for the panel/.test(pageNumbered?.[1] ?? ""), pageNumbered);
     check(tag + ": the copy's place names no host id", !/host_/.test(await page.locator(".git-code-place").first().getAttribute("title").catch(() => "") ?? ""));

@@ -55,10 +55,11 @@ function readOpenPulls(client: Client, fresh: boolean) {
 function UnpinButton({tab, params}: {tab: {id: string}; params: JsonValue | null}) {
   const t = useT();
   const panel = experimental_useAppPanel();
-  const [missing, setMissing] = useState(false);
+  const [result, setResult] = useState<ReturnType<typeof unpinTab> | null>(null);
   return <>
-    <button type="button" className="g-btn ghost sm" onClick={() => setMissing(!unpinTab(panel, tab, params))}>{t("gp.unpin")}</button>
-    {missing && <span className="g-warn" role="alert">{t("gp.unpin-missing")}</span>}
+    <button type="button" className="g-btn ghost sm" onClick={() => setResult(unpinTab(panel, tab, params))}>{t("gp.unpin")}</button>
+    {result === "missing" && <span className="g-warn" role="alert">{t("gp.unpin-missing")}</span>}
+    {result === "refused" && <span className="g-warn" role="alert">{t("gp.unpin-failed")}</span>}
   </>;
 }
 

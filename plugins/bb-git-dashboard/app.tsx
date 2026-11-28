@@ -246,8 +246,8 @@ function Dashboard({subPath}: {subPath: string}) {
       return <>
         {ref.kind === "pr" && typeof ref.number === "number"
           ? <PrPage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number} onStep={order.length ? step : undefined} position={index < 0 ? undefined : {index,total:order.length}} revision={reviewRevisions.byCopy["forge:" + ref.accountId] ?? 0} onList={() => open("inbox")}
-            onPin={async () => { await pinPullTab(panel, pullTab, {accountId: ref.accountId, repo: ref.repo, number: ref.number as number}, ref.repo.split("/").pop() + " #" + ref.number,
-              (accountId, repoId) => repositoryPath(client, accountId, repoId)); }}/>
+            onPin={() => pinPullTab(panel, pullTab, {accountId: ref.accountId, repo: ref.repo, number: ref.number as number}, ref.repo.split("/").pop() + " #" + ref.number,
+              (accountId, repoId) => repositoryPath(client, accountId, repoId))}/>
           : <IssuePage key={subPath} api={review} accountId={ref.accountId} repo={ref.repo} number={ref.number}
             onCreated={number => open(refPath("issue",{accountId:ref.accountId,repo:ref.repo,number}))}/>}
       </>;

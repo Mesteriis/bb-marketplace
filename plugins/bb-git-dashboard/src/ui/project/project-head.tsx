@@ -10,6 +10,11 @@ import "./project.css";
 
 type RunGit = (action: GitAction) => Promise<GitResult>;
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
+/** A new pull request's base: the branch the upstream tracks when it is another one (feature → origin/develop), else main. */
+const baseOf = (upstream: string | undefined | null, branch: string) => {
+  const name = upstream?.replace(/^[^/]+\//, "");
+  return name && name !== branch ? name : "main";
+};
 
 /**
  * The head of a copy's page: its name, branch and sync, and Fetch, Pull and Push — Push asks first, in a dialog.
@@ -31,6 +36,13 @@ export function ProjectHead({copy, run, refresh, onChanged, onState, sync}: {cop
   const [account, setAccount] = useState<{title: string; preview: Preview} | null>(null);
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState("");
+  // Create pull request shows only for a copy linked to an account repository.
+  const [linked, setLinked] = useState(false);
+  useEffect(() => {
+    let active = true;
+    if (sync) sync.target().then(target => { if (active) setLinked(target !== null); }, () => { if (active) setLinked(false); });
+    return () => { active = false; };
+  }, [sync, refresh]);
   useEffect(() => {
     let active = true;
     run({kind: "status"}).then(value => { if (active) { setState(value); onState?.(value); } }, cause => { if (active) setError(message(cause)); });
@@ -80,7 +92,7 @@ export function ProjectHead({copy, run, refresh, onChanged, onState, sync}: {cop
           : <>↑{ahead} <span className={behind ? "g-warn" : undefined}>↓{behind}</span></>}</span>
     </> : <span className="g-muted" role="status">{t("pg.reading")}</span>}
     <div className="g-actions">
-      {sync && <button type="button" className="g-btn ghost" disabled={pending || !state?.head || !state.branch} onClick={() => { setError(""); setNotice(""); setCreating(true); }}>
+      {sync && linked && <button type="button" className="g-btn ghost" disabled={pending || !state?.head || !state.branch} onClick={() => { setError(""); setNotice(""); setCreating(true); }}>
         <Icon name="GitPullRequest" small/>{t("pg.create-pr")}</button>}
       <button type="button" className="g-btn" disabled={pending || !state} onClick={() => void fetch()}>
         <Icon name="RotateCcw" small/>{t("pg.fetch")}</button>
@@ -91,11 +103,12 @@ export function ProjectHead({copy, run, refresh, onChanged, onState, sync}: {cop
     </div>
     {error && <p className="git-project-head-error g-bad" role="alert">{error}</p>}
     {notice && <p className="git-project-head-error g-good" role="status">{notice}</p>}
-    {creating && sync && state?.head && state.branch && <CreatePullDialog branch={state.branch} head={state.head} sync={sync} onClose={() => setCreating(false)}
+    {creating && sync && state?.head && state.branch && <CreatePullDialog branch={state.branch} head={state.head} base={baseOf(state.upstream, state.branch)} sync={sync} onClose={() => setCreating(false)}
       onPrepared={preview => { setCreating(false); setAccount({title: t("pg.create-pr"), preview}); }}/>}
     {account && sync && <AccountConfirm title={account.title} preview={account.preview} sync={sync} onClose={() => setAccount(null)} onDone={outcome => {
       setAccount(null);
-      setNotice(outcome.kind === "pull" && outcome.pullNumber ? t("pg.pr-created", {n: outcome.pullNumber})
+      setNotice(outcome.status === "unknown" ? t("pg.account-unknown")
+        : outcome.kind === "pull" ? (outcome.pullNumber ? t("pg.pr-created", {n: outcome.pullNumber}) : t("pg.pr-created-unnumbered"))
         : outcome.status === "accepted" ? t("pg.account-accepted") : t(outcome.kind === "fetch" ? "pg.account-fetched" : "pg.account-pushed"));
       onChanged();
     }}/>}

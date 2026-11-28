@@ -11,6 +11,8 @@ export const fileChange = z.object({
   path: z.string(),
   status: z.enum(["added", "conflicted", "copied", "deleted", "modified", "renamed", "type-changed", "unknown"]),
   additions: z.number().int().nonnegative().nullable(), deletions: z.number().int().nonnegative().nullable(),
+  /** Git counted no lines because the file is binary ("-" in numstat); absent when counted, or when it was not counted at all. */
+  binary: z.literal(true).optional(),
 });
 export type FileChange = z.infer<typeof fileChange>;
 export const historyPage = z.object({

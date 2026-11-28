@@ -87,18 +87,18 @@ export function fileChanges(nameStatus: string, numstat: string): FileChange[] {
     if (!path) { path = records[index + 2] ?? ""; index += 2; }
     if (!path) continue;
     const count = (value: string) => /^\d+$/.test(value) ? Number(value) : null;
-    files.push({path, status: statuses.get(path) ?? "unknown", additions: count(added), deletions: count(deleted)});
+    files.push({path, status: statuses.get(path) ?? "unknown", additions: count(added), deletions: count(deleted), ...(added === "-" ? {binary: true as const} : {})});
   }
   return files;
 }
 
 /** `status --porcelain=v1 -z` joined with `diff --numstat -z HEAD`. */
 export function workingChanges(status: string, numstat: string): FileChange[] {
-  const counts = new Map<string, [number | null, number | null]>();
+  const counts = new Map<string, [number | null, number | null, boolean]>();
   for (const record of numstat.split("\0")) {
     const [added, deleted, ...rest] = record.split("\t");
     const path = rest.join("\t");
-    if (path) counts.set(path, [/^\d+$/.test(added) ? Number(added) : null, /^\d+$/.test(deleted) ? Number(deleted) : null]);
+    if (path) counts.set(path, [/^\d+$/.test(added) ? Number(added) : null, /^\d+$/.test(deleted) ? Number(deleted) : null, added === "-"]);
   }
   const files: FileChange[] = [];
   const records = status.split("\0");
@@ -110,8 +110,9 @@ export function workingChanges(status: string, numstat: string): FileChange[] {
     const state: FileChange["status"] = code.includes("U") || code === "AA" || code === "DD" ? "conflicted"
       : code === "??" || code.includes("A") ? "added" : code.includes("D") ? "deleted" : code.includes("R") ? "renamed"
       : code.includes("C") ? "copied" : code.includes("T") ? "type-changed" : code.includes("M") ? "modified" : "unknown";
-    const [additions, deletions] = counts.get(path) ?? [null, null];
-    files.push({path, status: state, additions, deletions});
+    // Not counted (past the untracked limit, or git could not read it) is not binary: it shows no counts.
+    const [additions, deletions, binary] = counts.get(path) ?? [null, null, false];
+    files.push({path, status: state, additions, deletions, ...(binary ? {binary: true as const} : {})});
   }
   return files;
 }

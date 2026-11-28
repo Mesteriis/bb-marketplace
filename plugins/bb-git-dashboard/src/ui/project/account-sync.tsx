@@ -19,37 +19,46 @@ export async function prepareThroughAccount(sync: AccountSync, action: RemoteAct
   return sync.prepare(target, action);
 }
 
-/** What the server will do through the account, line by line; Confirm runs it once and says how it ended. */
+/**
+ * What the server will do through the account, line by line; Confirm runs it once and says how it ended. The server
+ * spends the preview on that one try: after a failure only Close is left, and a new try asks for a new preview.
+ * An outcome the server could not learn ("unknown") is passed on as done-or-not, never as not done.
+ */
 export function AccountConfirm({title, preview, sync, onDone, onClose}: {title: string; preview: Preview; sync: AccountSync;
   onDone(outcome: RemoteOutcome): void; onClose(): void}) {
   const t = useT();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [spent, setSpent] = useState(false);
   const confirm = async () => {
+    if (spent) return;
+    setSpent(true);
     setPending(true);
     setError("");
     try {
       const outcome = await sync.publish(preview.id);
-      if (outcome.status === "failed" || outcome.status === "unknown") setError(t("pg.account-failed", {code: outcome.code ?? outcome.status}));
+      if (outcome.status === "failed") setError(t("pg.account-failed", {code: outcome.code ?? outcome.status}));
       else onDone(outcome);
     } catch (cause) { setError(message(cause)); }
     finally { setPending(false); }
   };
   return <Dialog title={title} busy={pending} wide onClose={onClose} actions={<>
-    <button type="button" className="g-btn" disabled={pending} onClick={onClose}>{t("common.cancel")}</button>
-    <button type="button" className="g-btn pri" disabled={pending} onClick={() => void confirm()}>{pending ? t("pg.account-working") : t("pg.account-confirm")}</button>
+    <button type="button" className="g-btn" disabled={pending} onClick={onClose}>{spent ? t("pg.account-close") : t("common.cancel")}</button>
+    {!spent || pending ? <button type="button" className="g-btn pri" disabled={pending} onClick={() => void confirm()}>{pending ? t("pg.account-working") : t("pg.account-confirm")}</button> : null}
   </>}>
     <p className="g-muted">{t("pg.account-what")}</p>
     <ul className="git-account-lines">{preview.lines.map((line, index) => <li key={index} className="g-mono">{line}</li>)}</ul>
-    {error && <p className="g-banner bad" role="alert">{error}</p>}
+    {error && <p className="g-banner bad" role="alert">{error}{spent ? " " + t("pg.account-again") : ""}</p>}
   </Dialog>;
 }
 
 /** A pull request from the copy's branch: base, title and description, then the server's preview before anything is sent. */
-export function CreatePullDialog({branch, head, sync, onPrepared, onClose}: {branch: string; head: string; sync: AccountSync;
+export function CreatePullDialog({branch, head, base: initialBase, sync, onPrepared, onClose}: {branch: string; head: string; sync: AccountSync;
+  /** The base to start from: the branch the upstream tracks on origin, else main. */
+  base: string;
   onPrepared(preview: Preview): void; onClose(): void}) {
   const t = useT();
-  const [base, setBase] = useState("main");
+  const [base, setBase] = useState(initialBase);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [pending, setPending] = useState(false);

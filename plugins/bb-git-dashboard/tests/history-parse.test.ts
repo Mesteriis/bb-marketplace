@@ -32,7 +32,7 @@ test("file changes join statuses with line counts, including paths with tabs and
   const numstat = ["3\t1\tsrc/a.ts", "-\t-\tdir/with\ttab.txt", "0\t7\told.txt", "0\t0\t", "from.txt", "to.txt", ""].join("\0");
   assert.deepEqual(fileChanges(nameStatus, numstat), [
     {path: "src/a.ts", status: "modified", additions: 3, deletions: 1},
-    {path: "dir/with\ttab.txt", status: "added", additions: null, deletions: null},
+    {path: "dir/with\ttab.txt", status: "added", additions: null, deletions: null, binary: true},
     {path: "old.txt", status: "deleted", additions: 0, deletions: 7},
     {path: "to.txt", status: "renamed", additions: 0, deletions: 0},
   ]);

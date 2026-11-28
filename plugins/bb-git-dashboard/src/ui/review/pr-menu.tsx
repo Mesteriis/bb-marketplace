@@ -9,7 +9,7 @@ import { message, type PrRef, type ReviewApi } from "./review-api.ts";
  */
 export function PrMenu({api, target, url, onRefresh, onNotice, onPin}: {api: ReviewApi; target: PrRef; url: string; onRefresh(): void; onNotice(text: string): void;
   /** Pins the pull request as its own tab beside the thread; throws when the panel did not take it. */
-  onPin?(): Promise<void> | void}) {
+  onPin?(): Promise<"opened" | "selected">}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [linking, setLinking] = useState(false);
@@ -26,7 +26,8 @@ export function PrMenu({api, target, url, onRefresh, onNotice, onPin}: {api: Rev
       <button role="menuitem" type="button" onClick={() => { setOpen(false); setLinking(true); }}>{t("pr.m.link-thread")}</button>
       <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "ask"))}>{t("pr.m.ask")}</button>
       <button role="menuitem" type="button" onClick={() => run(() => api.compose(target, "explain"))}>{t("pr.m.explain")}</button>
-      {onPin && <button role="menuitem" type="button" onClick={() => run(onPin, t("pr.pinned"))}>{t("pr.pin")}</button>}
+      {onPin && <button role="menuitem" type="button" onClick={() => { setOpen(false); onPin().then(made => onNotice(t(made === "selected" ? "pr.pin-selected" : "pr.pinned")),
+        cause => onNotice(message(cause) === "PANEL_DECLINED" ? t("pr.pin-declined") : message(cause))); }}>{t("pr.pin")}</button>}
     </div>}
     {linking && <LinkDialog api={api} target={target} onClose={() => setLinking(false)} onLinked={title => { setLinking(false); onNotice(t("pr.m.linked", {title})); }}/>}
   </div>;
