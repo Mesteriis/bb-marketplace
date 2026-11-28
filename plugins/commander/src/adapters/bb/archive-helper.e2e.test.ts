@@ -96,6 +96,36 @@ describe.skipIf(!runnable)("the real helper", () => {
     await provider.finishRead!(parsePosix("/a.bin"), versionOf("a.bin"), signal);
   });
 
+  it("two entries read by turns with a total limit equal to their sizes never hit the limit: nothing is read twice", async () => {
+    const client = await start();
+    const a = Uint8Array.from({ length: 40_000 }, (_, i) => i % 251);
+    const b = Uint8Array.from({ length: 40_000 }, (_, i) => (i * 7) % 251);
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "commander-e2e-")));
+    dirs.push(dir);
+    const file = join(dir, "t.zip");
+    writeFileSync(file, storedZip([{ name: "a.bin", data: a }, { name: "b.bin", data: b }]));
+    const stat = statSync(file, { bigint: true });
+    const b64 = (s: string) => Buffer.from(s).toString("base64");
+    await client.request({
+      t: "open", rootB64: b64(dir), segmentsB64: [b64("t.zip")], format: "auto",
+      // Exactly the two entries; one byte of re-reading would exceed it.
+      limits: { maxTotalBytes: 80_000, maxEntries: 100, maxRatio: 100 },
+      expect: { size: String(stat.size), mtimeNs: String(stat.mtimeNs), dev: String(stat.dev), ino: String(stat.ino) },
+    });
+    const provider = new ArchiveProvider({ endpoint: ENDPOINT, rpc: client, verifySource: async () => {} });
+    const root = await provider.list(parsePosix("/"), { cursor: null, limit: 10 }, signal);
+    const v = (name: string) => { const e = root.entries.find((x) => "t" in x.name && x.name.t === name)!; return { size: e.size, mtimeNs: e.mtimeNs }; };
+    const gotA: number[] = [], gotB: number[] = [];
+    for (let o = 0; o < 40_000; o += 4000) {
+      gotA.push(...await provider.read(parsePosix("/a.bin"), BigInt(o), 4000, v("a.bin"), signal));
+      gotB.push(...await provider.read(parsePosix("/b.bin"), BigInt(o), 4000, v("b.bin"), signal));
+    }
+    expect(gotA).toEqual([...a]);
+    expect(gotB).toEqual([...b]);
+    await provider.finishRead!(parsePosix("/a.bin"), v("a.bin"), signal);
+    await provider.finishRead!(parsePosix("/b.bin"), v("b.bin"), signal);
+  });
+
   it("refuses a ZIP with a repeated name as a whole", async () => {
     const client = await start();
     await expect(openZip(client, [{ name: "x", data: "1" }, { name: "x", data: "2" }]))

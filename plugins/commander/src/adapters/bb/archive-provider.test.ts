@@ -103,13 +103,13 @@ describe("read", () => {
     expect([...await provider.read(path, 4n, 6, same, signal)]).toEqual([4, 5, 6, 7, 8, 9]);
     expect(calls.filter((c) => c.t === "read_open")).toHaveLength(1);
   });
-  it("reopens the stream on a jump and skips to the offset", async () => {
+  it("opens a stream of its own for a jump and skips to the offset, leaving the first reader's stream open", async () => {
     const { rpc, calls } = reading(10);
     const provider = make(rpc);
     await provider.read(path, 0n, 4, same, signal);
     expect([...await provider.read(path, 2n, 3, same, signal)]).toEqual([2, 3, 4]);
     expect(calls.filter((c) => c.t === "read_open")).toHaveLength(2);
-    expect(calls.some((c) => c.t === "read_close")).toBe(true);
+    expect(calls.some((c) => c.t === "read_close")).toBe(false);
   });
   it("fails changed_since_plan when the expected version differs from the entry", async () => {
     const { rpc } = reading(10);
@@ -294,47 +294,128 @@ describe("two readers of one archive (a viewer window and a copy job)", () => {
   });
 });
 
-describe("concurrent callers against a helper that keeps one stream", () => {
-  it("runs each read as a whole, so two jobs or a viewer and a job never meet a dropped stream", async () => {
-    let live: { stream: number; id: number; pos: number } | null = null;
+describe("a stream stays with its reader until the barrier", () => {
+  // The helper opens independent streams (up to four); the fake counts every byte it hands out.
+  function helper(sizes: Record<string, number>) {
+    const names = Object.keys(sizes);
+    const streams = new Map<number, { id: number; pos: number }>();
     let next = 1;
-    const sizes = [30, 30];
-    const { rpc } = rpcWith(async (body) => {
+    let served = 0;
+    const log: string[] = [];
+    const h = rpcWith(async (body) => {
       await new Promise((r) => setTimeout(r, 1));
+      log.push(body.t + (body.stream ? ":" + body.stream : ""));
       switch (body.t) {
         case "stat": {
-          const id = Buffer.from(body.nameB64 as string, "base64").toString() === "x.bin" ? 0 : 1;
-          return { json: { t: "ok", entry: file(id, id === 0 ? "x.bin" : "y.bin", sizes[id]!) } };
+          const index = names.indexOf(Buffer.from(body.nameB64 as string, "base64").toString());
+          return { json: { t: "ok", entry: file(index, names[index]!, sizes[names[index]!]!) } };
         }
-        case "read_open": live = { stream: next++, id: body.id as number, pos: 0 }; return { json: { t: "ok", stream: live.stream, size: "30" } };
+        case "read_open": {
+          if (streams.size >= 4) throw new CommanderError("invalid_path", "Too many open streams");
+          const stream = next++;
+          streams.set(stream, { id: body.id as number, pos: 0 });
+          return { json: { t: "ok", stream, size: String(sizes[names[body.id as number]!]) } };
+        }
         case "read": {
-          if (!live || live.stream !== body.stream) throw new CommanderError("invalid_path", "No such stream");
-          const n = Math.min(body.length as number, 30 - live.pos);
-          const bytes = Uint8Array.from({ length: n }, (_, i) => (live!.id * 100 + live!.pos + i));
-          live.pos += n;
-          return { json: { t: "ok", pos: live.pos }, data: [bytes] };
+          const s = streams.get(body.stream as number);
+          if (!s) throw new CommanderError("invalid_path", "No such stream");
+          const size = sizes[names[s.id]!]!;
+          const n = Math.min(body.length as number, size - s.pos);
+          const bytes = Uint8Array.from({ length: n }, (_, i) => (s.id * 100 + s.pos + i) % 251);
+          s.pos += n;
+          served += n;
+          return { json: { t: "ok", pos: s.pos }, data: [bytes] };
         }
-        case "read_finish": if (!live || live.stream !== body.stream || live.pos !== 30) throw new CommanderError("invalid_archive", "short", false, "truncated"); return { json: { t: "ok", size: "30", crc32: 0, aes_auth: null } };
-        case "read_close": live = null; return { json: { t: "ok" } };
+        case "read_finish": {
+          const s = streams.get(body.stream as number);
+          if (!s || s.pos !== sizes[names[s.id]!]) throw new CommanderError("invalid_archive", "short", false, "truncated");
+          return { json: { t: "ok", size: String(s.pos), crc32: 0, aes_auth: null } };
+        }
+        case "read_close": streams.delete(body.stream as number); return { json: { t: "ok" } };
         default: throw new Error(body.t);
       }
     });
-    const provider = make(rpc);
-    const v = { size: "30", mtimeNs: "1732665600000000000" };
-    const x = parsePosix("/x.bin"), y = parsePosix("/y.bin");
-    const job = (async () => {
-      const out: number[] = [];
-      for (let o = 0; o < 30; o += 10) out.push(...await provider.read(x, BigInt(o), 10, v, signal));
-      await provider.finishRead!(x, v, signal);
-      return out;
-    })();
-    const viewer = (async () => {
-      const out: number[][] = [];
-      for (let i = 0; i < 4; i++) out.push([...await provider.read(y, BigInt(i * 5), 5, v, signal)]);
-      return out;
-    })();
-    const [copied, windows] = await Promise.all([job, viewer]);
-    expect(copied).toEqual(Array.from({ length: 30 }, (_, i) => i));
-    expect(windows[2]).toEqual([110, 111, 112, 113, 114]);
+    return { ...h, streams, log, served: () => served };
+  }
+  const v = (size: number) => ({ size: String(size), mtimeNs: "1732665600000000000" });
+  const at = (name: string) => parsePosix("/" + name);
+
+  it("two entries read by turns cost exactly their own sizes: no stream is dropped and read again, no limit is hit", async () => {
+    const h = helper({ "a.bin": 400, "b.bin": 400 });
+    const provider = make(h.rpc);
+    const a: number[] = [], b: number[] = [];
+    for (let o = 0; o < 400; o += 50) {
+      a.push(...await provider.read(at("a.bin"), BigInt(o), 50, v(400), signal));
+      b.push(...await provider.read(at("b.bin"), BigInt(o), 50, v(400), signal));
+    }
+    expect(a).toEqual(Array.from({ length: 400 }, (_, i) => i % 251));
+    expect(b).toEqual(Array.from({ length: 400 }, (_, i) => (100 + i) % 251));
+    expect(h.served()).toBe(800);
+    await provider.finishRead!(at("a.bin"), v(400), signal);
+    await provider.finishRead!(at("b.bin"), v(400), signal);
+    expect(h.served()).toBe(800);
+    expect(h.streams.size).toBe(0);
+  });
+
+  it("a window read of the entry being copied uses a stream of its own and leaves the copy's stream where it was", async () => {
+    const h = helper({ "a.bin": 100 });
+    const provider = make(h.rpc);
+    await provider.read(at("a.bin"), 0n, 40, v(100), signal);
+    expect([...await provider.read(at("a.bin"), 10n, 3, v(100), signal)]).toEqual([10, 11, 12]);
+    await provider.read(at("a.bin"), 40n, 60, v(100), signal);
+    await provider.finishRead!(at("a.bin"), v(100), signal);
+    // 100 for the copy, 13 for the window (skip 10 + read 3); the copy was never re-read.
+    expect(h.served()).toBe(113);
+  });
+
+  it("two simultaneous reads that both continue the same stream never share it", async () => {
+    const h = helper({ "a.bin": 100 });
+    const provider = make(h.rpc);
+    await provider.read(at("a.bin"), 0n, 20, v(100), signal);
+    const [first, second] = await Promise.all([
+      provider.read(at("a.bin"), 20n, 10, v(100), signal), provider.read(at("a.bin"), 20n, 10, v(100), signal),
+    ]);
+    expect([...first]).toEqual(Array.from({ length: 10 }, (_, i) => 20 + i));
+    expect([...second]).toEqual(Array.from({ length: 10 }, (_, i) => 20 + i));
+  });
+
+  it("an error or a cancel on a read frees that stream; the next read starts clean", async () => {
+    const h = helper({ "a.bin": 100 });
+    const provider = make(h.rpc);
+    await provider.read(at("a.bin"), 0n, 20, v(100), signal);
+    const real = h.rpc.request;
+    let fail = true;
+    (h.rpc as { request: unknown }).request = vi.fn(async (body: { t: string }, options: unknown) => {
+      if (fail && body.t === "read") { fail = false; throw new CommanderError("cancelled", "stopped"); }
+      return (real as (b: unknown, o: unknown) => Promise<unknown>)(body, options);
+    });
+    await expect(provider.read(at("a.bin"), 20n, 10, v(100), signal)).rejects.toMatchObject({ code: "cancelled" });
+    expect(h.streams.size).toBe(0);
+    expect([...await provider.read(at("a.bin"), 20n, 3, v(100), signal)]).toEqual([20, 21, 22]);
+  });
+
+  it("an idle stream is released after 30 seconds", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const h = helper({ "a.bin": 100 });
+      const provider = make(h.rpc);
+      const pending = provider.read(at("a.bin"), 0n, 20, v(100), signal);
+      await vi.advanceTimersByTimeAsync(10);
+      await pending;
+      expect(h.streams.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(h.streams.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps at most four streams: the least recently used one is closed to make room", async () => {
+    const h = helper({ "a": 10, "b": 10, "c": 10, "d": 10, "e": 10 });
+    const provider = make(h.rpc);
+    for (const name of ["a", "b", "c", "d", "e"]) await provider.read(at(name), 0n, 5, v(10), signal);
+    expect(h.streams.size).toBe(4);
+    // The first entry's stream was the one closed; reading on from its position starts a new stream and skips.
+    expect([...await provider.read(at("a"), 5n, 3, v(10), signal)]).toEqual([5, 6, 7]);
   });
 });
