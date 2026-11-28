@@ -54,6 +54,8 @@ type Pending = {
   data: Uint8Array[];
   timer: ReturnType<typeof setTimeout> | null;
   abortListener: (() => void) | null;
+  /** The owner gave no password: a failure of that attempt means password_required. */
+  declined?: boolean;
 };
 
 const STDERR_MAX = 64 * 1024;
@@ -235,6 +237,11 @@ export class ArchiveHelperClient {
       });
       if (!shape.success) return this.fatal(protocolError());
       this.finish(pending);
+      if (pending.declined && shape.data.code === "auth_failed") {
+        pending.reject(new CommanderError("auth_failed", "The archive is encrypted: a password is required", false, "password_required"));
+        this.pump();
+        return;
+      }
       pending.reject(new CommanderError(shape.data.code, shape.data.message, false, shape.data.reason));
       this.pump();
       return;
@@ -255,11 +262,11 @@ export class ArchiveHelperClient {
       return;
     }
     if (!password || password.length === 0) {
+      // The helper insists on an answer to every need_password. A single NUL byte is an answer no archive accepts;
+      // the failure that follows is reported as "password required", not as a wrong password.
       password?.fill(0);
-      this.finish(pending);
-      pending.reject(new CommanderError("auth_failed", "The archive is encrypted: a password is required", false, "password_required"));
-      this.pump();
-      return;
+      pending.declined = true;
+      password = new Uint8Array(1);
     }
     try {
       this.proc?.stdin.write(encodeSecret(pending.req, password));

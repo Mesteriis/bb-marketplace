@@ -230,7 +230,7 @@ describe("password", () => {
     s.proc.say(encodeControl({ t: "ok", req: 1, stream: 1, size: "3" }));
     await pending;
   });
-  it("fails with password_required when no password callback is given", async () => {
+  it("answers need_password with a one-byte placeholder when there is no password and reports password_required", async () => {
     const s = setup();
     const started = s.client.start();
     s.proc.hello();
@@ -238,6 +238,9 @@ describe("password", () => {
     const pending = s.client.request({ t: "read_open", id: 0 });
     await s.proc.nextControl();
     s.proc.say(encodeControl({ t: "need_password", req: 1 }));
+    for (let i = 0; i < 100 && s.proc.received.length === 0; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(s.proc.received[0]).toMatchObject({ kind: "secret", reqId: 1, length: 1 });
+    s.proc.say(encodeControl({ t: "err", req: 1, code: "auth_failed", reason: "bad_password", message: "wrong" }));
     expect(await reason(pending)).toBe("auth_failed+password_required");
   });
 });
