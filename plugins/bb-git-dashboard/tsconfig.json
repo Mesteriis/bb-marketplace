@@ -21,6 +21,7 @@
     "app.tsx",
     "host.ts",
     "src",
-    "tests"
+    "tests",
+    "scripts"
   ]
 }
