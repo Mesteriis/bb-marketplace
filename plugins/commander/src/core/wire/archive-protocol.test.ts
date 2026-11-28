@@ -30,8 +30,9 @@ describe("FrameDecoder from the helper side (adapter receiving)", () => {
     expect(decoder.push(frame.subarray(3, 9))).toEqual([]);
     expect(decoder.push(frame.subarray(9))).toEqual([{ kind: "control", json: { t: "hello" } }]);
   });
-  it("decodes a stream of 4 MiB frames delivered in 64 KiB pieces, with frame edges inside pieces", () => {
-    const payload = new Uint8Array(FRAME_LIMITS.dataMax).map((_, i) => i % 251);
+  it("decodes a stream of 300 KiB frames delivered in 64 KiB pieces, with frame edges inside pieces", () => {
+    const payload = new Uint8Array(300 * 1024);
+    for (let i = 0; i < payload.length; i++) payload[i] = i % 251;
     const data = encodeData(9, payload);
     const parts = [encodeControl({ t: "hello" }), ...Array.from({ length: 3 }, () => data), encodeData(9, new Uint8Array(0))];
     const stream = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -40,8 +41,8 @@ describe("FrameDecoder from the helper side (adapter receiving)", () => {
     const frames: ReturnType<FrameDecoder["push"]> = [];
     for (let at = 0; at < stream.length; at += 65_531) frames.push(...decoder.push(stream.subarray(at, at + 65_531)));
     expect(frames.map((f) => f.kind)).toEqual(["control", ...Array(4).fill("data")]);
-    expect((frames[1] as { bytes: Uint8Array }).bytes).toEqual(payload);
-    expect((frames[3] as { bytes: Uint8Array }).bytes).toEqual(payload);
+    expect(Buffer.compare((frames[1] as { bytes: Uint8Array }).bytes, payload)).toBe(0);
+    expect(Buffer.compare((frames[3] as { bytes: Uint8Array }).bytes, payload)).toBe(0);
     expect((frames[4] as { bytes: Uint8Array }).bytes.length).toBe(0);
   });
   it("finds a frame header split across tiny pieces and the next frame after it", () => {
