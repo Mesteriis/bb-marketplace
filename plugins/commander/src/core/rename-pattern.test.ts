@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { Entry } from "./model.ts";
 import { previewRename, type RenamePattern } from "./rename-pattern.ts";
 
@@ -41,12 +41,51 @@ test('the replacement is literal: "$1" is not a group reference', () => {
   expect(rows).toEqual([{ to: "[$1].txt", problem: null }]);
 });
 
-test.each(["a*a*b", "a*a*a*b", "a*a*a*a*b"])("polynomial regex %s is refused as unsafe_regex without running", (source) => {
-  const name = "a".repeat(200) + "!";
-  const started = performance.now();
-  const rows = names([file(name)], { find: { regex: source }, replace: "x" });
+// Counts every RegExp built from `source` and every exec/test on such an expression. A use of the
+// tested source throws, so a regression fails fast instead of backtracking on the long name.
+function watchRegExp(source: string, refuse = true) {
+  const seen = { constructed: 0, executed: 0 };
+  const Original = globalThis.RegExp;
+  const exec = Original.prototype.exec;
+  const execute = function (this: RegExp, input: string) {
+    if (this.source === source) {
+      seen.executed++;
+      if (refuse) throw new Error("the refused expression was executed");
+    }
+    return exec.call(this, input);
+  };
+  class Watched extends Original {
+    constructor(pattern: string | RegExp, flags?: string) {
+      super(pattern, flags);
+      if (this.source === source) seen.constructed++;
+    }
+  }
+  vi.stubGlobal("RegExp", Watched);
+  vi.spyOn(Original.prototype, "exec").mockImplementation(execute);
+  vi.spyOn(Original.prototype, "test").mockImplementation(function (this: RegExp, input: string) {
+    return execute.call(this, input) !== null;
+  });
+  return seen;
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+test.each(["a*a*b", "a*a*a*b", "a*a*a*a*b"])("polynomial regex %s is refused as unsafe_regex without building or running it", (source) => {
+  const seen = watchRegExp(source);
+  const rows = names([file("a".repeat(200) + "!")], { find: { regex: source }, replace: "x" });
   expect(rows).toEqual([{ to: null, problem: "unsafe_regex" }]);
-  expect(performance.now() - started).toBeLessThan(50);
+  expect(seen).toEqual({ constructed: 0, executed: 0 });
+});
+
+test("the RegExp watch sees a safe expression being built and run", () => {
+  const seen = watchRegExp("IMG_[0-9]+", false);
+  const rows = names([file("IMG_12.jpg")], { find: { regex: "IMG_[0-9]+" }, replace: "photo-" });
+  expect(rows).toEqual([{ to: "photo-.jpg", problem: null }]);
+  expect(seen.constructed).toBeGreaterThan(0);
+  expect(seen.executed).toBeGreaterThan(0);
 });
 
 test('literal find "draft" replaced by "final" with case upper on "draft-a.txt" → "FINAL-A.txt"', () => {
