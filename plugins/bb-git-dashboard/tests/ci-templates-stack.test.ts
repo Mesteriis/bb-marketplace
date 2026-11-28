@@ -11,13 +11,15 @@ test("a Node project: the package manager from the packageManager field, the ver
     defaults: {packageManager: "pnpm", nodeVersion: "20", test: true, build: true, lint: false, lockfile: true}}]);
 });
 
-test("Node without packageManager takes the lockfile, and the engines range when there is no version file", () => {
+test("Node without packageManager takes the lockfile, and Node.js 24 when there is no version file and engines admits it", () => {
   const [yarn] = detectStacks({paths: ["package.json", "yarn.lock"], manifests: {"package.json": JSON.stringify({engines: {node: ">=22.18"}, scripts: {lint: "eslint ."}})}});
-  assert.deepEqual(yarn.defaults, {packageManager: "yarn", nodeVersion: "22", test: false, build: false, lint: true, lockfile: true});
+  assert.deepEqual(yarn.defaults, {packageManager: "yarn", nodeVersion: "24", test: false, build: false, lint: true, lockfile: true});
   const [bun] = detectStacks({paths: ["package.json", "bun.lock"], manifests: {"package.json": "{}"}});
   assert.equal(bun.defaults.packageManager, "bun");
   const [plain] = detectStacks({paths: ["package.json"], manifests: {"package.json": "not json"}});
-  assert.deepEqual(plain.defaults, {packageManager: "npm", nodeVersion: "22", test: false, build: false, lint: false, lockfile: false});
+  const [range] = detectStacks({paths: ["package.json"], manifests: {"package.json": JSON.stringify({engines: {node: "^22"}})}});
+  assert.equal(range.defaults.nodeVersion, "22");
+  assert.deepEqual(plain.defaults, {packageManager: "npm", nodeVersion: "24", test: false, build: false, lint: false, lockfile: false});
 });
 
 test("a Python project: uv by its lockfile, poetry by its section, the version from requires-python, pytest as the test flag", () => {

@@ -17,7 +17,7 @@ function valuesOf(name: string) {
   return {id: id!, values};
 }
 
-test("Go CI with and without its web UI, and Python CI without one, render byte for byte as in 0.16.1", () => {
+test("Go CI with and without its web UI, and Python CI without one, render byte for byte as in 0.16.1, with the read-only token of 0.16.3 on Actions", () => {
   const names = readdirSync(golden).filter(name => name.endsWith(".yml")).sort();
   assert.equal(names.length, 32);
   for (const name of names) {

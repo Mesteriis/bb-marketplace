@@ -1,3 +1,5 @@
+import { CI_NODE, ciNode } from "./node-version.ts";
+
 /** The stacks a CI template is written for. */
 export const stackIds = ["node", "python", "go", "rust", "docker"] as const;
 export type StackId = typeof stackIds[number];
@@ -35,7 +37,8 @@ function node(root: Set<string>, files: Record<string, string>): Stack {
   const engine = typeof manifest.engines?.node === "string" ? manifest.engines.node : undefined;
   return {id: "node", evidence: ["package.json", ...(lock ? [lock[0]] : [])], defaults: {
     packageManager: declared ?? lock?.[1] ?? "npm",
-    nodeVersion: major(files[".nvmrc"]) ?? major(files[".node-version"]) ?? major(engine) ?? "22",
+    // A version file pins one version; engines is a range, and CI runs the current LTS line when it admits it.
+    nodeVersion: major(files[".nvmrc"]) ?? major(files[".node-version"]) ?? (engine === undefined ? CI_NODE : ciNode(engine)),
     test: typeof scripts.test === "string", build: typeof scripts.build === "string", lint: typeof scripts.lint === "string",
     lockfile: Boolean(lock),
   }};

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.3 — 2026-11-28
+
+The CI a new project gets: one Node.js line, and a read-only token.
+
+- Node.js CI runs Node.js 24, the current LTS line, whenever the project's `engines.node` admits it, the version the web UI of a Go or Python project already got: a frontend alone with `engines` `>=22.12` got 22 before, as the range's lower bound was taken. A range without 24 gets the newest even major it admits (`^22` → 22), else its lowest one (`^23` → 23); `.nvmrc` and `.node-version` pin the version as before, and a project without any gets 24 (was 22). The form's default for Node.js CI is 24.
+- The GitHub Actions and Gitea Actions CI files set `permissions: contents: read` at the workflow's top: the job's token reads the repository and writes nothing. Gitea Actions takes the same key (docs.gitea.com, Actions job token permissions). GitLab CI and Azure Pipelines files are unchanged.
+- The stand's account-write probe sets the interface to English itself before it reads any label: a probe before it could leave Russian on, and its first run failed then.
+
 ## 0.16.2 — 2026-11-28
 
 The CI a new project gets, for web templates.

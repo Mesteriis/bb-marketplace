@@ -1,5 +1,6 @@
 import type { CiForge, CiParam, CiTemplate } from "./render.ts";
 import type { StackId } from "./stack.ts";
+import { CI_NODE } from "./node-version.ts";
 import { versions } from "./versions.ts";
 
 /*
@@ -19,7 +20,7 @@ const app: CiParam[] = [
 const params: Record<StackId, CiParam[]> = {
   node: [
     {name: "packageManager", label: "Package manager", kind: "choice", default: "npm", choices: ["npm", "pnpm", "yarn", "bun"]},
-    {name: "nodeVersion", label: "Node.js version", kind: "text", default: "22"},
+    {name: "nodeVersion", label: "Node.js version", kind: "text", default: CI_NODE},
     {name: "lockfile", label: "Install from the committed lockfile", kind: "flag", default: true},
     make,
     {name: "lint", label: "Run the lint script", kind: "flag", default: false},
@@ -34,12 +35,12 @@ const params: Record<StackId, CiParam[]> = {
     make,
     {name: "test", label: "Run pytest", kind: "flag", default: true},
     {name: "web", label: "Also check the web UI with Node.js (make web-check)", kind: "flag", default: false},
-    {name: "webNode", label: "Node.js version for the web UI", kind: "text", default: "24"},
+    {name: "webNode", label: "Node.js version for the web UI", kind: "text", default: CI_NODE},
     ...app,
   ],
   go: [{name: "goVersion", label: "Go version", kind: "text", default: "1.23"}, make,
     {name: "web", label: "Also check web/ with Node.js (make web-check)", kind: "flag", default: false},
-    {name: "webNode", label: "Node.js version for web/", kind: "text", default: "24"}, ...app],
+    {name: "webNode", label: "Node.js version for web/", kind: "text", default: CI_NODE}, ...app],
   rust: [make, {name: "clippy", label: "Run clippy", kind: "flag", default: true}, ...app],
   docker: [{name: "image", label: "Image name (local, not pushed)", kind: "text", default: "app"}],
 };
@@ -134,6 +135,8 @@ function actions(stack: StackId, forge: "github" | "gitea"): CiTemplate {
   const list = stack === "docker" ? dockerSteps : steps(stack);
   const body = "# " + titles[stack] + " CI from a Makosh Git template. Add deployment and secrets yourself.\n" +
     "name: CI\non:\n  push:\n    branches: [{{branch}}]\n  pull_request:\n  workflow_dispatch:\n" +
+    // The job's token reads the repository and nothing more: GitHub's key, which Gitea Actions takes too.
+    "permissions:\n  contents: read\n" +
     "jobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n" + actionsSetup(stack) +
     render(list, "      ", step => "      - name: " + step.name + "\n        run: " + step.run + "\n" + inApp("        ", "working-directory", step));
   return {id: stack + "-" + forge, title: titles[stack] + " · " + forges[forge], stacks: [stack], forge,
