@@ -182,7 +182,11 @@ export const SyncResult = z.strictObject({
   conflicts: z.array(z.strictObject({ left: Entry, right: Entry, reason: z.enum(["target_newer", "differs"]) })).max(LIST_PAGE_MAX),
 });
 
+// S16: UI-only session and editor methods.
+import { editRpcSchemas } from "./edit.ts";
+
 export const rpcSchemas = {
+  ...editRpcSchemas,
   sync_create: { input: SyncInput, output: SyncResult },
   endpoints_list: { input: empty, output: z.strictObject({ endpoints: z.array(EndpointView) }) },
   endpoint_home: { input: z.strictObject({ endpoint: EndpointId }), output: z.strictObject({ path: ResourcePath }) },

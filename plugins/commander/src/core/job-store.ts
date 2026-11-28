@@ -1,3 +1,5 @@
+// S16: submitting a writeback can attach a durable receipt to job creation.
+import type { WriteBackRequest } from "./edit-session.ts";
 import type { Fingerprint, JobState, OperationJob } from "./model.ts";
 import type { ResourcePath } from "./path.ts";
 import type { Size } from "./size.ts";
@@ -26,7 +28,7 @@ export interface Checkpoint {
 }
 
 export interface JobStore {
-  create(job: OperationJob): Promise<void>;
+  create(job: OperationJob, editWriteBack?: WriteBackRequest): Promise<void>;
   get(id: string): Promise<OperationJob | null>;
   /** A thread ID scopes the page to that agent; "*" selects agent jobs across threads. */
   list(filter: { states?: JobState[]; limit: number; threadId?: string }): Promise<OperationJob[]>;

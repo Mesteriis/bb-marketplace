@@ -1,3 +1,5 @@
+// S16
+import { editProblem } from "./edit-bar.tsx";
 import { SearchPanel, type SearchActions } from "./search-panel.tsx";
 import type { SearchHit } from "../core/search.ts";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -32,6 +34,9 @@ type DialogState = { kind: "plan"; plan: OperationPlan; job?: OperationJob }
   | { kind: "batch-rename"; entries: Entry[]; sources: ResourceRef[]; caseSensitive: boolean }
   | { kind: "view"; ref: ResourceRef; title: string; mode: ViewKind | "auto"; result: ViewResult | null; problem: Problem | null }
   | { kind: "sync"; paths: Parameters<SyncActions["estimate"]>[0]; labels: [string, string] }
+  // S16
+  | { kind: "edit-consent"; ref: ResourceRef; estimateId: string; bytesPlanned: string }
+  | { kind: "edit-fallback"; path: string; retry: () => Promise<boolean> }
   | { kind: "settings" };
 
 export interface WorkspaceProps {
@@ -60,6 +65,11 @@ export interface WorkspaceProps {
   /** S17: the last retry result by job id, shown on the queue card. */
   retryNotes: Record<string, RetryNote>;
   onPreview: (ref: ResourceRef) => void;
+  // S16
+  edit?: {
+    estimate(ref: ResourceRef): Promise<{ estimateId: string; bytesPlanned: string }>;
+    open(ref: ResourceRef, estimateId?: string): Promise<{ path: string; retry: () => Promise<boolean> } | null>;
+  };
   scans: ScanActions;
   search?: SearchActions;
   sync?: SyncActions;
@@ -199,8 +209,8 @@ export function Workspace(props: WorkspaceProps) {
     rename: ready && !!current && !endpoint?.readOnly,
     terminal: !!ready && endpoint?.provider === "local" && !!endpoint.hostId && !!tab && nativePath(tab.path) !== null,
   };
-  can.edit = ready && endpoint?.provider === "local" && !!endpoint.hostId && current?.kind !== "dir" && !!current &&
-    "t" in current.name && !!tab && nativePath(tab.path) !== null;
+  // S16: both writable local and SFTP endpoints can edit regular files.
+  can.edit = !!props.edit && !!ready && !endpoint?.readOnly && current?.kind === "file" && !!tab;
   useLayoutEffect(() => {
     const bar = toolbar.current;
     if (!bar) return;
@@ -322,14 +332,14 @@ export function Workspace(props: WorkspaceProps) {
     if (next.kind === "conflict") setSame(false);
     setDialog(next);
   };
-  async function perform(action: () => Promise<unknown>, completed?: () => void) {
+  async function perform(action: () => Promise<unknown>, completed?: () => void, describeError = problemOf) {
     if (running.current) return;
     running.current = true;
     setBusy(true);
     setProblem(null);
     setNotice(null);
     try { await action(); completed?.(); }
-    catch (error) { setProblem(problemOf(error)); }
+    catch (error) { setProblem(describeError(error)); }
     finally { running.current = false; setBusy(false); }
   }
   function setPane(pane: Side) {
@@ -394,9 +404,20 @@ export function Workspace(props: WorkspaceProps) {
       setDialog((current) => current?.kind === "view" && current.ref === ref ? { ...current, result: null, problem } : current);
     }
   }
-  function preview(value: Tab, entry: Entry) {
-    try { props.onPreview({ endpoint: value.endpoint, path: join(value.path, entry.name) }); }
-    catch (error) { setProblem(problemOf(error)); }
+  // S16
+  function edit(value: Tab, entry: Entry) {
+    const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
+    if (ref.endpoint.startsWith("sftp:")) {
+      void perform(async () => open({ kind: "edit-consent", ref, ...await props.edit!.estimate(ref) }), undefined, editProblem);
+    } else openEdit(ref);
+  }
+
+  function openEdit(ref: ResourceRef, estimateId?: string) {
+    void perform(async () => {
+      const fallback = await props.edit!.open(ref, estimateId);
+      if (fallback) open({ kind: "edit-fallback", ...fallback });
+      else if (estimateId) close();
+    }, undefined, editProblem);
   }
   // S12: the selected entries of the pane, renamed as one batch by a pattern.
   function openBatchRename(value: Tab) {
@@ -478,7 +499,7 @@ export function Workspace(props: WorkspaceProps) {
     else if (action === "mark" || action === "unmark") open({ kind: "text", title: shortcutText[action], label: ru.mask, initial: "*", submit: (value) => applyMask(action, value) });
     else if (can[action] && tab) {
       if (action === "preview") { if (current) view(tab, current); }
-      else if (action === "edit") { if (current) preview(tab, current); }
+      else if (action === "edit") { if (current) edit(tab, current); }
       else if (action === "rename" && selectedNames.length > 1) openBatchRename(tab);
       else if (action === "mkdir" || action === "rename") open({
         kind: "text", title: shortcutText[action], label: ru.fileName,
@@ -680,7 +701,7 @@ export function Workspace(props: WorkspaceProps) {
       {queue}
     </div>
     <footer ref={toolbar} className="cm-toolbar">
-      {actions.filter(({ key }) => !compact || key === "copy" || key === "preview").map(({ key, icon }) => {
+      {actions.filter(({ key }) => !compact || key === "copy" || key === "preview" || key === "edit").map(({ key, icon }) => {
         const shortcut = bindings[key] ?? shortcuts[key][0];
         const label = compact && key === "copy" ? ru.compactCopy : shortcutText[key];
         const title = label + " (" + shortcut + ")";
@@ -736,6 +757,22 @@ export function Workspace(props: WorkspaceProps) {
       </div>
     </Modal>}
     {dialog?.kind === "sync" && props.sync && <SyncDialog paths={dialog.paths} labels={dialog.labels} api={props.sync} close={close} />}
+    {/* S16 */}
+    {dialog?.kind === "edit-consent" && <Modal title={ru.editFlow.remote} close={close} busy={busy}
+      description={ru.search.remoteRead + " " + dialog.bytesPlanned + " " + ru.bytes}>
+      {problem && <ProblemLine problem={problem} />}
+      <div className="cm-actions">
+        <Button size="sm" disabled={busy} onClick={() => openEdit(dialog.ref, dialog.estimateId)}>{ru.editFlow.download}</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={close}>{ru.close}</Button>
+      </div>
+    </Modal>}
+    {dialog?.kind === "edit-fallback" && <Modal title={ru.editFlow.unavailable} close={close} busy={busy}>
+      <code className="cm-mono">{dialog.path}</code>
+      <div className="cm-actions">
+        <Button size="sm" disabled={busy} onClick={() => void perform(async () => { if (await dialog.retry()) close(); })}>{ru.editFlow.fallback}</Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={close}>{ru.close}</Button>
+      </div>
+    </Modal>}
     {dialog?.kind === "settings" && <Modal title={ru.keySettings} description={ru.keyHint} close={close}>
       <div className="cm-keymap">{(Object.keys(shortcuts) as Shortcut[]).map((key) => <label key={key}>
         {shortcutText[key]}<input readOnly value={bindings[key] ?? shortcuts[key].join(" / ")}

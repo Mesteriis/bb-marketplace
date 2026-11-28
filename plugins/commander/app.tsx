@@ -1,3 +1,6 @@
+// S16
+import { CommanderEditOpener, waitForEdit } from "./src/adapters/bb/edit-app.tsx";
+import { EDIT_OPENER } from "./src/core/wire/edit.ts";
 import type { SearchActions } from "./src/ui/search-panel.tsx";
 import { definePluginApp, experimental_PluginRpcCallError, experimental_usePluginId, useBbNavigate, useRealtime, useRpc, useSdk, type ExperimentalThreadTabProps } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
@@ -429,6 +432,16 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     }}
     onCancel={(job) => mutate(rpc.call("job_cancel", { jobId: job.id }))}
     onRetry={(job) => mutate(retryUnfinished(job))}
+    edit={{
+      estimate: (ref) => rpc.call("edit_estimate", { ref }),
+      async open(ref, estimateId) {
+        const { sessionId, opener } = await rpc.call("edit_open", estimateId ? { ref, estimateId } : { ref });
+        const retry = () => waitForEdit(sessionId, () => navigate.experimental_openFilePreview({
+          target: { kind: "host", hostId: opener.hostId, path: opener.path }, location: null, opener: opener.id,
+        }));
+        return await retry() ? null : { path: opener.path, retry };
+      },
+    }}
     onPreview={preview} onView={(ref, mode) => loadView(ref, mode)} onCompare={(source, target) => Promise.all([readText(source), readText(target)])}
     onTerminal={terminal} onOpenThread={(id) => navigate.toThread(id)} onOpenPage={() => navigate.toPluginPanel("commander")} />;
 }
@@ -438,6 +451,8 @@ function ThreadTab({ threadId, environment }: ExperimentalThreadTabProps) {
 }
 
 export default definePluginApp((app) => {
+  // S16: this opener is only selected through an explicit id.
+  app.slots.fileOpener({ id: EDIT_OPENER, title: "Правка в Commander", extensions: [], component: CommanderEditOpener });
   app.slots.navPanel({ id: "commander", path: "commander", title: "Commander", icon: "Folder", component: () => <CommanderPage /> });
   app.slots.experimental_tab({
     id: "commander", context: { kind: "thread" }, availability: "fixed", title: "Commander",

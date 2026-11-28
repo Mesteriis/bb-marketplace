@@ -1,3 +1,5 @@
+// S16
+import type { WriteBackRequest } from "../../core/edit-session.ts";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { CommanderError } from "../../core/errors.ts";
@@ -175,7 +177,9 @@ function unreadableJob(row: JobRow, id: string): OperationJob {
   });
 }
 
-export function createSqliteJobStore(db: Database): AgentJobStore {
+export function createSqliteJobStore(db: Database, edit?: {
+  record(input: WriteBackRequest, jobId: string, createdAt: string): void;
+}): AgentJobStore {
   const insert = db.prepare(`
     INSERT INTO jobs (
       id, plan_json, state, progress_json, current_item, pending_conflict_json,
@@ -277,7 +281,7 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
     return unreadableJob(row, id);
   }
 
-  const create = db.transaction((input: OperationJob) => {
+  const create = db.transaction((input: OperationJob, editWriteBack?: WriteBackRequest) => {
     const job = OperationJob.parse(input);
     // Alias IDs are reserved even when their row does not exist.
     // Normal job IDs come from randomUUID(), which produces UUIDv4.
@@ -292,6 +296,11 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
       thread_id: initiator.kind === "agent" ? initiator.threadId : null,
     });
     if (changes !== 1) throw new CommanderError("already_exists", "Job already exists");
+    // S16: aborting the receipt write also rolls back the job insert.
+    if (editWriteBack) {
+      if (!edit) throw new CommanderError("internal", "Writeback persistence is unavailable");
+      edit.record(editWriteBack, job.id, normalizeTimestamp(job.createdAt));
+    }
     if (!beyondRetentionLimit.get(TERMINAL_LIMIT)) return;
 
     const storedTerminalCount = countStoredTerminal.get() ?? 0;
@@ -332,8 +341,8 @@ export function createSqliteJobStore(db: Database): AgentJobStore {
   return {
     hasOwnerApproval: (id) => approvalRecorded.get(id) === 1,
     approvalQueueSize: (threadId) => countApprovals.get(threadId)!,
-    async create(job) {
-      create.immediate(job);
+    async create(job, editWriteBack) {
+      create.immediate(job, editWriteBack);
     },
     async get(id) {
       const row = byId.get(id);
