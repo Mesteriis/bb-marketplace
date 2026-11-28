@@ -27,7 +27,7 @@ Scaffolds from a templates repository, second of two slices: the repository on G
 
   `ignore`, `editorconfig` and `ci` move into `template.json` as they are; labels become `{"en": …, "ru": …}`. A `common/` folder beside `templates/` gives every template the files of every project (licence, AGENTS.md, .gitignore); without it a template writes its own files only.
 - The plugin database's migrations are one list (`migrations.ts`); the review's statements keep their numbers.
-- A new stand-in GitHub on the stand (`fake-github.mjs`, behind a proxy the stand's BB is pointed at, refusing every other host) and a new probe, `scaffolds-github.mjs`; `run.sh` needs `SCAFFOLDS_REPO`, a clone of the templates repository. `scaffolds.mjs` and `scaffolds-python.mjs` make their projects from it and compare the common files with its `common/`.
+- A new stand-in GitHub on the stand (`fake-github.mjs`, behind a proxy the stand's BB is pointed at; other hosts pass through it as before) and a new probe, `scaffolds-github.mjs`; `run.sh` needs `SCAFFOLDS_REPO`, a clone of the templates repository. `scaffolds.mjs` and `scaffolds-python.mjs` make their projects from it and compare the common files with its `common/`.
 
 ## 0.16.0 — 2026-11-28
 

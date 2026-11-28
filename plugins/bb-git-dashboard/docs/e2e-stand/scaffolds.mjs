@@ -23,8 +23,11 @@ try {
   const catalog = page.getByRole("region", { name: "Catalog" });
   await catalog.getByRole("button", { name: "New project…" }).click({ timeout: 60000 });
   const section = page.getByRole("region", { name: "New project" });
+  // The repository's templates come in the order of their ids: the Python service is picked.
+  const pick = async () => page.getByRole("region", { name: "New project" }).locator(".git-np-pick select").selectOption({ label: "Python service (uv)" }, { timeout: 60000 });
+  await pick();
   const form = section.getByRole("form", { name: "New Python service (uv)" });
-  check("the scaffolds are offered, the Python service first", await visible(form));
+  check("the templates repository's Python service is offered", await visible(form));
   await form.getByLabel("Folder name").fill("My App");
   check("a name that is no folder name is refused before anything is sent", await visible(section.getByText(/the project name must be a folder name/))
     && await section.getByRole("button", { name: "Check project…" }).isDisabled());
@@ -59,6 +62,7 @@ try {
   check("the new project is listed in the catalog", await visible(catalog.getByRole("table", { name: "Local" }).getByText("notes-service", { exact: true }), 60000));
 
   await catalog.getByRole("button", { name: "New project…" }).click();
+  await pick();
   const again = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
   await again.getByLabel("Folder name").fill("notes-service");
   await again.getByLabel("Name", { exact: true }).fill("Stand Author");
@@ -71,6 +75,7 @@ try {
   // 0.13.1: a repository on the Gitea stand-in, private by default, and the first push to it.
   await page.getByRole("button", { name: "Back to the catalog" }).click();
   await catalog.getByRole("button", { name: "New project…" }).click();
+  await pick();
   const pushedForm = page.getByRole("region", { name: "New project" }).getByRole("form", { name: "New Python service (uv)" });
   await pushedForm.getByLabel("Folder name").fill("pushed-service");
   await pushedForm.getByLabel("Name", { exact: true }).fill("Stand Author");

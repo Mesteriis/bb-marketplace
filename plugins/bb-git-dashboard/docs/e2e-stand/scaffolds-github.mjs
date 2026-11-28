@@ -23,6 +23,7 @@ async function open(page) {
   await page.getByRole("region", { name: "Catalog" }).getByRole("button", { name: "New project…" }).click({ timeout: 60000 });
   const section = page.getByRole("region", { name: "New project" });
   await section.getByRole("status", { name: "Templates" }).waitFor({ timeout: 60000 });
+  await section.locator(".git-np-pick select").selectOption({ label: "Python service (uv)" }, { timeout: 30000 }).catch(() => {});
   return section;
 }
 const line = section => section.getByRole("status", { name: "Templates" });
@@ -74,7 +75,7 @@ try {
   await control("/mode/offline");
   await section.getByRole("button", { name: "Refresh templates" }).click();
   check("without the network the held templates are still offered, with the reason", await visible(section.getByText(/Not refreshed: GitHub could not be reached/))
-    && await visible(section.getByRole("form", { name: "New Python service (uv)" })));
+    && await visible(section.getByRole("form", { name: "New Python service (uv)" })), await section.getByRole("alert").allInnerTexts());
   await control("/mode/limited");
   await section.getByRole("button", { name: "Refresh templates" }).click();
   check("GitHub's limit is said as such; with no GitHub account no token is tried", await visible(section.getByText(/Not refreshed: GitHub's request limit for this machine is reached/)));
@@ -82,8 +83,10 @@ try {
 
   const seen = await control("/requests", "GET");
   check("no request carried a token", seen.every(item => item.auth !== true), seen.filter(item => item.auth));
-  const refused = seen.filter(item => item.proxy === "refused" && !item.offline);
-  check("the proxy saw no other host than api.github.com and codeload.github.com", refused.length === 0, refused);
+  // BB's own requests to other hosts pass the proxy as they did before it; the templates' reached the stand-in only.
+  const templates = seen.filter(item => item.host);
+  check("the templates were read from api.github.com and codeload.github.com only", templates.length > 0
+    && templates.every(item => item.host === "api.github.com" || item.host === "codeload.github.com"), [...new Set(templates.map(item => item.host))]);
   check("the archive came from codeload.github.com", seen.some(item => item.host === "codeload.github.com"));
   check("no page errors", errors.length === 0, errors);
 } catch (error) {

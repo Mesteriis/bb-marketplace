@@ -36,10 +36,10 @@ S=$(docs/e2e-stand/prepare.sh "$PWD") && docs/e2e-stand/run.sh "$S" "$PWD/docs/e
   folder in the projects folder with its files in `src/api/`, git on main and one commit by the author, its common files
   byte for byte those of the repository's `common/files`, listed in the catalog; the same name again refused.
 - `scaffolds-github.mjs` — after `scaffolds.mjs`: the stand-in GitHub (`fake-github.mjs`: api.github.com and
-  codeload.github.com behind a proxy that refuses every other host, BB pointed at it with `NODE_USE_ENV_PROXY`). The
+  codeload.github.com behind a proxy BB is pointed at with `NODE_USE_ENV_PROXY`, other hosts passed through). The
   form shows `stand/templates@<sha>`; Refresh asks with the ETag; a new head is read on Refresh; a preview made on the
   old revision is not created; a broken archive, no network and GitHub's limit keep the revision and say why; no
-  request carries a token and the proxy saw no other host.
+  request carries a token and the templates were read from those two hosts only.
 - `panel.mjs` — after `ci.mjs`, last: the thread header's Review opens the one Git tab on its Review; back gives the
   summary; CI's Log, History and Changes open their screens in the panel and fit it; the panel's width as BB gives it and
   no sideways scroll at 420, 520 and 640 px; a new file chosen in the summary shown in Code as a numbered diff and counted

@@ -1,7 +1,7 @@
 // A stand-in GitHub for the templates repository: api.github.com (the branch with its ETag, the tarball redirect) and
 // codeload.github.com (the archive), behind an HTTP CONNECT proxy that the stand's BB is pointed at
-// (NODE_USE_ENV_PROXY=1, HTTPS_PROXY). The proxy tunnels those two hosts here and refuses every other one, so nothing
-// leaves the machine. The archive is `git archive` of a templates repository's HEAD.
+// (NODE_USE_ENV_PROXY=1, HTTPS_PROXY). The proxy tunnels those two hosts here; every other host is tunnelled to itself,
+// as BB's own requests went before the stand had a proxy, and logged. The archive is `git archive` of a templates repository's HEAD.
 // Usage: node fake-github.mjs <cert.pem> <key.pem> <https port> <proxy port> <control port> <templates repo> <log>
 // Control (127.0.0.1, for the probes): GET /state; POST /advance (a new head, the same files); POST /broken (a new
 // head whose archive is not gzip); POST /mode/<normal|offline|limited>; GET /requests (what was asked, with whether
@@ -26,6 +26,8 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (request, respo
   const host = (request.headers.host ?? "").replace(/:\d+$/, "");
   const path = new URL(request.url, "https://" + host).pathname;
   note({host, path, auth: Boolean(request.headers.authorization), ifNoneMatch: request.headers["if-none-match"] ?? null});
+  // Offline: a tunnel opened before is cut too, as a lost network would.
+  if (state.mode === "offline") return request.socket.destroy();
   if (state.mode === "limited" && !request.headers.authorization)
     return json(response, 403, {message: "API rate limit exceeded"}, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 3600)});
   if (host === "api.github.com") {
@@ -55,12 +57,14 @@ createServer({cert: readFileSync(cert), key: readFileSync(key)}, (request, respo
 const proxy = createHttp((request, response) => { note({proxy: "refused", target: request.url}); response.writeHead(403); response.end(); });
 proxy.on("connect", (request, socket) => {
   const [host, targetPort] = (request.url ?? "").split(":");
-  if (!["api.github.com", "codeload.github.com"].includes(host) || targetPort !== "443" || state.mode === "offline") {
-    note({proxy: "refused", target: request.url, offline: state.mode === "offline"});
+  const github = ["api.github.com", "codeload.github.com"].includes(host) && targetPort === "443";
+  if (github && state.mode === "offline") {
+    note({proxy: "refused", target: request.url, offline: true});
     socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
     return;
   }
-  const upstream = connect(Number(port), "127.0.0.1", () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); upstream.pipe(socket); socket.pipe(upstream); });
+  if (!github) note({proxy: "passed", target: request.url});
+  const upstream = connect(github ? Number(port) : Number(targetPort), github ? "127.0.0.1" : host, () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); upstream.pipe(socket); socket.pipe(upstream); });
   upstream.on("error", () => socket.destroy());
   socket.on("error", () => upstream.destroy());
 });
