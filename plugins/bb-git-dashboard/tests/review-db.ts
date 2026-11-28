@@ -1,10 +1,11 @@
 // The store's database in tests: node:sqlite behind the part of better-sqlite3 that ReviewDb names.
 import { DatabaseSync } from "node:sqlite";
-import { REVIEW_MIGRATIONS, type ReviewDb } from "../src/adapters/bb/review-store.ts";
+import { PLUGIN_MIGRATIONS } from "../src/adapters/bb/migrations.ts";
+import type { ReviewDb } from "../src/adapters/bb/review-store.ts";
 
 export function memoryDb(): ReviewDb {
   const db = new DatabaseSync(":memory:");
-  for (const migration of REVIEW_MIGRATIONS) db.exec(migration);
+  for (const migration of PLUGIN_MIGRATIONS) db.exec(migration);
   let depth = 0;
   return {
     prepare: sql => {

@@ -1,6 +1,6 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import type { TreeFile } from "../../core/scaffolds/source.ts";
+import { treeFileOf, type TreeFile } from "../../core/scaffolds/source.ts";
 import { CodedError } from "../../core/workspace.ts";
 
 /** Limits of a templates folder: a file as the scaffold model takes it, the whole tree, how deep. */
@@ -8,12 +8,7 @@ export const treeLimits = {file: 256 * 1024, total: 20 * 1024 * 1024, files: 200
 const refuse = (detail: string) => new CodedError("SCAFFOLDS_INVALID", detail);
 
 /** Text when the bytes are UTF-8 without NUL; otherwise the bytes in base64 (an icon). */
-export function treeFile(path: string, bytes: Buffer, executable: boolean): TreeFile {
-  if (!bytes.includes(0)) {
-    try { return {path, text: new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes), executable}; } catch { /* binary */ }
-  }
-  return {path, text: bytes.toString("base64"), base64: true, executable};
-}
+export const treeFile = (path: string, bytes: Buffer, executable: boolean): TreeFile => treeFileOf(path, bytes, executable);
 
 /**
  * The files of a templates folder in the layout of the templates repository — `common/` and `templates/<id>/` only,
