@@ -175,8 +175,8 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
           throw new CommanderError("consent_required", "Remote Hub did not grant access");
         }
         // The same refusals the provider reports as a failed sign-in; the server or the Keychain said no, retrying will not help.
-        // Remote Hub needs the owner to finish the profile: the provider calls this unsupported, final.
-        if (error.code === "profile_needs_config") {
+        // The profile cannot be used as an SFTP endpoint (unfinished, gone, or not SFTP): the provider calls this unsupported, final.
+        if (error.code === "profile_needs_config" || error.code === "profile_not_found" || error.code === "profile_not_sftp") {
           throw new CommanderError("unsupported", "The server cannot do this operation");
         }
         if (SIGN_IN_REFUSALS.has(error.code)) {

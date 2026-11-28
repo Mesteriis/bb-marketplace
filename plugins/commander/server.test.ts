@@ -474,7 +474,7 @@ const FIRST_OPEN_REFUSALS = [
   ["agent_unavailable", "auth_failed", "Вход отклонён"], ["keychain_locked", "auth_failed", "Вход отклонён"],
   ["keychain_unavailable", "auth_failed", "Вход отклонён"], ["keychain_needs_approval", "auth_failed", "Вход отклонён"],
   ["credential_missing", "auth_failed", "Вход отклонён"], ["auth_failed", "auth_failed", "Вход отклонён"],
-  ["profile_needs_config", "unsupported", null],
+  ["profile_needs_config", "unsupported", null], ["profile_not_found", "unsupported", null], ["profile_not_sftp", "unsupported", null],
 ] as const;
 for (const refusalAs of ["sdk", "http"] as const) {
   test.each(FIRST_OPEN_REFUSALS)(`reports %s at the first open as the provider does, without Keychain text (refusal as ${refusalAs})`, async (refusal, expected, line) => {
@@ -482,8 +482,9 @@ for (const refusalAs of ["sdk", "http"] as const) {
     const bb = await backend(undefined, async (args) => {
       if (args.method === "hub_sftp_open") {
         const message = refusal + ": Keychain item commander-secret could not be read";
-        if (refusalAs === "http") throw new BbHttpErrorLike(409, "conflict", message);
-        throw new experimental_PluginRpcCallError({ code: "conflict", message });
+        const refusalClass = SFTP_REFUSALS[refusal];
+        if (refusalAs === "http") throw new BbHttpErrorLike(REFUSAL_STATUS[refusalClass], refusalClass, message);
+        throw new experimental_PluginRpcCallError({ code: refusalClass, message });
       }
       return fixture.callRpc(args);
     });

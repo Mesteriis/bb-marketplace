@@ -2,7 +2,7 @@
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { localStand, pauseAfterWrite, waitForJob, waitForPart } from "./tests/s19b-fixture.ts";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type Entry, OperationJob } from "./src/core/model.ts";
 import { CommanderError } from "./src/core/errors.ts";
@@ -192,37 +192,43 @@ test("keeps the cursor and the view on the same entry while later pages merge in
 });
 
 test("hands 100 arriving pages to the sorted rows in at most 12 batches, with the cursor and order as for one full load", async () => {
-  // 100 pages of 20 entries; later pages sort above earlier ones.
-  const total = 2000;
-  const all = Array.from({ length: total }, (_, index) => entry("файл-" + String(total - 1 - index).padStart(4, "0")));
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  const call = host.call.getMockImplementation()!;
-  host.call.mockImplementation(async (method, input) => {
-    if (method !== "dir_list") return call(method, input);
-    if (input.ref.path.segments.at(-1)?.t !== "данные") return { entries: [], cursor: null };
-    const start = Number(input.cursor ?? 0);
-    if (start === 20) await gate;
-    // Each page arrives in its own task, as network replies do, so React cannot fold them into one render.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    return { entries: all.slice(start, start + 20), cursor: start + 20 < total ? String(start + 20) : null };
-  });
+  // Fake clock: every page arrives after its own 1 ms timer, so the page rate does not depend on machine load.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    // 100 pages of 20 entries; later pages sort above earlier ones.
+    const total = 2000;
+    const all = Array.from({ length: total }, (_, index) => entry("файл-" + String(total - 1 - index).padStart(4, "0")));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const call = host.call.getMockImplementation()!;
+    host.call.mockImplementation(async (method, input) => {
+      if (method !== "dir_list") return call(method, input);
+      if (input.ref.path.segments.at(-1)?.t !== "данные") return { entries: [], cursor: null };
+      const start = Number(input.cursor ?? 0);
+      if (start === 20) await gate;
+      if (start > 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      return { entries: all.slice(start, start + 20), cursor: start + 20 < total ? String(start + 20) : null };
+    });
 
-  mount();
-  const first = await leftFile("файл-1980");
-  fireEvent.click(first);
-  merges.count = 0;
-  release();
-  // 100 pages in separate tasks: under machine load the 1 s default is too tight.
-  await waitFor(() => expect(grid().getAttribute("aria-busy")).toBe("false"), { timeout: 20_000 });
-  expect(merges.count).toBeLessThanOrEqual(12);
-  expect(merges.count).toBeGreaterThan(0);
-  expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(total);
-  expect(within(grid()).getByRole("row", { name: /файл-1980/ }).getAttribute("data-cursor")).toBe("true");
-  // The rendered window starts where the view was anchored to the cursor, and the rows are in name order.
-  const rendered = within(grid()).getAllByRole("row").map((row) => row.textContent ?? "").filter((text) => text.startsWith("файл-"));
-  const names = rendered.map((text) => text.slice(0, 9));
-  expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    mount();
+    const first = await vi.waitFor(() => within(grid()).getByRole("row", { name: /файл-1980/ }));
+    fireEvent.click(first);
+    merges.count = 0;
+    release();
+    // The last batch is shown when the grid stops being busy; step the clock one page at a time until then.
+    for (let step = 0; step < 400 && grid().getAttribute("aria-busy") === "true"; step++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    }
+    expect(grid().getAttribute("aria-busy")).toBe("false");
+    expect(merges.count).toBeLessThanOrEqual(12);
+    expect(merges.count).toBeGreaterThan(0);
+    expect(Number(grid().getAttribute("aria-rowcount"))).toBeGreaterThanOrEqual(total);
+    expect(within(grid()).getByRole("row", { name: /файл-1980/ }).getAttribute("data-cursor")).toBe("true");
+    // The rendered rows are in name order.
+    const rendered = within(grid()).getAllByRole("row").map((row) => row.textContent ?? "").filter((text) => text.startsWith("файл-"));
+    const names = rendered.map((text) => text.slice(0, 9));
+    expect(names).toEqual([...names].sort((x, y) => x.localeCompare(y)));
+  } finally { vi.useRealTimers(); }
 });
 
 test("a failing page shows the error even when an earlier batch is still waiting for its display timer", async () => {
