@@ -272,6 +272,7 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
   // S17: the last retry result by job id: nothing to retry, or files waiting for a directory check.
   const [retryNotes, setRetryNotes] = useState<Record<string, RetryNote>>({});
   const [revisions, setRevisions] = useState({ left: 0, right: 0, job: 0 });
+  const [passwordFor, setPasswordFor] = useState<string | null>(null);
   const changes = useRef(new Set<string>());
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const left = activeTab(state, "left"), right = activeTab(state, "right");
@@ -283,6 +284,8 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
     if (typeof payload !== "object" || payload === null || !("kind" in payload)) return;
     if (payload.kind === "job") changes.current.add("job");
     if (payload.kind === "endpoints") changes.current.add("endpoints");
+    // S14: an encrypted archive asks the owner for its password; the id is all this event carries.
+    if (payload.kind === "archive-password" && "id" in payload && typeof payload.id === "string") setPasswordFor(payload.id);
     if (payload.kind === "dir" && "id" in payload) {
       if (left?.endpoint === payload.id) changes.current.add("left");
       if (right?.endpoint === payload.id) changes.current.add("right");
@@ -408,6 +411,20 @@ function CommanderPage({ compact = false, environment, threadId }: { compact?: b
       try { localStorage.setItem(bindingsKey, JSON.stringify(value)); } catch { /* Current session still uses the mapping. */ }
     }}
     retryNotes={retryNotes} onEndpoint={selectEndpoint} onRefresh={refresh}
+    onOpenArchive={async (source) => {
+      const opened = await rpc.call("archive_open", { source });
+      await refreshEndpoints();
+      return { endpoint: opened.endpoint };
+    }}
+    passwordFor={passwordFor}
+    onPassword={async (archiveId, password) => {
+      await rpc.call("archive_password", { archiveId, password });
+      setPasswordFor(null);
+    }}
+    onPasswordCancel={(archiveId) => {
+      setPasswordFor(null);
+      void rpc.call("archive_password_cancel", { archiveId }).catch(() => undefined);
+    }}
     onAccess={async (endpoint) => {
       await rpc.call("sftp_request_access", { profileId: endpoint.id.slice("sftp:".length), level: "write" });
       await refreshEndpoints();

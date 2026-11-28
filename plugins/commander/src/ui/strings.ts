@@ -1,4 +1,5 @@
 export const ru = {
+  archive: { passwordTitle: "Зашифрованный архив", password: "Пароль архива" },
   // S11
   search: {
     title: "Поиск", virtual: "Результаты поиска", close: "Закрыть поиск",

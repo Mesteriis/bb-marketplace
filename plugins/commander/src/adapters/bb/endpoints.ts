@@ -84,6 +84,7 @@ export function createEndpoints(bb: BbPluginApi, archives: () => ArchiveManager 
         caseSensitive: true, consent: profile.consent,
       });
     }
+    for (const endpoint of archives()?.views() ?? []) endpoints.push({ ...endpoint });
     return endpoints;
   }
 

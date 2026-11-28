@@ -69,6 +69,17 @@ export interface WorkspaceProps {
   onTerminal: (ref: ResourceRef) => Promise<void>;
   onOpenThread: (threadId: string) => void;
   onOpenPage: () => void;
+  /** S14: opens a ZIP or TAR as a read-only panel; absent where archives are unavailable. */
+  onOpenArchive?: (ref: ResourceRef) => Promise<{ endpoint: string }>;
+  /** S14: the archive that asks the owner for its password, if any. The password goes only to onPassword. */
+  passwordFor?: string | null;
+  onPassword?: (archiveId: string, password: string) => Promise<unknown>;
+  onPasswordCancel?: (archiveId: string) => void;
+}
+
+/** Only plain ZIP and TAR: compressed tarballs are not read in this stage. */
+function isArchiveName(name: Entry["name"]): boolean {
+  return "t" in name && /\.(zip|tar)$/i.test(name.t);
 }
 
 const actions = [
@@ -370,6 +381,12 @@ export function Workspace(props: WorkspaceProps) {
     if (entry === null) goUp(pane);
     else if (entry.kind === "dir") {
       try { navigate(pane, join(value.path, entry.name)); } catch (error) { setProblem(problemOf(error)); }
+    } else if (props.onOpenArchive && isArchiveName(entry.name)) {
+      const ref = { endpoint: value.endpoint, path: join(value.path, entry.name) };
+      void perform(async () => {
+        const opened = await props.onOpenArchive!(ref);
+        await props.onEndpoint(pane, opened.endpoint);
+      });
     } else view(value, entry);
   }
   function view(value: Tab, entry: Entry) {
@@ -697,6 +714,9 @@ export function Workspace(props: WorkspaceProps) {
         <Icon name="Terminal" /><span>{compact ? ru.compactTerminal : ru.terminal}</span></Button>}
     </footer>
     {dialog?.kind === "text" && <TextDialog {...dialog} close={close} busy={busy} error={problem} />}
+    {props.passwordFor && props.onPassword && <TextDialog key={props.passwordFor} title={ru.archive.passwordTitle} label={ru.archive.password} secret
+      submit={(password) => void props.onPassword!(props.passwordFor!, password)}
+      close={() => props.onPasswordCancel?.(props.passwordFor!)} busy={false} error={null} />}
     {dialog?.kind === "batch-rename" && <BatchRenameDialog entries={dialog.entries} directory={entries}
       caseSensitive={dialog.caseSensitive} busy={busy} error={problem}
       submit={(pattern) => createBatchRename(dialog.sources, pattern)} close={close} />}

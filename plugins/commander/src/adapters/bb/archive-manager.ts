@@ -232,6 +232,9 @@ export function createArchiveManager(deps: ArchiveManagerDeps) {
 
     has: (id: string) => sessions.has(id),
 
+    /** Endpoint views of the open archives, for the endpoint list. */
+    views: () => [...sessions.values()].map((session) => session.provider.endpoint),
+
     async close(id: string): Promise<void> {
       const session = sessions.get(id);
       if (!session) return;
