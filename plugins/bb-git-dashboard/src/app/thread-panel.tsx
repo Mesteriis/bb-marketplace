@@ -176,11 +176,13 @@ export function PinnedPull({params}: {params: JsonValue | null}) {
     (async () => {
       const accounts = await client.call("accounts", null);
       const account = accounts.ok ? accounts.items.find(item => item.id === accountId) : undefined;
-      // Pins made before 0.14.7 keep the repository's id only: its path is read from the pull request.
+      // Pins made before 0.14.7 keep the repository's id only: its path is found among the account's repositories.
       let repo = typeof target.repo === "string" ? target.repo : null;
-      if (!repo && typeof repoId === "string") {
-        const pull = await client.call("pull", {accountId, repoId, number});
-        repo = pull.ok ? pull.value.pull.base.repo : null;
+      for (let page = 1; !repo && typeof repoId === "string" && page <= 5; page++) {
+        const listed = await client.call("repositories", {accountId, page, refresh: false});
+        if (!listed.ok) break;
+        repo = listed.value.items.find(item => item.id === repoId)?.path ?? null;
+        if (!listed.value.more) break;
       }
       if (!active) return;
       if (!repo) { setError(t("gp.pr-unreadable")); return; }

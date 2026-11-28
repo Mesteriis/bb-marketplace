@@ -259,7 +259,7 @@ function Dashboard({subPath}: {subPath: string}) {
       <ConnectionsPage api={api} title={t("section.connections")} hosts={hosts} localKeys={localKeys} onBrowse={() => open("remotes")} onChanged={accountsChanged}/>
     </> : subPath === "remotes" ? <>
       <Remotes api={api} hosts={hosts} copies={copies} onOpen={open} onPin={(repo,number) => {
-        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,number},title:repo.name+" #"+number})) {
+        if (!panel.openTab({tab:pullTab,params:{accountId:repo.accountId,repoId:repo.id,repo:repo.path,number},title:repo.name+" #"+number})) {
           throw new Error("The panel did not accept this pull request.");
         }
       }}/>
